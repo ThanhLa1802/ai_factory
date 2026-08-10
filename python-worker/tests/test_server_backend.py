@@ -29,9 +29,11 @@ async def test_inference_servicer_streams_backend_events():
         })(),
     })()
 
+    fake = FakeBackend()
     ctx = FakeContext()
-    svc = InferenceServicer(FakeBackend())
+    svc = InferenceServicer(fake)
     await svc.Generate(req, ctx)
+    assert svc.backend is fake  # old servicer sets self.engine → AttributeError
     assert [r.event_type for r in ctx.written] == [1, 3]  # EVENT_TOKEN=1, EVENT_FINAL=3
     assert ctx.written[-1].stop_reason == 1  # STOP_END_TURN
 

@@ -366,9 +366,11 @@ def main():
     parser.add_argument("--engine", type=str, default="transformers",
                         help="transformers | llama")
     parser.add_argument("--gguf", type=str, default=None,
-                        help="Path hoặc repo GGUF (chỉ khi --engine llama)")
-    parser.add_argument("--llama-port", type=int, default=8081)
-    parser.add_argument("--llama-bin", type=str, default="llama-server")
+                        help="Path or repo GGUF (only when --engine llama)")
+    parser.add_argument("--llama-port", type=int, default=8081,
+                        help="llama-server port")
+    parser.add_argument("--llama-bin", type=str, default="llama-server",
+                        help="llama-server binary path (default: in PATH)")
     args = parser.parse_args()
 
     asyncio.run(serve(port=args.port, model_id=args.model, engine_name=args.engine,
