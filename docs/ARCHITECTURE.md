@@ -2,7 +2,7 @@
 
 > Tài liệu này mô tả kiến trúc **thực tế** của dự án dựa trên mã nguồn hiện tại, bổ sung cho `CONTEXT.md` (glossary ngắn) và `CLAUDE.md` (tổng quan + lộ trình). Nó đi sâu vào từng thành phần, luồng dữ liệu và các giới hạn tích hợp.
 
-**Trạng thái doc:** khớp với code tại commit hiện tại (2026-08-08). Nếu có thay đổi kiến trúc, hãy cập nhật lại.
+**Trạng thái doc:** khớp với code tại commit hiện tại (2026-08-10, sau khi thêm engine llama). Nếu có thay đổi kiến trúc, hãy cập nhật lại.
 
 ---
 
@@ -50,9 +50,13 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
                         ┌─────────────────────────────────────────────────┐
                         │              PYTHON WORKER                       │
                         │  InferenceServicer + BatchInferenceServicer     │
-                        │  ├── InferenceEngine  (single, streaming)        │
-                        │  └── BatchEngine      (batched model.generate)   │
-                        │  Model: Qwen2.5-3B-Instruct (4-bit NF4)          │
+                        │  └── EngineBackend (chọn bằng --engine)          │
+                        │      ├── TransformersBackend                     │
+                        │      │    ├─ InferenceEngine (single, streaming) │
+                        │      │    └─ BatchEngine (batched generate)      │
+                        │      │    Model: Qwen2.5-Coder-7B (4-bit NF4)    │
+                        │      └── LlamaBackend (Qwen3.5-9B GGUF)          │
+                        │           spawn llama-server → /v1/chat/...      │
                         └─────────────────────────────────────────────────┘
 ```
 
@@ -240,7 +244,7 @@ Entry point: `python-worker/worker/server.py` (chạy `python -m worker.server`,
 
 ### 3.2 InferenceEngine (single) — `engine.py`
 
-- `MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"` (`engine.py:25`) — **ungated**, không cần HF login.
+- `MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"` (`engine.py:29`) — **ungated**, không cần HF login. Docs cũ ghi 3B (docstring trong `engine.py` vẫn ghi "Llama 3.2 3B" — xem §9.3).
 - Config 4-bit (`engine.py:35-40`): `BitsAndBytesConfig(load_in_4bit=True, bf16 compute, double_quant, nf4)` — đủ khít 12GB VRAM của RTX 3060. `device_map="auto"`.
 - `generate()` (`engine.py:148-277`):
   1. `_build_prompt` dùng `tokenizer.apply_chat_template(messages, tools=...)` (format OpenAI-style cho template, kèm tool calling nếu có).
@@ -260,7 +264,27 @@ Entry point: `python-worker/worker/server.py` (chạy `python -m worker.server`,
 4. **Split output theo từng request** (dùng `attention_mask` để lấy prompt_len), decode từng token, `yield (req_id, {"type": "token"})`.
 5. Cuối mỗi request: `STOP_MAX_TOKENS` nếu đạt giới hạn, ngược lại `STOP_END_TURN` + `usage`.
 
-> ⚠️ **BatchEngine không phát hiện tool call** — chỉ sinh `STOP_END_TURN` / `STOP_MAX_TOKENS`. Hệ quả: đường batch (đường duy nhất mà agentic loop dùng) **không bao giờ tạo ra `tool_use`** (xem §9.1).
+> ⚠️ **BatchEngine (engine transformers) không phát hiện tool call** — chỉ sinh `STOP_END_TURN` / `STOP_MAX_TOKENS`. Hệ quả: trên transformers, đường batch (đường duy nhất mà agentic loop dùng) **không bao giờ tạo ra `tool_use`** (xem §9.1). Trên engine **llama**, `LlamaBackend` xử lý tool call native (xem §3.4).
+
+### 3.4 LlamaBackend — `engines/llama/`
+
+Engine llama chạy model GGUF qua **llama-server** (llama.cpp) thay vì transformers: worker spawn subprocess và proxy gRPC → OpenAI-compatible HTTP. Entry `worker/server.py` gọi `get_backend(engine_name, model_id, gguf, llama_port, llama_bin)` (`server.py:315-316`) để chọn engine lúc khởi động.
+
+- **`EngineBackend`** (`engines/base.py`): interface chung — `generate(...)`, `generate_batch(...)` → yield event dict (token / tool_use / final). `get_backend()` là registry chọn implementation.
+- **`TransformersBackend`** (`engines/transformers.py`): wrap `InferenceEngine` + `BatchEngine` hiện có (Qwen2.5-Coder-7B) — giữ nguyên hành vi cũ.
+- **`LlamaServer`** (`engines/llama/server.py`): spawn `llama-server` subprocess với flags `--host 127.0.0.1 --port 8081 --n-gpu-layers -1 --ctx-size 8192 --threads 8`; chờ `/health` (timeout), log ra `llama-server-8081.log`, stop khi worker tắt.
+- **`LlamaClient`** (`engines/llama/client.py`): proxy request → `POST {base_url}/v1/chat/completions` (OpenAI-style, SSE stream); httpx transport.
+- **`LlamaBackend`** (`engines/llama/backend.py`): map gRPC request ↔ OpenAI body (`"model": "qwen3.5-9b"`, `messages`, `tools`, `tool_choice:"auto"`), map response events (token delta, `tool_calls`, `finish_reason`) → event dict giống TransformersBackend. **Tool calling native** của llama-server → sinh `STOP_TOOL_USE` + `tool_calls` thật — nhánh tool-use của agentic loop hoạt động trên engine này (xem §9.1).
+
+**GGUF / binary:** `models/Qwen3.5-9B-Q4_K_M.gguf` + `models/llama.cpp/llama-server.exe` (CUDA 12.4). Flags worker: `--engine llama --gguf <path> --llama-port 8081 --llama-bin <bin>`.
+
+Proxy flow:
+```
+gRPC Generate / BatchGenerate
+  → LlamaBackend (LlamaClient) → POST /v1/chat/completions (SSE stream)
+  → llama-server (token / tool_calls)
+  → LlamaBackend map → event dict (token / tool_use / final) → gRPC response
+```
 
 ---
 
@@ -320,7 +344,7 @@ user msg → model → model trả STOP_TOOL_USE + toolCalls
   → ... đến khi STOP_END_TURN hoặc đủ 10 iterations
 ```
 
-Lưu ý: trong đường batch hiện tại, `tool_use` **không bao giờ** được sinh ra (§9.1), nên nhánh này chưa thực sự kích hoạt ở runtime — code có sẵn và đúng pattern, nhưng đầu vào (model) chưa nối.
+Lưu ý: trên engine **transformers**, `tool_use` **không bao giờ** được sinh ra ở đường batch (§9.1) — nhánh này chưa kích hoạt ở runtime. Trên engine **llama**, nhánh này **chạy thật**: model gọi tool, Go executor execute, verified E2E (xem §9.1).
 
 ### 5.4 Concurrent requests (continuous batching)
 
@@ -374,7 +398,8 @@ Giới hạn hiện tại: cancel phía Python là **poll 100ms** (không phải
 
 ## 8. Model & inference
 
-- **Model:** Qwen 2.5 3B Instruct, quant 4-bit NF4 (bitsandbytes), `device_map="auto"` (RTX 3060 12GB).
+- **Model (transformers, default):** Qwen2.5-Coder-7B-Instruct, quant 4-bit NF4 (bitsandbytes), `device_map="auto"` (RTX 3060 12GB). Docs cũ ghi "Qwen 2.5 3B" — code chạy 7B từ trước.
+- **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4 build) thay vì bitsandbytes — GPU layers do llama-server quản lý (`--n-gpu-layers -1`), không dùng `device_map`. Chi tiết §3.4.
 - **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` có sẵn của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả streaming `StreamingDecoder`), batch pad/truncate (`build_inputs`). Đảm nhận encode/decode trong cả `engine.py` lẫn `batch_engine.py`. Có bộ test đối chiếu ID == HF (`python-worker/tests/test_tokenizer.py`, 40 test).
 - **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho phần Jinja template (build prompt *string*), không dùng để token hoá (quyết định D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`). Hỗ trợ tool calling qua tham số `tools`.
 - **Streaming:** `TextIteratorStreamer` + daemon thread. Streamer chỉ cần `tokenizer.decode(ids, **kwargs)` — BPETokenizer duck-type vừa khớp (xác minh transformers 4.50.3).
@@ -389,13 +414,17 @@ Số liệu benchmark tham khảo (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~
 
 Phần này ghi lại những khác biệt giữa **kiến trúc lý tưởng** (trong comment/`CONTEXT.md`) và **hành vi thực tế** của code — quan trọng khi debug hoặc tiếp tục phát triển.
 
-### 9.1 Đường batch không phát hiện tool call (nhánh chết của agentic loop)
+### 9.1 Tool-calling: hoạt động trên engine llama, chết trên engine transformers
 
-- Agentic loop chỉ gọi `scheduler.Submit` → luôn đi qua `BatchGenerate` → `BatchEngine.generate_batch`.
+> ✅ **Engine llama (Qwen3.5-9B): tool-use ĐÃ HOẠT ĐỘNG và verified E2E (2026-08-10).** llama-server hỗ trợ tool calling native (structured output) → `LlamaBackend` parse `tool_calls` từ response → sinh event `STOP_TOOL_USE` + `tool_calls` thật → nhánh tool-use của `loop.go` (step 7) kích hoạt ở runtime. E2E đã xác nhận: model gọi `read_file("test.txt")`, Go executor chạy tool, model trả lời với nội dung file. Không còn là nhánh chết trên engine này.
+>
+> ⚠️ **Engine transformers (Qwen2.5-Coder-7B): vẫn chết.** Các giới hạn dưới đây áp dụng cho đường transformers.
+
+- Agentic loop chỉ gọi `scheduler.Submit` → đi qua `BatchGenerate` → `TransformersBackend` → `BatchEngine.generate_batch`.
 - `BatchEngine` **đã stream token theo thời gian thực** (TTFT ~0.8s): `model.generate(streamer=BatchTokenStreamer)` chạy trong thread, streamer decode token mới của từng request (skip lần `put(prompt)` đầu, `unsqueeze(-1)` vì `_sample` squeeze thành [batch]) → push vào `queue.Queue` → async generator yield về client; request gặp EOS/max token được cắt sớm độc lập, batch vẫn chạy cho request khác (`batch_engine.py`).
-- Nhưng `BatchEngine` vẫn **không bao giờ yield `tool_use`** — chỉ `token`/`final` với `STOP_END_TURN`/`STOP_MAX_TOKENS`.
-- Hệ quả: nhánh tool-calling của `loop.go` (step 7) và `GenerateStream` (`client.go`, đường single) không bao giờ kích hoạt ở runtime. Model vẫn nhận `tools` trong prompt (qua chat template), nhưng kết quả tool call nếu model tự sinh ra sẽ bị coi là text thường và stop reason là `STOP_END_TURN`.
-- Cần sửa nếu muốn tool calling chạy thật: hoặc cho `BatchEngine` parse tool call từ output batch, hoặc loop dùng đường `GenerateStream` (single) cho các request cần tool.
+- Nhưng `BatchEngine` vẫn **không bao giờ yield `tool_use`** — chỉ `token`/`final` với `STOP_END_TURN`/`STOP_MAX_TOKENS` (heuristic tool-call của `InferenceEngine` cũng không được dùng ở đường batch).
+- Hệ quả: trên transformers, nhánh tool-calling của `loop.go` (step 7) không kích hoạt ở runtime. Model vẫn nhận `tools` trong prompt (qua chat template), nhưng tool call model tự sinh ra bị coi là text thường và stop reason là `STOP_END_TURN`.
+- Cần sửa nếu muốn tool calling chạy trên transformers: hoặc cho `BatchEngine`/`TransformersBackend` parse tool call từ output batch, hoặc loop dùng đường `GenerateStream` (single) cho các request cần tool.
 
 ### 9.2 Tool definitions từ client chưa được nối
 
@@ -404,7 +433,7 @@ Phần này ghi lại những khác biệt giữa **kiến trúc lý tưởng** 
 
 ### 9.3 Inconsistency về model trong comment
 
-- `engine.py` docstring nói "Llama 3.2 3B" nhưng `MODEL_ID` thực tế là **Qwen/Qwen2.5-3B-Instruct** (`engine.py:25`). Các comment heuristic tool-call cũng nói format Llama (`<|python_tag|>`) — với Qwen chat template, tool call có format khác, nên heuristic có thể không khớp.
+- `server.py` help string cho flag `--model` vẫn ghi "Llama 3.2 3B" (`server.py:365`) và `engine.py` docstring nói "Llama 3.2 3B", nhưng `MODEL_ID` thực tế là **Qwen/Qwen2.5-Coder-7B-Instruct** (`engine.py:29`). Các comment heuristic tool-call cũng nói format Llama (`<|python_tag|>`) — với Qwen chat template, tool call có format khác, nên heuristic có thể không khớp.
 
 ### 9.4 Flag `--max-concurrent` không tác dụng khi ≤ 1
 
@@ -424,24 +453,29 @@ Phần này ghi lại những khác biệt giữa **kiến trúc lý tưởng** 
 | Layer | Tech |
 |---|---|
 | Go server | Go 1.25.6, `net/http` + `http.ServeMux`, `google.golang.org/grpc`, `google/uuid` |
-| Python worker | Python ≥3.11, `grpcio` (aio), `torch`, `transformers`, `bitsandbytes`, `accelerate` |
-| Model | Qwen/Qwen2.5-3B-Instruct, 4-bit NF4 |
+| Python worker | Python ≥3.11, `grpcio` (aio), `torch`, `transformers`, `bitsandbytes`, `accelerate` (+ `httpx` cho llama proxy) |
+| Model | Transformers: Qwen/Qwen2.5-Coder-7B-Instruct (4-bit NF4) · Llama: Qwen3.5-9B GGUF Q4_K_M (llama-server) |
 | Contract | Protobuf 3, server-streaming gRPC |
 | Streaming | gRPC (Python→Go), SSE (Go→Client) |
 
 ## 11. Cách chạy
 
 ```bash
-# Terminal 1: Python worker (mặc định port 50051)
+# Terminal 1: Python worker (mặc định port 50051) — engine transformers (default, Qwen2.5-Coder-7B)
 cd python-worker && python -m worker.server
+
+#   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081.
+#   (thêm --llama-bin ..\models\llama.cpp\llama-server.exe nếu llama-server chưa có trên PATH)
+cd python-worker && .\.venv\Scripts\python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (mặc định port 8080)
 cd go-server && go run ./cmd/server/
 
-# Test nhanh
+# Test nhanh (Anthropic adapter) — LƯU Ý: content phải là MẢNG content blocks,
+# dạng string "content":"Hello" bị adapter reject với 400:
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
 
 # Health
 curl http://localhost:8080/health
@@ -455,6 +489,7 @@ curl http://localhost:8080/health
 | Tuần 1-2 | Dual protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §9.1) |
 | Tuần 1-2 | Continuous batching (static) | ✅ Đã xong (static batch) |
 | Tuần 3-4 | Tự viết tokenizer (BPE) | ✅ Đã xong — `worker/model/tokenizer/`, 40 test đối chiếu == HF (§8) |
+| Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) — ngoài roadmap gốc | ✅ Đã xong — tool calling hoạt động & verified E2E trên engine này (§3.4, §9.1) |
 | Tuần 5-6 | Tự viết sampling | 🔜 Thay `model.generate` param |
 | Tuần 7-8 | Tự quản lý KV cache + dynamic batching | 🔜 Thay phần lõi `BatchEngine` |
 | Tuần 9+ | Forward pass, prefix caching, PagedAttention | 🔜 Tương lai |

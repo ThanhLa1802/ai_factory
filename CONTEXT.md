@@ -13,8 +13,9 @@ Client (SSE/HTTP) → Go Server (main)
     └── gRPC Client ──► Python Worker
                             ├── InferenceService.Generate()  (single request, streaming token)
                             ├── BatchInferenceService.BatchGenerate() (batch, route per request_id)
-                            ├── Engine (InferenceEngine — HF model 4-bit, token-level streaming)
-                            └── BatchEngine (batched model.generate(), split output per request)
+                            └── EngineBackend (chọn bằng --engine)
+                                 ├── TransformersBackend → InferenceEngine + BatchEngine (HF 4-bit, Qwen2.5-Coder-7B)
+                                 └── LlamaBackend → llama-server proxy /v1/chat/completions (Qwen3.5-9B GGUF)
 ```
 
 ### Data Flow — Single Request
@@ -46,7 +47,7 @@ Handler 3 ──┘                                     │
 ### Core Concepts
 
 - **Inference Engine (Tầng A)**: Module Python chịu trách nhiệm load model, tokenize, chạy forward pass, và sinh token. Chạy như một worker riêng biệt, giao tiếp với Go server qua gRPC. Có hai chế độ: `InferenceEngine.generate()` cho single request (streaming token), và `BatchEngine.generate_batch()` cho batch requests.
-- **Agentic Loop (Tầng B)**: Vòng lặp multi-turn orchestrated trong Go server: nhận user message → gửi xuống inference qua BatchScheduler → model trả `tool_use` → execute tool → gửi `tool_result` lại model → lặp đến khi model trả `stop_reason: "end_turn"` hoặc đạt max iterations (10). ⚠️ Lưu ý: nhánh tool-use **chưa kích hoạt ở runtime** — đường duy nhất loop dùng là `BatchGenerate`, nhưng `BatchEngine` không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`). Xem `docs/ARCHITECTURE.md` §9.1.
+- **Agentic Loop (Tầng B)**: Vòng lặp multi-turn orchestrated trong Go server: nhận user message → gửi xuống inference qua BatchScheduler → model trả `tool_use` → execute tool → gửi `tool_result` lại model → lặp đến khi model trả `stop_reason: "end_turn"` hoặc đạt max iterations (10). ⚠️ Lưu ý: nhánh tool-use **hoạt động thật trên engine llama** (Qwen3.5-9B — llama-server tool calling native, verified E2E), nhưng **chết trên engine transformers** (Qwen2.5-Coder-7B): `TransformersBackend`/`BatchEngine` không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`). Xem `docs/ARCHITECTURE.md` §9.1.
 - **API Server (Tầng C)**: HTTP server trong Go, expose dual endpoint tương thích Anthropic Messages API (`/v1/messages`) và OpenAI Chat Completions API (`/v1/chat/completions`), hỗ trợ SSE streaming.
 - **Internal Canonical Format**: Định dạng message trung gian trong Go, dùng chung cho cả hai protocol Anthropic và OpenAI. Adapter layer chuyển đổi từng protocol sang internal format trước khi xử lý.
 - **gRPC Inference Service**: Contract giữa Go server và Python worker. `InferenceService.Generate` cho single request streaming. `BatchInferenceService.BatchGenerate` cho batch requests — nhận nhiều request, stream kết quả kèm `request_id` để route.
@@ -57,11 +58,13 @@ Handler 3 ──┘                                     │
 - **Session**: Đại diện cho một phiên trò chuyện của một user, chứa conversation history, context window (8K tokens), và trạng thái hiện tại. Lưu in-memory. Concurrency được quản lý bởi BatchScheduler thay vì inference queue.
 - **Context Truncation**: Logic trong Go cắt bớt messages cũ nhất khi tổng số token vượt quá 8K, đảm bảo không cắt giữa cặp `tool_use`/`tool_result`.
 - **Cancel Propagation**: Chain từ client disconnect → Go `ctx.Done()` → gRPC stream cancel → Python dừng inference → giải phóng VRAM. Với batch mode, cancel từng request riêng không ảnh hưởng các request khác trong batch. ⚠️ Giới hạn hiện tại: phía Python là poll **100ms** (không phải event-driven), và trong batch mode model vẫn chạy hết forward pass của batch — chỉ bỏ gửi kết quả của request bị cancel.
+- **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Hai implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers) và `LlamaBackend` (Qwen3.5-9B, llama-server proxy). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface".
+- **LlamaProxyEngine**: `LlamaBackend` — spawn `llama-server` subprocess, proxy gRPC → OpenAI-compatible `/v1/chat/completions` (SSE). Tool calling native (structured output) → nhánh tool-use của agentic loop hoạt động thật trên engine này (vá §9.1).
 
 ### Technology Decisions
 
-- **Model**: Qwen 2.5 3B Instruct (4-bit quantized via bitsandbytes NF4), chạy trên RTX 3060 12GB VRAM. Ungated — không cần HuggingFace login.
-- **Inference Runtime**: HuggingFace `transformers` + `bitsandbytes` cho quantization. Batch mode dùng `model.generate()` với batched inputs (padding + attention mask).
+- **Model**: Default Qwen2.5-Coder-7B-Instruct (transformers, 4-bit quantized via bitsandbytes NF4), chạy trên RTX 3060 12GB VRAM. Ungated — không cần HuggingFace login. Tùy chọn Qwen3.5-9B (GGUF Q4_K_M) qua engine llama. Docs cũ ghi "Qwen 2.5 3B" — code chạy 7B từ trước.
+- **Inference Runtime**: HuggingFace `transformers` + `bitsandbytes` cho quantization (engine transformers). Batch mode dùng `model.generate()` với batched inputs (padding + attention mask). Engine llama dùng `llama-server` (llama.cpp) proxy qua OpenAI-compatible `/v1/chat/completions`.
 - **Protocol**: gRPC server-streaming (Python → Go), SSE (Go → Client). Hai gRPC services: `InferenceService.Generate` (single) + `BatchInferenceService.BatchGenerate` (batch).
 - **Batching Strategy**: Static batch — gom request trong cửa sổ 100ms, dispatch batch cố định qua gRPC. Python dùng `model.generate()` batched, decode từng token riêng lẻ, yield kèm `request_id`. Go scheduler route về channel per-request.
 - **Languages**: Go (HTTP server, agentic loop, batch scheduler, session management), Python (inference worker, batch engine)
@@ -79,4 +82,4 @@ Handler 3 ──┘                                     │
 | Tuần 7-8 | Tự quản lý KV cache + dynamic continuous batching (add/remove giữa decode step) | 🔜 Chưa |
 | Tuần 9+ | (Optional) Tự viết forward pass, prefix caching, PagedAttention | 🔜 Chưa |
 
-Map chi tiết code ↔ roadmap: `docs/ARCHITECTURE.md` §12. Lỗ hổng tích hợp hiện tại (tool-calling chưa chạy, tool client chưa nối, bug `--max-concurrent`): `docs/ARCHITECTURE.md` §9.
+Map chi tiết code ↔ roadmap: `docs/ARCHITECTURE.md` §12. Lỗ hổng tích hợp hiện tại (tool-calling chết trên transformers nhưng chạy trên llama, tool client chưa nối, bug `--max-concurrent`): `docs/ARCHITECTURE.md` §9.
