@@ -1,5 +1,6 @@
 """LlamaBackend — map gRPC request ↔ OpenAI API; sinh event dict giống TransformersBackend."""
 import asyncio
+import sys
 
 from ..base import EngineBackend
 from .server import LlamaServer
@@ -116,7 +117,10 @@ class LlamaBackend(EngineBackend):
                     ):
                         await q.put((req.get("request_id", ""), ev))
                 except Exception as e:  # noqa: BLE001
-                    await q.put((req.get("request_id", ""), {
+                    req_id = req.get("request_id", "")
+                    # stderr là unbuffered → log không bị mất như stdout block-buffered.
+                    print(f"[llama_batch] req {req_id} error: {e}", file=sys.stderr)
+                    await q.put((req_id, {
                         "type": "final", "stop_reason": "STOP_ERROR",
                         "finish_reason": "error", "token": str(e),
                     }))

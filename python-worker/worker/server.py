@@ -20,8 +20,6 @@ except ImportError:
     print("[server] Proto stubs not found. Run: python -m worker.generate_proto")
     sys.exit(1)
 
-# Servicers nhận EngineBackend (worker.engines) thay vì trực tiếp engine.
-
 # ---------------------------------------------------------------------------
 # gRPC Service Implementation
 # ---------------------------------------------------------------------------
@@ -362,7 +360,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="AI Factory Inference Worker")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="gRPC port")
-    parser.add_argument("--model", type=str, default=None, help="Model ID (default: Llama 3.2 3B)")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Transformers model ID (default: Qwen2.5-Coder-7B-Instruct; bỏ qua khi --engine llama)")
     parser.add_argument("--engine", type=str, default="transformers",
                         help="transformers | llama")
     parser.add_argument("--gguf", type=str, default=None,

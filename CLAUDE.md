@@ -112,7 +112,7 @@ cd python-worker && python -m worker.server
 
 #   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081.
 #   (thêm --llama-bin ..\models\llama.cpp\llama-server.exe nếu llama-server chưa có trên PATH)
-cd python-worker && .\.venv\Scripts\python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (mặc định port 8080)
 cd go-server && go run ./cmd/server/

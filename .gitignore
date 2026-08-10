@@ -32,5 +32,8 @@ Thumbs.db
 .env
 .env.local
 
+# Runtime logs (llama-server redirect)
+llama-server-*.log
+
 # Tooling
 .superpowers/
