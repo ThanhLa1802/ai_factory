@@ -18,6 +18,10 @@ fi
 # Activate and install
 source .venv/Scripts/activate 2>/dev/null || source .venv/bin/activate
 pip install -e ".[dev]"
+# httpx + huggingface_hub đã nằm trong dependencies của pyproject.toml (cài qua ".[dev]").
+# Tải GGUF: ./scripts/download_qwen35.sh  (repo unsloth/Qwen3.5-9B-GGUF, file Qwen3.5-9B-Q4_K_M.gguf)
+# llama-server: tải bản *-bin-win-cuda-cu12.4-x64.zip từ https://github.com/ggml-org/llama.cpp/releases
+#   → giải nén, thêm thư mục chứa llama-server.exe vào PATH (xem task-7-brief Step 3).
 
 # Generate proto stubs
 python -m worker.generate_proto
