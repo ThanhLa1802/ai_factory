@@ -8,7 +8,6 @@ def test_registry_unknown_raises():
         get_backend("nope")
 
 
-@pytest.mark.skip(reason="LlamaBackend chưa tồn tại cho tới Task 6 — bỏ skip ở Task 6")
 def test_registry_llama():
     b = get_backend("llama", gguf="dummy.gguf", llama_port=8123)
     assert type(b).__name__ == "LlamaBackend"
