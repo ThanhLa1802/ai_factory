@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
@@ -179,7 +180,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 						log.Printf("[loop] Inference error: %s", event.Error)
 						events <- LoopEvent{
 							Type:  LoopEventError,
-							Err:   fmt.Errorf(event.Error),
+							Err:   errors.New(event.Error),
 						}
 						return
 					}
