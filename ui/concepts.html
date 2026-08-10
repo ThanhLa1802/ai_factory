@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Factory — Kiến Trúc LLM Serving</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ===================================================================
+     TOKEN SYSTEM
+     =================================================================== */
+  :root {
+    --paper:      #fafaf9;
+    --ink:        #1e1b1b;
+    --ink-light:  #5c5856;
+    --green:      #2d5a27;
+    --green-dim:  #e8efe6;
+    --brass:      #b8854f;
+    --brass-dim:  #faf5ef;
+    --navy:       #1b2838;
+    --navy-dim:   #eef1f5;
+    --divider:    #e8e5df;
+    --code-bg:    #f4f2ef;
+    --warn-bg:    #fef9ef;
+    --warn-border:#f0d78c;
+    --radius:     6px;
+    --measure:    680px;   /* max reading width */
+  }
+
+  /* ===================================================================
+     RESET & BASE
+     =================================================================== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 20px;
+    line-height: 1.65;
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===================================================================
+     TYPOGRAPHY
+     =================================================================== */
+  .display {
+    font-family: 'Newsreader', 'Georgia', serif;
+    font-weight: 500;
+    font-size: clamp(45px, 6.25vw, 70px);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+  }
+  .display-sub {
+    font-family: 'Newsreader', 'Georgia', serif;
+    font-weight: 400;
+    font-size: clamp(23px, 3.12vw, 28px);
+    line-height: 1.4;
+    color: var(--ink-light);
+    font-style: italic;
+  }
+  h2 {
+    font-family: 'Newsreader', 'Georgia', serif;
+    font-weight: 500;
+    font-size: 35px;
+    line-height: 1.2;
+    color: var(--green);
+    margin-bottom: 24px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 19px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-light);
+    margin-bottom: 8px;
+  }
+  p { margin-bottom: 16px; }
+  a { color: var(--green); text-decoration: underline; text-underline-offset: 3px; }
+  code {
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 16px;
+    background: var(--code-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: var(--navy);
+  }
+  pre {
+    font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 16px;
+    line-height: 1.5;
+    background: var(--navy);
+    color: #c8d6e5;
+    padding: 20px 24px;
+    border-radius: var(--radius);
+    overflow-x: auto;
+    margin-bottom: 24px;
+  }
+  pre .kw { color: #f0d78c; }
+  pre .str { color: #a3be8c; }
+  pre .num { color: #d08770; }
+  pre .cmt { color: #5c6370; font-style: italic; }
+
+  /* ===================================================================
+     LAYOUT
+     =================================================================== */
+  .container {
+    max-width: var(--measure);
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+  section {
+    padding: 80px 0;
+    border-bottom: 1px solid var(--divider);
+  }
+  section:last-of-type { border-bottom: none; }
+
+  /* ===================================================================
+     HERO
+     =================================================================== */
+  .hero {
+    padding: 100px 0 80px;
+    text-align: center;
+    background: linear-gradient(180deg, var(--paper) 0%, var(--green-dim) 100%);
+    border-bottom: 1px solid var(--divider);
+  }
+  .hero .display { margin-bottom: 16px; }
+  .hero .display-sub { max-width: 540px; margin: 0 auto 20px; }
+  .hero-intro {
+    max-width: 540px;
+    margin: 0 auto 36px;
+    font-size: 19px;
+    color: var(--ink-light);
+    line-height: 1.6;
+  }
+  .hero-intro strong { color: var(--ink); }
+
+  .hero-stats {
+    display: flex;
+    justify-content: center;
+    gap: 48px;
+    flex-wrap: wrap;
+  }
+  .hero-stat {
+    text-align: center;
+  }
+  .hero-stat .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 35px;
+    font-weight: 500;
+    color: var(--green);
+  }
+  .hero-stat .label {
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-light);
+    margin-top: 4px;
+  }
+
+  /* ===================================================================
+     DIAGRAM — Architecture Pipeline
+     =================================================================== */
+  .arch-pipeline {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    padding: 32px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+  }
+  .arch-node {
+    background: var(--navy);
+    color: #c8d6e5;
+    padding: 16px 20px;
+    border-radius: var(--radius);
+    text-align: center;
+    min-width: 260px;
+    max-width: 340px;
+    position: relative;
+  }
+  .arch-node.highlight {
+    background: var(--green);
+    color: #fff;
+    padding: 20px 24px;
+    min-width: 300px;
+  }
+  .arch-node .layer {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+    margin-bottom: 4px;
+  }
+  .arch-node .title {
+    font-size: 19px;
+    font-weight: 500;
+    margin-bottom: 2px;
+  }
+  .arch-node .sub {
+    font-size: 14px;
+    opacity: 0.65;
+  }
+  .arch-pipe {
+    width: 2px;
+    height: 32px;
+    background: var(--brass);
+    position: relative;
+  }
+  .arch-pipe::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 7px solid var(--brass);
+  }
+  .arch-label {
+    font-size: 13px;
+    color: var(--brass);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 4px 0;
+    text-align: center;
+  }
+
+  /* ===================================================================
+     CONCEPT CARD
+     =================================================================== */
+  .concept {
+    margin-bottom: 48px;
+  }
+  .concept:last-child { margin-bottom: 0; }
+
+  .concept-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+  @media (max-width: 700px) {
+    .concept-grid { grid-template-columns: 1fr; }
+    .hero-stats { gap: 24px; }
+    .arch-node { min-width: 220px; }
+    .arch-node.highlight { min-width: 240px; }
+  }
+
+  /* ===================================================================
+     METRIC TABLE
+     =================================================================== */
+  .metric-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 17px;
+    margin-bottom: 24px;
+  }
+  .metric-table th {
+    text-align: left;
+    font-weight: 500;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-light);
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--divider);
+  }
+  .metric-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--divider);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+  }
+  .metric-table td:first-child {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 17px;
+    font-weight: 500;
+  }
+  .metric-table .ok { color: var(--green); }
+  .metric-table .warn { color: var(--brass); }
+
+  .metric-table.glossary td { font-family: 'Inter', system-ui, sans-serif; font-size: 17px; }
+  .metric-table.glossary td:first-child {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--green);
+    white-space: nowrap;
+    padding-right: 16px;
+  }
+
+  /* ===================================================================
+     CALLOUT
+     =================================================================== */
+  .callout {
+    background: var(--brass-dim);
+    border-left: 3px solid var(--brass);
+    padding: 16px 20px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-bottom: 24px;
+  }
+  .callout p { margin-bottom: 0; font-size: 17px; }
+  .callout strong { color: var(--brass); }
+
+  .callout.info {
+    background: var(--green-dim);
+    border-left-color: var(--green);
+  }
+  .callout.info strong { color: var(--green); }
+
+  /* ===================================================================
+     VISUAL — KV Cache slots
+     =================================================================== */
+  .kv-visual {
+    display: flex;
+    gap: 3px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .kv-slot {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    background: var(--divider);
+  }
+  .kv-slot.filled { background: var(--green); }
+  .kv-slot.current {
+    background: var(--brass);
+    animation: kvPulse 1.5s ease-in-out infinite;
+  }
+  @keyframes kvPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ===================================================================
+     BATCHING COMPARISON
+     =================================================================== */
+  .batch-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 600px) {
+    .batch-compare { grid-template-columns: 1fr; }
+  }
+  .batch-box {
+    background: var(--code-bg);
+    border-radius: var(--radius);
+    padding: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    line-height: 1.8;
+    overflow-x: auto;
+  }
+  .batch-box .title {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--ink);
+  }
+  .batch-box .bad {
+    color: #c0392b;
+  }
+  .batch-box .good {
+    color: var(--green);
+  }
+  .batch-box .highlight-row {
+    background: var(--green-dim);
+    display: block;
+    margin: 0 -20px;
+    padding: 2px 20px;
+  }
+
+  /* ===================================================================
+     ROADMAP
+     =================================================================== */
+  .roadmap {
+    list-style: none;
+  }
+  .roadmap li {
+    display: flex;
+    gap: 16px;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--divider);
+    align-items: baseline;
+  }
+  .roadmap li:last-child { border-bottom: none; }
+  .roadmap .week {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    color: var(--brass);
+    min-width: 80px;
+    font-weight: 500;
+  }
+  .roadmap .week.now {
+    color: var(--green);
+    font-weight: 600;
+  }
+  .roadmap .desc { flex: 1; }
+  .tag {
+    font-size: 14px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--green-dim);
+    color: var(--green);
+    white-space: nowrap;
+    vertical-align: 2px;
+  }
+  .tag.future {
+    background: var(--divider);
+    color: var(--ink-light);
+  }
+
+  /* ===================================================================
+     HEADER NAV
+     =================================================================== */
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(250,250,249,0.92);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--divider);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .site-header .logo {
+    font-family: 'Newsreader', serif;
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--green);
+  }
+  .site-header nav {
+    display: flex;
+    gap: 20px;
+  }
+  .site-header nav a {
+    font-size: 16px;
+    color: var(--ink-light);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .site-header nav a:hover { color: var(--ink); }
+
+  /* ===================================================================
+     FOOTER
+     =================================================================== */
+  .site-footer {
+    text-align: center;
+    padding: 40px 24px;
+    font-size: 16px;
+    color: var(--ink-light);
+    border-top: 1px solid var(--divider);
+  }
+
+  /* ===================================================================
+     ANIMATED TOKEN STREAM (signature element)
+     =================================================================== */
+  .token-stream {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 18px 0;
+    overflow: hidden;
+    position: relative;
+    height: 40px;
+  }
+  .token-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: var(--green-dim);
+    color: var(--green);
+    white-space: nowrap;
+    flex-shrink: 0;
+    animation: streamFlow 6s linear infinite;
+  }
+  .token-chip:nth-child(odd) {
+    animation-duration: 7s;
+  }
+  .token-chip:nth-child(3n) {
+    animation-duration: 5s;
+    background: var(--navy-dim);
+    color: var(--navy);
+  }
+  @keyframes streamFlow {
+    0%   { transform: translateX(700px); opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { transform: translateX(-200px); opacity: 0; }
+  }
+
+  /* ===================================================================
+     RESPONSIVE
+     =================================================================== */
+  @media (max-width: 500px) {
+    section { padding: 48px 0; }
+    .hero { padding: 60px 0 48px; }
+    .site-header nav { gap: 10px; }
+    .site-header nav a { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ================================================================== -->
+<!-- HEADER                                                            -->
+<!-- ================================================================== -->
+<header class="site-header">
+  <span class="logo">AI Factory</span>
+  <nav>
+    <a href="#architecture">Kiến trúc</a>
+    <a href="#inference">Inference</a>
+    <a href="#serving">Serving</a>
+    <a href="#benchmark">Benchmark</a>
+    <a href="#roadmap">Lộ trình</a>
+    <a href="#glossary">Từ điển</a>
+  </nav>
+</header>
+
+<!-- ================================================================== -->
+<!-- HERO                                                              -->
+<!-- ================================================================== -->
+<section class="hero">
+  <div class="container">
+    <h1 class="display">Cách một LLM server<br>thực sự hoạt động</h1>
+    <p class="display-sub">Từ token hóa đến continuous batching — kiến trúc serving đằng sau Claude Code &amp; ChatGPT</p>
+
+    <p class="hero-intro">AI Factory là một server mô phỏng kiến trúc serving của Claude Code &amp; ChatGPT, do chính bạn xây dựng bằng <strong>Go + Python</strong> trên GPU RTX 3060. Trang này đi qua từng khái niệm nền tảng — token, attention, KV cache, batching, agentic loop — kèm con số benchmark thực tế, để người mới hiểu rõ "chuyện gì đang xảy ra" trong cả hệ thống.</p>
+
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <div class="value">7B</div>
+        <div class="label">Parameters</div>
+      </div>
+      <div class="hero-stat">
+        <div class="value">0.057 MB</div>
+        <div class="label">KV Cache / Token</div>
+      </div>
+      <div class="hero-stat">
+        <div class="value">~60 ms</div>
+        <div class="label">TTFT (token đầu)</div>
+      </div>
+      <div class="hero-stat">
+        <div class="value">5.6 GB</div>
+        <div class="label">VRAM (nén 4-bit)</div>
+      </div>
+      <div class="hero-stat">
+        <div class="value">32K</div>
+        <div class="label">Max Context</div>
+      </div>
+    </div>
+
+    <!-- Live token stream -->
+    <div class="token-stream" aria-hidden="true">
+      <span class="token-chip">Xin</span>
+      <span class="token-chip">chào</span>
+      <span class="token-chip">bạn</span>
+      <span class="token-chip">là</span>
+      <span class="token-chip">một</span>
+      <span class="token-chip">trợ</span>
+      <span class="token-chip">lý</span>
+      <span class="token-chip">AI</span>
+      <span class="token-chip">hữu</span>
+      <span class="token-chip">ích</span>
+      <span class="token-chip">được</span>
+      <span class="token-chip">xây</span>
+      <span class="token-chip">dựng</span>
+      <span class="token-chip">bởi</span>
+      <span class="token-chip">AI</span>
+      <span class="token-chip">Factory</span>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- ARCHITECTURE                                                       -->
+<!-- ================================================================== -->
+<section id="architecture">
+  <div class="container">
+    <h2>1. Kiến trúc 3 tầng</h2>
+    <p>Ba tầng phần mềm (không tính client): <strong>Go Server</strong> điều phối, <strong>gRPC Bridge</strong> nối kết hai bên, <strong>Python Worker</strong> chạy model trên GPU. Mọi phần sau đây đều quay về diagram này.</p>
+
+    <div class="arch-pipeline">
+      <div class="arch-node">
+        <div class="layer">Client</div>
+        <div class="title">Browser / CLI</div>
+        <div class="sub">HTTP Request với SSE</div>
+      </div>
+      <div class="arch-label">SSE · JSON · HTTP/1.1</div>
+      <div class="arch-pipe"></div>
+      <div class="arch-node highlight">
+        <div class="layer">Tầng C — Go Server</div>
+        <div class="title">API + Agentic Loop + Batch Scheduler</div>
+        <div class="sub">Dual protocol · Session mgmt · Tool exec</div>
+      </div>
+      <div class="arch-label">gRPC: Generate() + BatchGenerate()</div>
+      <div class="arch-pipe"></div>
+      <div class="arch-node">
+        <div class="layer">Tầng B — gRPC Bridge</div>
+        <div class="title">2 Services: Single + Batch</div>
+        <div class="sub">inference.proto · Cancel propagation · Route per request_id</div>
+      </div>
+      <div class="arch-label">Python asyncio · gRPC Stream</div>
+      <div class="arch-pipe"></div>
+      <div class="arch-node">
+        <div class="layer">Tầng A — Python Worker</div>
+        <div class="title">InferenceEngine + BatchEngine</div>
+        <div class="sub">Qwen 2.5 Coder 7B · 4-bit · RTX 3060</div>
+      </div>
+    </div>
+
+    <div class="concept-grid">
+      <div>
+        <h3>Client: Browser / CLI</h3>
+        <p>Nơi bạn gõ câu hỏi. Gửi HTTP request và nhận kết quả <strong>streaming qua SSE</strong> — từng token hiện ra ngay khi model sinh. Không phải tầng phần mềm của server, nhưng là điểm đầu và cuối của mọi request.</p>
+      </div>
+      <div>
+        <h3>Tầng C: Go Server</h3>
+        <p><strong>API server</strong> — dual endpoint Anthropic <code>/v1/messages</code> + OpenAI <code>/v1/chat/completions</code>, internal canonical format + thin adapter, streaming qua SSE, multi-user session trong RAM.</p>
+        <p><strong>Agentic loop</strong> — khi model trả <code>tool_use</code>, Go execute tool → gửi <code>tool_result</code> lại model → lặp tối đa 10 vòng cho tới <code>end_turn</code>. Mỗi inference call đi qua <code>BatchScheduler.Submit()</code> để được gom batch.</p>
+      </div>
+      <div>
+        <h3>Tầng B: gRPC Bridge</h3>
+        <p>Proto định nghĩa <code>InferenceService.Generate()</code> (single, token streaming) và <code>BatchInferenceService.BatchGenerate()</code> (batch, mỗi event kèm <code>request_id</code> để route). Cancel propagation qua context — batch mode hỗ trợ cancel từng request riêng.</p>
+      </div>
+      <div>
+        <h3>Tầng A: Inference Engine</h3>
+        <p>Python worker chạy trên GPU (RTX 3060 12GB). Hai chế độ: <code>InferenceEngine.generate()</code> cho single request với token-level streaming, và <code>BatchEngine.generate_batch()</code> cho batch requests với <code>model.generate()</code> padded inputs — xử lý nhiều request trong 1 GPU pass.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- INFERENCE DEEP DIVE                                                -->
+<!-- ================================================================== -->
+<section id="inference">
+  <div class="container">
+    <h2>2. Inference: Từ text đến token</h2>
+
+    <!-- Tokenization -->
+    <div class="concept">
+      <h3>2.1 Tokenization & Embedding</h3>
+      <div class="concept-grid">
+        <div>
+          <p>Mỗi văn bản được cắt thành <strong>tokens</strong> — đơn vị nhỏ nhất model hiểu được. Một token ~ 0.75 từ tiếng Anh, ~ 0.5 từ tiếng Việt.</p>
+          <p>Tokenizer dùng thuật toán <strong>BPE</strong> (Byte-Pair Encoding): bắt đầu từ các ký tự đơn, lặp đi lặp lại gộp cặp phổ biến nhất. Kết quả: từ điển ~150K tokens.</p>
+        </div>
+        <div class="batch-box">
+          <div class="title">Ví dụ tokenization</div>
+"Xin chào, tôi là AI"<br>
+ → ["Xin", " ch", "ào", ",", " t", "ôi", " là", " AI"]<br>
+ → [12481, 891, 3721, 11, 421, 2083, 671, 9984]<br>
+ → Mỗi số → embedding vector 2048 chiều<br>
+ <span style="color:var(--ink-light)">// Embedding = số hóa ý nghĩa: hai token giống nghĩa có vector gần nhau</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Attention -->
+    <div class="concept">
+      <h3>2.2 Attention — cách model "đọc" context</h3>
+      <p>Mỗi token mới sinh ra cần <strong>nhìn lại toàn bộ các token trước đó</strong> để hiểu ngữ cảnh. Cơ chế: mỗi token tính <strong>Query (Q)</strong> của chính nó, so khớp với <strong>Key (K)</strong> của tất cả token cũ để tìm ra token nào liên quan, rồi tổng hợp <strong>Value (V)</strong> của chúng.</p>
+
+      <pre><span class="cmt">// Attention cho 1 head, 1 token mới</span>
+<span class="kw">for</span> mỗi token cũ i trong lịch sử:
+    score[i] = Q_mới · K_i / √d    <span class="cmt">// dot-product similarity</span>
+weights = softmax(scores)          <span class="cmt">// chuẩn hóa → tổng = 1</span>
+output = Σ(weights[i] × V_i)       <span class="cmt">// tổng có trọng số</span></pre>
+
+      <div class="callout info">
+        <p><strong>GQA (Grouped Query Attention):</strong> Qwen 2.5 Coder dùng 28 query heads nhưng chỉ 4 KV heads. Mỗi 7 Q-heads share chung 1 cặp (K,V). → KV cache <strong>nhẹ hơn 7×</strong> so với multi-head attention truyền thống.</p>
+      </div>
+    </div>
+
+    <!-- KV Cache -->
+    <div class="concept">
+      <h3>2.3 KV Cache — linh hồn của serving</h3>
+      <p>Mỗi lần sinh token, model không thể tính lại attention từ đầu (quá chậm, O(n²) mỗi step). Thay vào đó, <strong>K và V của mỗi token cũ được lưu lại</strong> trong VRAM. Token mới chỉ cần tính (K,V) của chính nó rồi nối vào cache.</p>
+
+      <pre><span class="cmt">// Không có KV cache: O(n²) mỗi step</span>
+Step 1: tính attention(1 token)         → 1² ops
+Step 2: tính attention(2 tokens)        → 2² ops
+...
+Step N: tính attention(N tokens)        → N² ops
+<span class="cmt">// Tổng: 1² + 2² + ... + N² ≈ N³/3</span>
+
+<span class="cmt">// Có KV cache: O(n) mỗi step</span>
+Step 1: tính (K₁,V₁), cache lại         → 1 op
+Step 2: tính (K₂,V₂), attention vs K₁,V₁ → 2 ops
+...
+Step N: tính (Kₙ,Vₙ), attention vs cache → N ops
+<span class="cmt">// Tổng: 1 + 2 + ... + N ≈ N²/2   ← Nhanh hơn N lần!</span></pre>
+
+      <div class="metric-table-wrapper">
+        <table class="metric-table">
+          <thead>
+            <tr><th>Tham số</th><th>Giá trị</th><th>Giải thích</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Layers</td><td>28</td><td>Mỗi layer có KV cache riêng</td></tr>
+            <tr><td>KV heads</td><td>4 (GQA 28:4)</td><td>Giảm 7× so với MHA</td></tr>
+            <tr><td>Head dim</td><td>128</td><td>Kích thước mỗi head</td></tr>
+            <tr><td>Byte per element</td><td>2 (bfloat16)</td><td>FP16 / BF16 precision</td></tr>
+            <tr><td><strong>KV / token</strong></td><td><strong>57,344 bytes = 0.057 MB</strong></td><td>28 × 4 × 2 × 128 × 2</td></tr>
+            <tr><td><strong>KV @ 8K context</strong></td><td><strong>470 MB</strong></td><td>Chỉ 3.8% VRAM</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="kv-visual" title="Mỗi ô = 1 token trong KV cache. Xanh = đã cache, Vàng = token hiện tại đang tính">
+        <span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot filled"></span><span class="kv-slot current"></span>
+        <span style="font-size: 14px;margin-left:8px;color:var(--ink-light)">← token cũ (đã cache) &nbsp; | &nbsp; token mới (đang tính)</span>
+      </div>
+
+      <div class="callout">
+        <p><strong>Trên production (H100):</strong> KV cache là bottleneck chính. Model 100B+ với 128K context có thể cần 50-100GB chỉ cho KV cache. vLLM giải quyết bằng <strong>PagedAttention</strong> — quản lý KV cache theo block giống như OS quản lý virtual memory pages.</p>
+      </div>
+    </div>
+
+    <!-- Prefill vs Decode -->
+    <div class="concept">
+      <h3>2.4 Prefill vs Decode — hai pha của inference</h3>
+      <div class="batch-compare">
+        <div class="batch-box">
+          <div class="title">Pha 1: PREFILL (1 lần)</div>
+          Xử lý toàn bộ prompt tokens <strong>cùng lúc</strong><br>
+          → tính K,V cho từng prompt token<br>
+          → lưu vào KV cache<br>
+          → sinh token đầu tiên<br>
+          <br>
+          <span class="good">Compute-bound (tận dụng GPU)</span><br>
+          <span class="good">O(n²) nhưng chạy 1 lần</span>
+        </div>
+        <div class="batch-box">
+          <div class="title">Pha 2: DECODE (lặp N lần)</div>
+          Mỗi bước sinh <strong>1 token mới</strong><br>
+          → tính (K,V) cho token mới<br>
+          → attention với toàn bộ KV cache<br>
+          → nối vào cache<br>
+          <br>
+          <span class="bad">Memory-bound (đọc KV cache)</span><br>
+          <span class="bad">O(n) mỗi step, lặp N lần → O(N²)</span>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <p><strong>Ý nghĩa cho serving:</strong> Với prompt ngắn (chat), prefill rất nhanh (~60ms). Thời gian chủ yếu là decode (~60ms × N tokens). Với prompt dài (RAG với context 32K trang), prefill có thể chiếm 1-3 giây. Đây là lý do <strong>prefix caching</strong> quan trọng: cache K,V của system prompt để không phải prefill lại mỗi request.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- SERVING                                                            -->
+<!-- ================================================================== -->
+<section id="serving">
+  <div class="container">
+    <h2>3. Serving: Từ 1 request đến hàng nghìn</h2>
+
+    <!-- Streaming -->
+    <div class="concept">
+      <h3>3.1 Streaming — token-level real-time</h3>
+      <p>Thay vì đợi model sinh xong toàn bộ response rồi mới gửi về (có thể mất 20-30 giây), server gửi <strong>từng token một</strong> ngay khi nó được sinh ra.</p>
+
+      <pre><span class="cmt">// Chain streaming trong AI Factory</span>
+GPU sinh token → <span class="kw">yield</span> token
+    ↓
+Python gRPC <span class="kw">stream</span>.send(token)    <span class="cmt">// server-streaming</span>
+    ↓
+Go <span class="kw">for</span> event := <span class="kw">range</span> stream.Recv()
+    ↓
+SSE: <span class="str">"data: {\"delta\":{\"text\":\"Xin\"}}\n\n"</span>
+    ↓
+Browser EventSource / fetch reader
+    ↓
+<span class="cmt">// Token hiện ra từng chữ một trên màn hình</span></pre>
+
+      <div class="concept-grid">
+        <div>
+          <p><strong>gRPC server-streaming</strong> (Python → Go) cho phép Go cancel giữa chừng bằng cách hủy context. Python phát hiện <code>context.cancelled()</code> → dừng inference → giải phóng KV cache.</p>
+        </div>
+        <div>
+          <p><strong>SSE</strong> (Go → Browser) là HTTP protocol đơn giản nhất cho streaming. Mỗi token là 1 event. Kết thúc bằng <code>data: [DONE]</code>. Không cần WebSocket vì stream là 1 chiều.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Continuous Batching -->
+    <div class="concept">
+      <h3>3.2 Batching — gom nhiều request vào một GPU pass <span class="tag">Đã implement</span></h3>
+      <p>Bài toán: GPU mạnh nhất khi xử lý nhiều request cùng lúc (batch). Nhưng các request đến <strong>không cùng thời điểm</strong> và có <strong>độ dài khác nhau</strong>. Làm sao để không request nào phải đợi?</p>
+
+      <div class="batch-compare">
+        <div class="batch-box">
+          <div class="title">Trước: Inference Queue <span class="bad">(serial)</span></div>
+          Mỗi request chạy tuần tự, chờ slot<br>
+          <span class="highlight-row">A: ████████ 2.0s</span>
+          B: ----████████ 4.0s<br>
+          C: --------████████ 6.0s<br>
+          <br>
+          <span class="bad">B,C phải đợi (lãng phí 50-66% thời gian)</span><br>
+          <span class="bad">GPU idle giữa các request</span>
+        </div>
+        <div class="batch-box">
+          <div class="title">Sau: Batch Scheduler <span class="good">(implemented)</span></div>
+          Gom request trong cửa sổ 100ms<br>
+          <span class="highlight-row">Batch [A,B,C]: ████████ 1.8s</span>
+          A: ████████ 1.79s<br>
+          B: ████████ 1.80s (+0%)<br>
+          C: ████████ 1.79s (+0%)<br>
+          <br>
+          <span class="good">3 requests cùng 1 GPU pass</span><br>
+          <span class="good">Latency giảm 3.9× cho request cuối</span>
+        </div>
+      </div>
+
+      <pre><span class="cmt">// Batch Scheduler — Go implementation</span>
+<span class="kw">type</span> BatchScheduler {
+    submitCh     <span class="kw">chan</span> *batchItem       <span class="cmt">// nhận request từ handler</span>
+    maxBatchSize <span class="num">4</span>                   <span class="cmt">// giới hạn bởi VRAM</span>
+    batchWindow  <span class="num">100ms</span>               <span class="cmt">// cửa sổ gom request</span>
+}
+
+<span class="cmt">// collectorLoop — heart của scheduler</span>
+<span class="kw">for</span> {
+    first := <-submitCh               <span class="cmt">// block đợi request đầu tiên</span>
+    batch := []{first}
+
+<span class="kw">collect</span>:
+    <span class="kw">for</span> len(batch) < maxBatchSize {
+        <span class="kw">select</span> {
+        <span class="kw">case</span> req := <-submitCh:       <span class="cmt">// gom thêm trong 100ms</span>
+            batch = append(batch, req)
+        <span class="kw">case</span> <-timer.C:              <span class="cmt">// hết giờ → dispatch</span>
+            <span class="kw">break</span> collect              <span class="cmt">// thoát vòng gom, dispatch ngay</span>
+        }
+    }
+
+    <span class="kw">go</span> dispatchBatch(batch)          <span class="cmt">// gửi qua gRPC BatchGenerate</span>
+}</pre>
+
+      <div class="concept-grid">
+        <div>
+          <p><strong>Go BatchScheduler:</strong> Gom request 100ms → dispatch 1 gRPC BatchGenerate → Python BatchEngine <code>model.generate(batch=[A,B,C])</code> với padding (thêm token rỗng vào câu ngắn cho cùng độ dài) + attention mask (báo model token nào là thật để không tính token rỗng) → decode từng token riêng → stream kèm <code>request_id</code> → route về đúng channel.</p>
+        </div>
+        <div>
+          <p><strong>Hiện tại: Static Batch.</strong> Batch cố định sau khi dispatch — không thêm/bớt request giữa các decode step. <strong>Tuần 7-8</strong> sẽ nâng cấp lên <strong>dynamic continuous batching</strong>: tự quản lý KV cache per-request, thêm request mới sau prefill, bỏ request đã sinh token kết thúc (EOS — end-of-sequence) hoặc hết max_tokens giữa các step.</p>
+        </div>
+      </div>
+
+      <div class="callout">
+        <p><strong>Kết quả benchmark:</strong> batch=4 (4 requests cùng lúc) đạt 66 tok/s — gấp ~3.9× so với chạy single (~17 tok/s). GPU xử lý nhiều request trong cùng một forward pass thay vì từng cái riêng lẻ.</p>
+      </div>
+    </div>
+
+    <!-- Agentic Loop -->
+    <div class="concept">
+      <h3>3.3 Agentic Loop — khi model tự gọi công cụ</h3>
+      <p>Điểm khác biệt giữa "chatbot" và "AI agent": model không chỉ trả lời, mà còn <strong>tự quyết định gọi tool</strong> (đọc file, chạy lệnh, tìm kiếm) rồi dùng kết quả để trả lời chính xác hơn.</p>
+
+      <pre><span class="cmt">// Agentic loop — simplified</span>
+<span class="kw">func</span> AgenticLoop(session, userMessage):
+    session.Add(userMessage)
+
+    <span class="kw">for</span> iteration := <span class="num">0</span>; iteration < <span class="num">10</span>; iteration++:
+        events = inference.Generate(session.Messages)
+
+        <span class="kw">for</span> event := <span class="kw">range</span> events:
+            <span class="kw">if</span> event.Type == <span class="str">"token"</span>:
+                streamToClient(event.Token)        <span class="cmt">// real-time</span>
+            <span class="kw">else if</span> event.Type == <span class="str">"tool_use"</span>:
+                result = executeTool(event.Name, event.Args)
+                session.Add(ToolResult{result})
+                <span class="kw">break</span>                            <span class="cmt">// loop lại → model xử lý kết quả</span>
+            <span class="kw">else if</span> event.Type == <span class="str">"end_turn"</span>:
+                <span class="kw">return</span>                            <span class="cmt">// done</span></pre>
+
+      <div class="callout info">
+        <p><strong>Anthropic vs OpenAI tool format:</strong> Claude dùng <code>tool_use</code> content block với <code>input: {}</code> JSON object. OpenAI dùng <code>tool_calls</code> array với <code>function.arguments</code> JSON string. AI Factory dùng internal canonical format — adapter chuyển cả hai về chung một kiểu.</p>
+      </div>
+    </div>
+
+    <!-- Context Management -->
+    <div class="concept">
+      <h3>3.4 Context Window Management</h3>
+      <p>Context window có giới hạn (8K tokens trong project này). Khi vượt quá, phải cắt bớt tin nhắn cũ — nhưng <strong>không được cắt giữa cặp tool_use/tool_result</strong>.</p>
+
+      <pre><span class="cmt">// Truncation algorithm — Go session manager</span>
+<span class="kw">func</span> TruncateMessages(msgs, maxTokens):
+    <span class="cmt">// 1. Đếm token từ cuối lên, tìm điểm cắt</span>
+    keepFrom = len(msgs)
+    <span class="kw">for</span> i := len(msgs)-<span class="num">1</span>; i >= <span class="num">0</span>; i--:
+        <span class="kw">if</span> estimated + msgTokens[i] > maxTokens:
+            keepFrom = i+<span class="num">1</span>; <span class="kw">break</span>
+        estimated += msgTokens[i]
+
+    <span class="cmt">// 2. Bảo vệ tool_use/tool_result pairs</span>
+    <span class="kw">if</span> msgs[keepFrom].Role == <span class="str">"tool"</span>:
+        <span class="cmt">// Tìm tool_use tương ứng, giữ lại cả cặp</span>
+        keepFrom = findMatchingToolUse(msgs, msgs[keepFrom])
+
+    <span class="cmt">// 3. Bỏ tool_use mồ côi ở cuối</span>
+    <span class="kw">if</span> lastMsg có tool_call nhưng không có tool_result:
+        remove(lastMsg)
+
+    <span class="kw">return</span> msgs[keepFrom:]</pre>
+    </div>
+
+    <!-- Cancel Propagation -->
+    <div class="concept">
+      <h3>3.5 Cancel Propagation — dừng inference từ xa</h3>
+      <p>Khi user đóng tab browser, inference vẫn đang chạy trên GPU — lãng phí compute và VRAM. Cancel propagation đảm bảo tín hiệu hủy được truyền xuyên suốt chain.</p>
+
+      <pre>Client disconnect
+    ↓ <span class="cmt">r.Context().Done()</span>
+Go context.Cancel()
+    ↓ <span class="cmt">ctx.Done() trong agentic loop</span>
+gRPC stream bị cancel
+    ↓ <span class="cmt">context.cancelled() trong Python</span>
+Python <span class="kw">cancel_event</span>.set()
+    ↓ <span class="cmt">engine.generate() check cancel_event</span>
+Dừng generation, yield STOP_CANCELLED
+    ↓
+Giải phóng KV cache</pre>
+
+      <div class="callout info">
+        <p><strong>Trong production:</strong> Đây là tính năng bắt buộc. Không có cancel propagation = GPU lãng phí hàng nghìn giờ mỗi ngày cho các request bị abandon. vLLM/TensorRT-LLM đều có built-in abort mechanism.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- BENCHMARK                                                          -->
+<!-- ================================================================== -->
+<section id="benchmark">
+  <div class="container">
+    <h2>4. Benchmark — con số thực tế</h2>
+    <p>Chạy trên <strong>RTX 3060 12GB</strong>, model <strong>Qwen 2.5 Coder 7B (4-bit NF4)</strong>.</p>
+
+    <table class="metric-table">
+      <thead>
+        <tr><th>Metric</th><th>AI Factory (RTX 3060)</th><th>Production (H100)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>TTFT (Time to First Token)</td>
+          <td class="ok">59–66 ms ✅</td>
+          <td>&lt;100 ms</td>
+        </tr>
+        <tr>
+          <td>TPOT (Time Per Output Token)</td>
+          <td class="warn">~60 ms ❌</td>
+          <td>&lt;10 ms</td>
+        </tr>
+        <tr>
+          <td>Throughput (single)</td>
+          <td class="warn">16–17 tok/s</td>
+          <td>100+ tok/s</td>
+        </tr>
+        <tr>
+          <td>Throughput (batch=4)</td>
+          <td>66 tok/s (3.9×)</td>
+          <td>1000+ tok/s</td>
+        </tr>
+        <tr>
+          <td>Model VRAM</td>
+          <td>5.6 GB (4-bit)</td>
+          <td>200+ GB (multi-GPU, FP8)</td>
+        </tr>
+        <tr>
+          <td>KV Cache / 1K tokens</td>
+          <td>0.057 GB</td>
+          <td>~1-3 GB</td>
+        </tr>
+        <tr>
+          <td>Max Context</td>
+          <td>32K (model) · 110K (theo VRAM)</td>
+          <td>128K–1M</td>
+        </tr>
+        <tr>
+          <td>Batching</td>
+          <td class="warn">Static</td>
+          <td>Continuous</td>
+        </tr>
+        <tr>
+          <td>Quantization</td>
+          <td>4-bit NF4 (NormalFloat4)</td>
+          <td>FP8 (H100 native)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <p><strong>Bottleneck chính: TPOT ~60ms.</strong> RTX 3060 có memory bandwidth ~360 GB/s, trong khi H100 có ~3.35 TB/s — gấp gần 10×. Decode phase là memory-bound (đọc KV cache), nên bandwidth quyết định tốc độ token/s. Đây là giới hạn phần cứng, không phải lỗi thiết kế.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- ROADMAP                                                            -->
+<!-- ================================================================== -->
+<section id="roadmap">
+  <div class="container">
+    <h2>5. Lộ trình học tập</h2>
+    <p>Mỗi giai đoạn thay thế một module dùng sẵn bằng code tự viết — "dùng trước, thay sau".</p>
+
+    <ul class="roadmap">
+      <li>
+        <span class="week now">Tuần 1–2</span>
+        <span class="desc">Dùng toàn bộ HuggingFace. Focus: proto → gRPC → Go server → model chạy end-to-end. Dual protocol Anthropic + OpenAI, SSE streaming, multi-turn agentic loop.</span>
+        <span class="tag">Done</span>
+      </li>
+      <li>
+        <span class="week now">Tuần 1–2</span>
+        <span class="desc">Batching (static): BatchScheduler + BatchEngine + BatchInferenceService gRPC. Gom request 100ms, dispatch batch, route token per request_id.</span>
+        <span class="tag">Done</span>
+      </li>
+      <li>
+        <span class="week">Tuần 3–4</span>
+        <span class="desc">Tự implement tokenizer: BPE encode/decode từ <code>tokenizer.json</code>. Hiểu special tokens, chat template.</span>
+        <span class="tag">Inference</span>
+      </li>
+      <li>
+        <span class="week">Tuần 5–6</span>
+        <span class="desc">Tự implement sampling: greedy, temperature, top-p, top-k, beam search. Thay thế <code>model.generate()</code>.</span>
+        <span class="tag">Inference</span>
+      </li>
+      <li>
+        <span class="week">Tuần 7–8</span>
+        <span class="desc">Tự quản lý KV cache + dynamic continuous batching: thêm/bớt request giữa các decode step. Hiểu memory layout, PagedAttention cơ bản. Bước quan trọng nhất để hiểu vLLM.</span>
+        <span class="tag">Serving</span>
+      </li>
+      <li>
+        <span class="week">Tuần 9+</span>
+        <span class="desc">Optional: Tự viết forward pass (embed → attention → FFN — feed-forward network — → unembed — chọn token kế tiếp). Thay toàn bộ <code>model.forward()</code>.</span>
+        <span class="tag future">Optional</span>
+      </li>
+      <li>
+        <span class="week">Sau đó</span>
+        <span class="desc">Prefix caching: cache K,V của system prompt. Giảm TTFT 90% cho multi-turn conversations.</span>
+        <span class="tag future">Advanced</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- GLOSSARY                                                           -->
+<!-- ================================================================== -->
+<section id="glossary">
+  <div class="container">
+    <h2>6. Từ điển nhanh</h2>
+    <p>Tra cứu nhanh các thuật ngữ gặp ở trên — nếu thấy thuật ngữ lạ ở bất kỳ mục nào, quay lại bảng này.</p>
+
+    <table class="metric-table glossary">
+      <thead>
+        <tr><th>Thuật ngữ</th><th>Nghĩa đơn giản</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Token</td><td>Đơn vị nhỏ nhất model hiểu được (~0.75 từ tiếng Anh, ~0.5 từ tiếng Việt). Model sinh câu trả lời từng token một.</td></tr>
+        <tr><td>Embedding</td><td>Vector số biểu diễn ý nghĩa của token — hai token giống nghĩa có vector gần nhau.</td></tr>
+        <tr><td>Quantization 4-bit</td><td>Nén trọng số model xuống 4 bit để giảm VRAM (12GB → 2.1GB), đánh đổi một chút độ chính xác.</td></tr>
+        <tr><td>KV Cache</td><td>Bộ nhớ lưu Key/Value của các token cũ để không phải tính lại attention — xem mục 2.3.</td></tr>
+        <tr><td>Prefill</td><td>Pha 1 của inference: xử lý toàn bộ prompt cùng lúc, tính KV cache, sinh token đầu tiên.</td></tr>
+        <tr><td>Decode</td><td>Pha 2: sinh từng token một, đọc KV cache — thường là điểm nghẽn.</td></tr>
+        <tr><td>TTFT</td><td>Time to First Token — thời gian từ gửi request đến khi nhận token đầu tiên.</td></tr>
+        <tr><td>TPOT</td><td>Time Per Output Token — thời gian trung bình cho mỗi token sinh ra.</td></tr>
+        <tr><td>Batching</td><td>Gom nhiều request vào cùng một GPU pass để tận dụng tối đa GPU.</td></tr>
+        <tr><td>Padding / attention mask</td><td>Padding thêm token rỗng vào câu ngắn cho cùng độ dài; attention mask báo model token nào là thật để không tính token rỗng.</td></tr>
+        <tr><td>EOS</td><td>End-of-sequence — token đánh dấu hết câu trả lời.</td></tr>
+        <tr><td>SSE</td><td>Server-Sent Events — HTTP protocol cho server đẩy từng sự kiện (token) một chiều về browser.</td></tr>
+        <tr><td>gRPC</td><td>Framework gọi hàm giữa các service (ở đây Go ↔ Python), hỗ trợ streaming hai chiều.</td></tr>
+        <tr><td>FFN</td><td>Feed-forward network — lớp mạng trong mỗi transformer block, xử lý từng token độc lập sau attention.</td></tr>
+        <tr><td>Unembed</td><td>Bước cuối: biến vector thành xác suất trên từng token trong từ điển để chọn token kế tiếp.</td></tr>
+        <tr><td>NF4</td><td>NormalFloat4 — định dạng quantization 4-bit, cách map giá trị để giữ độ chính xác tốt nhất.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================================================================== -->
+<!-- FOOTER                                                             -->
+<!-- ================================================================== -->
+<footer class="site-footer">
+  <div class="container">
+    AI Factory · Go + Python + HuggingFace · RTX 3060 12GB<br>
+    Mô phỏng kiến trúc serving của Claude Code & ChatGPT cho mục đích học tập
+  </div>
+</footer>
+
+</body>
+</html>

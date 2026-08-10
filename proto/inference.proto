@@ -1,0 +1,151 @@
+syntax = "proto3";
+
+package inference;
+
+option go_package = "go-server/internal/inference/pb";
+
+// InferenceService — Python worker exposes this.
+// Go server calls Generate() to start inference, receives a stream of tokens.
+service InferenceService {
+  // Generate tokens from messages. Server-streaming: Python gửi từng token về Go.
+  rpc Generate(GenerateRequest) returns (stream GenerateResponse);
+}
+
+// GenerateRequest — gửi từ Go xuống Python worker.
+message GenerateRequest {
+  // Unique request ID for tracing/cancellation.
+  string request_id = 1;
+  // Session ID để Python log / debug (không dùng cho context management).
+  string session_id = 2;
+  // Messages đã được Go format sẵn theo internal canonical format.
+  // Python chỉ cần tokenize và chạy inference, không cần biết protocol gốc.
+  repeated Message messages = 3;
+  // Optional system prompt.
+  string system_prompt = 4;
+  // Sampling parameters.
+  SamplingParams sampling_params = 5;
+  // Tool definitions available for this request (JSON schema format).
+  repeated ToolDefinition tools = 6;
+}
+
+// Message — internal canonical format, Go đã convert từ Anthropic/OpenAI.
+message Message {
+  string role = 1;         // "user" | "assistant" | "system"
+  string content = 2;      // plain text content (tool results được inline vào đây)
+  // Tool calls made by the assistant in this message (cho multi-turn history).
+  repeated ToolCall tool_calls = 3;
+  // If this is a tool result message.
+  string tool_call_id = 4;
+  string tool_result = 5;
+  bool is_error = 6;
+}
+
+// ToolCall — một tool call từ assistant.
+message ToolCall {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;  // JSON string
+}
+
+// ToolDefinition — định nghĩa một tool có sẵn.
+message ToolDefinition {
+  string name = 1;
+  string description = 2;
+  string parameters = 3;  // JSON Schema string
+}
+
+// SamplingParams — tham số điều khiển quá trình sinh token.
+message SamplingParams {
+  int32 max_tokens = 1;       // default: 1024
+  float temperature = 2;      // default: 0.7
+  float top_p = 3;            // default: 0.9
+  int32 top_k = 4;            // default: 50
+  repeated string stop_sequences = 5;
+}
+
+// GenerateResponse — từng event Python gửi ngược lên Go.
+message GenerateResponse {
+  // Event type determines which field is populated.
+  GenerateEventType event_type = 1;
+
+  // Token event — một token text được sinh ra.
+  string token = 2;
+
+  // Tool use event — model muốn gọi một tool.
+  ToolUse tool_use = 3;
+
+  // Final event — gửi khi inference kết thúc.
+  StopReason stop_reason = 4;
+  string finish_reason = 5;  // "stop" | "length" | "tool_use" | "cancelled"
+
+  // Thống kê (gửi kèm final event hoặc event riêng).
+  Usage usage = 6;
+}
+
+enum GenerateEventType {
+  EVENT_UNSPECIFIED = 0;
+  EVENT_TOKEN = 1;
+  EVENT_TOOL_USE = 2;
+  EVENT_FINAL = 3;
+}
+
+// ToolUse — model yêu cầu gọi tool.
+message ToolUse {
+  string id = 1;
+  string name = 2;
+  string arguments = 3;  // JSON string
+}
+
+enum StopReason {
+  STOP_UNSPECIFIED = 0;
+  STOP_END_TURN = 1;     // Model tự kết thúc lượt
+  STOP_MAX_TOKENS = 2;   // Đạt giới hạn max_tokens
+  STOP_TOOL_USE = 3;     // Model muốn gọi tool
+  STOP_CANCELLED = 4;    // Bị cancel từ client
+  STOP_ERROR = 5;        // Lỗi inference
+}
+
+// Usage — token count statistics.
+message Usage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+// ============================================================================
+// Batch Inference — Continuous Batching support
+// ============================================================================
+
+// BatchInferenceService — Go server gửi batch requests, Python xử lý và stream
+// kết quả về cho từng request qua request_id.
+service BatchInferenceService {
+  // BatchGenerate nhận nhiều requests trong một lần, chạy model.generate()
+  // với batched inputs (padding + attention mask), stream kết quả về.
+  rpc BatchGenerate(BatchGenerateRequest) returns (stream BatchGenerateResponse);
+}
+
+// BatchGenerateRequest — gửi batch requests xuống Python.
+message BatchGenerateRequest {
+  // Batch ID để trace.
+  string batch_id = 1;
+  // Các requests trong batch.
+  repeated GenerateRequest requests = 2;
+}
+
+// BatchGenerateResponse — stream event cho từng request trong batch.
+// Mỗi response có request_id để Go scheduler route về đúng client.
+message BatchGenerateResponse {
+  // Request ID — để route event về đúng client channel.
+  string request_id = 1;
+  // Event type.
+  GenerateEventType event_type = 2;
+  // Token (cho EVENT_TOKEN).
+  string token = 3;
+  // Tool use (cho EVENT_TOOL_USE).
+  ToolUse tool_use = 4;
+  // Stop reason (cho EVENT_FINAL).
+  StopReason stop_reason = 5;
+  string finish_reason = 6;
+  // Usage stats (cho EVENT_FINAL).
+  Usage usage = 7;
+}
