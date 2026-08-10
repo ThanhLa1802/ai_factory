@@ -20,8 +20,7 @@ except ImportError:
     print("[server] Proto stubs not found. Run: python -m worker.generate_proto")
     sys.exit(1)
 
-from .engine import get_engine, InferenceEngine
-from .batch_engine import BatchEngine
+# Servicers nhận EngineBackend (worker.engines) thay vì trực tiếp engine.
 
 # ---------------------------------------------------------------------------
 # gRPC Service Implementation
@@ -33,8 +32,8 @@ DEFAULT_PORT = 50051
 class InferenceServicer(inference_pb2_grpc.InferenceServiceServicer):
     """Implements the InferenceService gRPC service."""
 
-    def __init__(self, engine: InferenceEngine):
-        self.engine = engine
+    def __init__(self, backend):
+        self.backend = backend
 
     async def Generate(self, request: inference_pb2.GenerateRequest, context: grpc.aio.ServicerContext):
         """Handle Generate RPC — server-streaming tokens back to Go."""
@@ -77,7 +76,7 @@ class InferenceServicer(inference_pb2_grpc.InferenceServiceServicer):
 
         try:
             # Stream tokens
-            async for event in self.engine.generate(
+            async for event in self.backend.generate(
                 messages=engine_messages,
                 sampling_params=sampling_params,
                 tools=tools,
@@ -200,19 +199,8 @@ def _build_response(event: dict) -> inference_pb2.GenerateResponse:
 class BatchInferenceServicer(inference_pb2_grpc.BatchInferenceServiceServicer):
     """Implements the BatchInferenceService gRPC service."""
 
-    def __init__(self, engine: InferenceEngine):
-        self.engine = engine
-        self.batch_engine = None  # created after model is loaded
-
-    def _get_batch_engine(self):
-        if self.batch_engine is None:
-            # tokenizer = BPETokenizer tự viết; hf_tokenizer chỉ cho apply_chat_template
-            self.batch_engine = BatchEngine(
-                self.engine.model,
-                self.engine.tokenizer,
-                self.engine.hf_tokenizer,
-            )
-        return self.batch_engine
+    def __init__(self, backend):
+        self.backend = backend
 
     async def BatchGenerate(self, request, context: grpc.aio.ServicerContext):
         """Handle BatchGenerate RPC — stream results per request_id."""
@@ -239,9 +227,7 @@ class BatchInferenceServicer(inference_pb2_grpc.BatchInferenceServiceServicer):
             batch_requests.append(req_dict)
 
         try:
-            batch_engine = self._get_batch_engine()
-
-            async for req_id, event in batch_engine.generate_batch(batch_requests):
+            async for req_id, event in self.backend.generate_batch(batch_requests):
                 if context.cancelled():
                     print(f"[batch_server] Batch {batch_id} cancelled")
                     break
@@ -318,14 +304,18 @@ def _build_batch_response(request_id: str, event: dict) -> inference_pb2.BatchGe
 # Server bootstrap
 # ---------------------------------------------------------------------------
 
-async def serve(port: int = DEFAULT_PORT, model_id: str | None = None):
+async def serve(port: int = DEFAULT_PORT, model_id: str | None = None,
+                engine_name: str = "transformers", gguf: str | None = None,
+                llama_port: int = 8081, llama_bin: str = "llama-server"):
     """Start the gRPC inference server."""
     print("[server] Starting AI Factory Inference Worker...")
     print(f"[server] gRPC port: {port}")
 
-    # Load model
-    engine = get_engine(model_id) if model_id else get_engine()
-    engine.load()
+    # Load model via backend registry (transformers | llama)
+    from .engines import get_backend
+    backend = get_backend(engine_name, model_id=model_id, gguf=gguf,
+                          llama_port=llama_port, llama_bin=llama_bin)
+    backend.load()
 
     # Create gRPC server
     server = grpc.aio.server(
@@ -338,11 +328,11 @@ async def serve(port: int = DEFAULT_PORT, model_id: str | None = None):
         ],
     )
 
-    servicer = InferenceServicer(engine)
+    servicer = InferenceServicer(backend)
     inference_pb2_grpc.add_InferenceServiceServicer_to_server(servicer, server)
 
     # Register batch inference service
-    batch_servicer = BatchInferenceServicer(engine)
+    batch_servicer = BatchInferenceServicer(backend)
     inference_pb2_grpc.add_BatchInferenceServiceServicer_to_server(batch_servicer, server)
 
     server.add_insecure_port(f"[::]:{port}")
@@ -363,7 +353,7 @@ async def serve(port: int = DEFAULT_PORT, model_id: str | None = None):
     await stop_event.wait()
     print("[server] Stopping...")
     await server.stop(5)
-    engine.unload()
+    backend.unload()
     print("[server] Worker shut down.")
 
 
@@ -373,9 +363,16 @@ def main():
     parser = argparse.ArgumentParser(description="AI Factory Inference Worker")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="gRPC port")
     parser.add_argument("--model", type=str, default=None, help="Model ID (default: Llama 3.2 3B)")
+    parser.add_argument("--engine", type=str, default="transformers",
+                        help="transformers | llama")
+    parser.add_argument("--gguf", type=str, default=None,
+                        help="Path hoặc repo GGUF (chỉ khi --engine llama)")
+    parser.add_argument("--llama-port", type=int, default=8081)
+    parser.add_argument("--llama-bin", type=str, default="llama-server")
     args = parser.parse_args()
 
-    asyncio.run(serve(port=args.port, model_id=args.model))
+    asyncio.run(serve(port=args.port, model_id=args.model, engine_name=args.engine,
+                      gguf=args.gguf, llama_port=args.llama_port, llama_bin=args.llama_bin))
 
 
 if __name__ == "__main__":
