@@ -470,7 +470,10 @@ class LlamaServer:
         self.gguf = gguf
         self.host = host
         self.port = port
+        self.bin = bin  # giữ lại cho error message khi không spawn được
         self.proc = None
+        self._log_path = None
+        self._log_file = None
         self.cmd = [
             bin, "-m", gguf,
             "--host", host, "--port", str(port),
@@ -485,12 +488,24 @@ class LlamaServer:
 
     def start(self, timeout=120.0):
         print(f"[llama] Starting llama-server: {' '.join(self.cmd)}")
-        self.proc = subprocess.Popen(self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Redirect output tới log file (KHÔNG dùng PIPE — Windows pipe buffer ~4KB
+        # sẽ đầy bởi banner llama-server → child block → start() timeout dù binary OK).
+        # Log file giữ stderr để troubleshoot ở Task 8 E2E.
+        self._log_path = f"llama-server-{self.port}.log"
+        self._log_file = open(self._log_path, "a")
+        try:
+            self.proc = subprocess.Popen(self.cmd, stdout=self._log_file, stderr=subprocess.STDOUT)
+        except OSError as e:
+            self._log_file.close()
+            raise RuntimeError(
+                f"Không spawn được llama-server (bin={self.bin!r}): {e}. "
+                f"Kiểm tra --llama-bin/PATH và file GGUF --gguf ({self.gguf})."
+            )
         if not self._wait_healthy(timeout):
             self.stop()
             raise RuntimeError(
                 f"llama-server khởi động thất bại trong {timeout}s (base_url={self.base_url}). "
-                f"Kiểm tra --gguf và --llama-bin."
+                f"Xem log {self._log_path}."
             )
         print(f"[llama] llama-server ready at {self.base_url}")
 
@@ -516,6 +531,9 @@ class LlamaServer:
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         self.proc = None
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
 ```
 
 - [ ] **Step 5: Chạy test để thấy pass**
