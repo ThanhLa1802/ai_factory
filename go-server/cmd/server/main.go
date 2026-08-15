@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -8,10 +9,16 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/api"
+	"github.com/ai-factory/go-server/internal/auth"
+	"github.com/ai-factory/go-server/internal/config"
+	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/ai-factory/go-server/internal/db"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/session"
 )
 
@@ -25,10 +32,34 @@ func main() {
 	)
 	flag.Parse()
 
+	// Load config from environment + structured logger (JSON slog).
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	observability.SetupLogger(cfg.LogLevel)
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("=== AI Factory Server ===")
 	log.Printf("HTTP port: %d", *httpPort)
 	log.Printf("Inference worker: %s", *inferenceAddr)
+
+	// Control plane persistence (mandatory)
+	ctx := context.Background()
+	d, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer d.Pool().Close()
+	if err := d.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+	cp := controlplane.NewService(d.Pool())
+	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 15*time.Minute)
+	cph := api.NewControlPlaneHandler(cp, authSvc, []byte(cfg.JWTSecret))
+	if err := seedAdmin(ctx, cp); err != nil {
+		log.Fatalf("seed: %v", err)
+	}
 
 	// Connect to Python inference worker
 	inferenceClient, err := inference.NewClient(*inferenceAddr)
@@ -73,6 +104,10 @@ func main() {
 	// Register routes
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
+	cph.RegisterRoutes(mux)
+
+	// Metrics endpoint (Prometheus) — on the same mux as the API routes.
+	mux.Handle("/metrics", observability.MetricsHandler())
 
 	// Middleware: CORS trước (cho UI chạy độc lập ở origin khác), rồi logging
 	loggedMux := corsMiddleware(loggingMiddleware(mux))
@@ -116,7 +151,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, x-session-id")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-id")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

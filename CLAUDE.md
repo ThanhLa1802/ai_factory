@@ -181,6 +181,10 @@ cd python-worker && python -m worker.server
 cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (default port 8080)
+# NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
+# unreachable. Start it first if not already running:
+#   docker compose -f deployments/docker-compose.yml up -d postgres
+# The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 
 # Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks

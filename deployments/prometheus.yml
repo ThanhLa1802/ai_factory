@@ -1,0 +1,8 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: ai-factory
+    static_configs:
+      # Target chuyển sang service `server` khi chạy trong docker-compose.
+      # Khi chạy server cục bộ ngoài docker, ghi đè bằng host.docker.internal:8080.
+      - targets: ["server:8080"]
