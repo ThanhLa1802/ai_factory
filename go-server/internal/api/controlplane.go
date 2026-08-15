@@ -275,7 +275,9 @@ func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *h
 		"created_by":          claims.UserID,
 	})
 	if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
-		// The deployment is persisted but not queued: surface it loudly.
+		// The deployment is persisted but not queued. Mark it FAILED so it is not
+		// left stuck in PENDING (best-effort), then surface the error loudly.
+		_, _ = h.cp.TransitionDeployment(r.Context(), created.ID, controlplane.DeploymentFailed)
 		writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
 		return
 	}

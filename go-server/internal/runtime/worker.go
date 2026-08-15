@@ -62,45 +62,64 @@ func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
 		return fmt.Errorf("get deployment %s: %w", ev.ResourceID, err)
 	}
 
-	// Idempotency guard: already in flight / ready / failed => nothing to do.
+	// Idempotency guard: terminal states are done; STOPPING means a stop is in
+	// flight and wins. Any other state (PENDING/PROVISIONING/STARTING/STOPPED/
+	// DEGRADED) resumes the state machine from where it is — a crash or at-least-
+	// once redelivery may leave the deployment mid-provisioning, and resuming is
+	// what makes the redelivery safe.
 	switch d.Status {
-	case controlplane.DeploymentProvisioning, controlplane.DeploymentStarting, controlplane.DeploymentReady, controlplane.DeploymentFailed:
+	case controlplane.DeploymentReady, controlplane.DeploymentFailed, controlplane.DeploymentStopping:
 		w.log.Info("deployment already handled", "id", d.ID, "status", d.Status)
 		return nil
-	case controlplane.DeploymentStopped:
-		// Restart: STOPPED -> PENDING, then proceed from PENDING below.
-		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentPending); err != nil {
-			return fmt.Errorf("restart to pending: %w", err)
-		}
 	}
 
 	createdBy, _ := ev.Payload["created_by"].(string)
-	if _, err := w.store.CreateRevision(ctx, d.ID, specMap(d), createdBy); err != nil {
-		return fmt.Errorf("create revision: %w", err)
+	ref := d.WorkloadRef
+
+	if d.Status == controlplane.DeploymentStopped {
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentPending); err != nil {
+			return fmt.Errorf("restart to pending: %w", err)
+		}
+		d.Status = controlplane.DeploymentPending
 	}
 
-	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentProvisioning); err != nil {
-		return w.fail(ctx, d, err)
+	if d.Status == controlplane.DeploymentPending {
+		if _, err := w.store.CreateRevision(ctx, d.ID, specMap(d), createdBy); err != nil {
+			return fmt.Errorf("create revision: %w", err)
+		}
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentProvisioning); err != nil {
+			return w.fail(ctx, d, err)
+		}
+		d.Status = controlplane.DeploymentProvisioning
 	}
 
-	ref, err := w.compute.RequestCapacity(ctx, d)
-	if err != nil {
-		return w.fail(ctx, d, fmt.Errorf("request capacity: %w", err))
-	}
-	if err := w.store.SetWorkloadRef(ctx, d.ID, ref); err != nil {
-		return fmt.Errorf("set workload ref: %w", err)
-	}
-
-	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStarting); err != nil {
-		return w.fail(ctx, d, err)
-	}
-
-	if err := w.adapter.Start(ctx, d); err != nil {
-		return w.fail(ctx, d, fmt.Errorf("adapter start: %w", err))
+	if d.Status == controlplane.DeploymentProvisioning {
+		ref, err = w.compute.RequestCapacity(ctx, d)
+		if err != nil {
+			return w.fail(ctx, d, fmt.Errorf("request capacity: %w", err))
+		}
+		if err := w.store.SetWorkloadRef(ctx, d.ID, ref); err != nil {
+			return w.fail(ctx, d, fmt.Errorf("set workload ref: %w", err))
+		}
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStarting); err != nil {
+			return w.fail(ctx, d, err)
+		}
+		d.Status = controlplane.DeploymentStarting
 	}
 
-	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentReady); err != nil {
-		return w.fail(ctx, d, err)
+	if d.Status == controlplane.DeploymentStarting {
+		if err := w.adapter.Start(ctx, d); err != nil {
+			return w.fail(ctx, d, fmt.Errorf("adapter start: %w", err))
+		}
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentReady); err != nil {
+			return w.fail(ctx, d, err)
+		}
+	}
+
+	if d.Status == controlplane.DeploymentDegraded {
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentReady); err != nil {
+			return w.fail(ctx, d, err)
+		}
 	}
 
 	if _, err := w.store.CreateEndpoint(ctx, d.ID, endpointPath(d.ID), "openai"); err != nil {
@@ -122,6 +141,13 @@ func (w *Worker) onStop(ctx context.Context, ev events.Event) error {
 		return nil
 	}
 	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStopping); err != nil {
+		// A deployment that is still PENDING/PROVISIONING/STARTING/FAILED cannot
+		// transition to STOPPING yet (state.go). That is expected, not fatal:
+		// treat it as a no-op rather than killing the consumer.
+		if errors.Is(err, controlplane.ErrInvalidTransition) {
+			w.log.Info("deployment not stoppable yet; ignoring stop", "id", d.ID, "status", d.Status)
+			return nil
+		}
 		return fmt.Errorf("transition to stopping: %w", err)
 	}
 	if err := w.adapter.Stop(ctx, d); err != nil {
@@ -138,9 +164,13 @@ func (w *Worker) onStop(ctx context.Context, ev events.Event) error {
 		events.TypeDeploymentStopped, d.TenantID, d.ID, nil))
 }
 
-// fail transitions to FAILED (terminal) and publishes deployment_failed.
+// fail transitions to FAILED (terminal), releases any acquired compute capacity
+// (best-effort), and publishes deployment_failed.
 func (w *Worker) fail(ctx context.Context, d *controlplane.Deployment, cause error) error {
 	w.log.Error("deployment failed", "id", d.ID, "cause", cause)
+	if err := w.compute.ReleaseCapacity(ctx, d); err != nil {
+		w.log.Warn("release capacity on failure", "deployment", d.ID, "err", err)
+	}
 	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentFailed); err != nil &&
 		!errors.Is(err, controlplane.ErrInvalidTransition) {
 		return fmt.Errorf("mark failed: %w", err)

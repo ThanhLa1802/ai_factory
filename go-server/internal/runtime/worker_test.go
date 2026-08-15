@@ -43,6 +43,9 @@ func (f *fakeStore) TransitionDeployment(ctx context.Context, id, to string) (*c
 	if !ok {
 		return nil, fmt.Errorf("deployment %s not found", id)
 	}
+	if !controlplane.CanTransition(d.Status, to) {
+		return nil, controlplane.ErrInvalidTransition
+	}
 	d.Status = to
 	cp := *d
 	return &cp, nil
@@ -230,5 +233,95 @@ func TestWorkerOnStopAlreadyStopped(t *testing.T) {
 	defer store.mu.Unlock()
 	if got := store.deployments["d1"].Status; got != controlplane.DeploymentStopped {
 		t.Fatalf("status = %s, want %s (unchanged)", got, controlplane.DeploymentStopped)
+	}
+}
+
+func TestWorkerOnStopDuringProvisioning(t *testing.T) {
+	store := newFakeStore()
+	store.deployments["d1"] = validDeployment()
+	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
+
+	bus := events.NewMemoryEventBus()
+	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
+
+	ev := events.NewEvent(events.TypeDeploymentStopRequested, "t1", "d1", nil)
+	if err := w.handle(context.Background(), ev); err != nil {
+		t.Fatalf("handle stop during provisioning = %v, want nil (idempotent no-op)", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := store.deployments["d1"].Status; got != controlplane.DeploymentProvisioning {
+		t.Fatalf("status = %s, want %s (unchanged)", got, controlplane.DeploymentProvisioning)
+	}
+}
+
+func TestWorkerOnCreatedFailureReleasesCapacity(t *testing.T) {
+	store := newFakeStore()
+	store.deployments["d1"] = validDeployment()
+	compute := NewMockComputeProvider()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	bus := events.NewMemoryEventBus()
+	w := NewWorker(store, failAdapter{NewWorkerAdapter("localhost:1")}, compute, bus, bus, log)
+
+	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	if err := w.handle(context.Background(), ev); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if _, err := compute.GetWorkloadStatus(context.Background(), store.deployments["d1"]); err == nil {
+		t.Fatal("capacity not released after start failure")
+	}
+}
+
+func TestWorkerOnCreatedResumeFromProvisioning(t *testing.T) {
+	store := newFakeStore()
+	store.deployments["d1"] = validDeployment()
+	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
+
+	bus := events.NewMemoryEventBus()
+	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
+
+	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	if err := w.handle(context.Background(), ev); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
+		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentReady)
+	}
+	if len(store.revSpecs) != 0 {
+		t.Fatalf("revisions = %d, want 0 (resume must not re-create revision)", len(store.revSpecs))
+	}
+	if store.workloadRef == "" {
+		t.Fatal("workload_ref not set on resume")
+	}
+	if len(store.endpoints) != 1 {
+		t.Fatalf("endpoints = %d, want 1", len(store.endpoints))
+	}
+}
+
+func TestWorkerOnCreatedResumeFromStarting(t *testing.T) {
+	store := newFakeStore()
+	store.deployments["d1"] = validDeployment()
+	store.deployments["d1"].Status = controlplane.DeploymentStarting
+	store.deployments["d1"].WorkloadRef = "mock-wl-d1"
+
+	bus := events.NewMemoryEventBus()
+	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
+
+	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	if err := w.handle(context.Background(), ev); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
+		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentReady)
+	}
+	if len(store.revSpecs) != 0 {
+		t.Fatalf("revisions = %d, want 0", len(store.revSpecs))
+	}
+	if len(store.endpoints) != 1 {
+		t.Fatalf("endpoints = %d, want 1", len(store.endpoints))
 	}
 }
