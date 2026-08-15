@@ -70,3 +70,34 @@ func TestLoadFromEnv(t *testing.T) {
 		t.Errorf("KafkaAddr = %q, want localhost:19092", cfg.KafkaAddr)
 	}
 }
+
+func TestRateLimitDefaults(t *testing.T) {
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_REDIS_ADDR", "")
+	t.Setenv("AI_FACTORY_RATE_LIMIT_RPM", "")
+	t.Setenv("AI_FACTORY_RATE_LIMIT_CONCURRENCY", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.RedisAddr != "localhost:6379" {
+		t.Fatalf("RedisAddr = %q, want localhost:6379", cfg.RedisAddr)
+	}
+	if cfg.RateLimitRPM != 60 || cfg.RateLimitConcurrency != 4 {
+		t.Fatalf("limits = (%d,%d), want (60,4)", cfg.RateLimitRPM, cfg.RateLimitConcurrency)
+	}
+}
+
+func TestRateLimitEnvOverride(t *testing.T) {
+	t.Setenv("AI_FACTORY_JWT_SECRET", "0123456789abcdef")
+	t.Setenv("AI_FACTORY_REDIS_ADDR", "redis:6379")
+	t.Setenv("AI_FACTORY_RATE_LIMIT_RPM", "100")
+	t.Setenv("AI_FACTORY_RATE_LIMIT_CONCURRENCY", "8")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.RedisAddr != "redis:6379" || cfg.RateLimitRPM != 100 || cfg.RateLimitConcurrency != 8 {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+}
