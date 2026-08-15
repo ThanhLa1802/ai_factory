@@ -28,11 +28,10 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	s := NewService(d.Pool())
 
 	// Use an ephemeral tenant so re-runs never collide on FK constraints.
-	tenant, err := s.CreateTenant(ctx, "wl-test")
+	tenant, err := s.CreateTenant(ctx, "wl-tenant-"+uuid.NewString()[:8])
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 
 	// Seed FK parents: models → model_versions and serving_templates → serving_template_versions.
 	// deployments has NOT NULL UUID FKs to both; ephemeral names avoid UNIQUE collisions on re-run.
@@ -42,7 +41,6 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM models WHERE id = $1`, model.ID) })
 
 	mv, err := s.CreateModelVersion(ctx, ModelVersion{
 		ModelID: model.ID, Version: "v1", ArtifactURI: "s3://bucket/model",
@@ -57,7 +55,6 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create template: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM serving_templates WHERE id = $1`, tpl.ID) })
 
 	tv, err := s.CreateTemplateVersion(ctx, TemplateVersion{
 		TemplateID: tpl.ID, Version: "v1", Image: "image:latest",
@@ -92,4 +89,13 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	if ep.DeploymentID != deploy.ID || ep.Path == "" || ep.Protocol != "openai" {
 		t.Fatalf("endpoint = %+v", ep)
 	}
+
+	// Clean up in FK-safe order: deleting the tenant cascades to deployments →
+	// endpoints, then the model/template parents are free to delete (deployments
+	// reference their versions with NO ACTION, so parents must go second).
+	t.Cleanup(func() {
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM models WHERE id = $1`, model.ID)
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
+	})
 }
