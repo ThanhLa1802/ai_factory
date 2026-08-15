@@ -605,7 +605,7 @@
       <div class="arch-node highlight">
         <div class="layer">Tầng C — Go Server</div>
         <div class="title">API + Agentic Loop + Batch Scheduler</div>
-        <div class="sub">Dual protocol · Session mgmt · Tool exec</div>
+        <div class="sub">OpenAI-compat · Session mgmt · Tool exec</div>
       </div>
       <div class="arch-label">gRPC: Generate() + BatchGenerate()</div>
       <div class="arch-pipe"></div>
@@ -630,7 +630,7 @@
       </div>
       <div>
         <h3>Tầng C: Go Server</h3>
-        <p><strong>API server</strong> — dual endpoint Anthropic <code>/v1/messages</code> + OpenAI <code>/v1/chat/completions</code>, internal canonical format + thin adapter, streaming qua SSE, multi-user session trong RAM.</p>
+        <p><strong>API server</strong> — OpenAI <code>/v1/chat/completions</code>, internal canonical format + thin adapter, streaming qua SSE, multi-user session trong RAM.</p>
         <p><strong>Agentic loop</strong> — khi model trả <code>tool_use</code>, Go execute tool → gửi <code>tool_result</code> lại model → lặp tối đa 10 vòng cho tới <code>end_turn</code>. Mỗi inference call đi qua <code>BatchScheduler.Submit()</code> để được gom batch.</p>
       </div>
       <div>
@@ -891,7 +891,7 @@ Browser EventSource / fetch reader
                 <span class="kw">return</span>                            <span class="cmt">// done</span></pre>
 
       <div class="callout info">
-        <p><strong>Anthropic vs OpenAI tool format:</strong> Claude dùng <code>tool_use</code> content block với <code>input: {}</code> JSON object. OpenAI dùng <code>tool_calls</code> array với <code>function.arguments</code> JSON string. AI Factory dùng internal canonical format — adapter chuyển cả hai về chung một kiểu.</p>
+        <p><strong>OpenAI tool format:</strong> model gọi tool qua <code>tool_calls</code> array với <code>function.arguments</code> JSON string. AI Factory dùng internal canonical format — adapter chuyển về một kiểu chung.</p>
       </div>
     </div>
 
@@ -1023,7 +1023,7 @@ Giải phóng KV cache</pre>
     <ul class="roadmap">
       <li>
         <span class="week now">Tuần 1–2</span>
-        <span class="desc">Dùng toàn bộ HuggingFace. Focus: proto → gRPC → Go server → model chạy end-to-end. Dual protocol Anthropic + OpenAI, SSE streaming, multi-turn agentic loop.</span>
+        <span class="desc">Dùng toàn bộ HuggingFace. Focus: proto → gRPC → Go server → model chạy end-to-end. OpenAI <code>/v1/chat/completions</code>, SSE streaming, multi-turn agentic loop.</span>
         <span class="tag">Done</span>
       </li>
       <li>

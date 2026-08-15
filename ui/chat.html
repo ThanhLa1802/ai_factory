@@ -255,11 +255,7 @@
   <span class="status"><span class="dot"></span>Ready</span>
   <span class="badge model" id="model-badge">Qwen2.5-Coder-7B · 4-bit</span>
   <div class="controls">
-    <span class="badge" id="protocol-badge">Anthropic</span>
-    <select id="protocol" title="API Protocol">
-      <option value="anthropic">Anthropic /v1/messages</option>
-      <option value="openai">OpenAI /v1/chat/completions</option>
-    </select>
+    <span class="badge" id="protocol-badge">OpenAI</span>
     <input type="text" id="sys-prompt" placeholder="System prompt (optional)" title="System prompt sent with each request">
     <button id="new-session" title="Start new conversation">+ New</button>
     <button id="logout-btn" type="button" style="margin-left:8px">Đăng xuất</button>
@@ -596,11 +592,6 @@ function queueRender() {
 // =========================================================================
 // Event handlers
 // =========================================================================
-document.getElementById('protocol').onchange = function() {
-  document.getElementById('protocol-badge').textContent =
-    this.value === 'openai' ? 'OpenAI' : 'Anthropic';
-};
-
 document.getElementById('new-session').onclick = function() {
   sessionId = crypto.randomUUID ? crypto.randomUUID() : 'ses_' + Date.now();
   document.getElementById('session-id').textContent = sessionId.slice(0, 13) + '...';
@@ -633,7 +624,6 @@ async function send() {
   const text = input.value.trim();
   if (!text) return;
 
-  const protocol = document.getElementById('protocol').value;
   const systemPrompt = document.getElementById('sys-prompt').value.trim();
   const sendBtn = document.getElementById('send-btn');
 
@@ -653,26 +643,16 @@ async function send() {
   try {
     let url, body;
 
-    if (protocol === 'anthropic') {
-      url = API_BASE + '/v1/messages';
-      body = JSON.stringify({
-        model: 'qwen2.5-coder-7b',
-        messages: [{ role: 'user', content: [{ type: 'text', text: text }] }],
-        max_tokens: 1024,
-        stream: true,
-      });
-    } else {
-      url = API_BASE + '/v1/chat/completions';
-      const msgs = [];
-      if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
-      msgs.push({ role: 'user', content: text });
-      body = JSON.stringify({
-        model: 'qwen2.5-coder-7b',
-        messages: msgs,
-        max_tokens: 1024,
-        stream: true,
-      });
-    }
+    url = API_BASE + '/v1/chat/completions';
+    const msgs = [];
+    if (systemPrompt) msgs.push({ role: 'system', content: systemPrompt });
+    msgs.push({ role: 'user', content: text });
+    body = JSON.stringify({
+      model: 'qwen2.5-coder-7b',
+      messages: msgs,
+      max_tokens: 1024,
+      stream: true,
+    });
 
     const resp = await fetch(url, {
       method: 'POST',
@@ -707,29 +687,16 @@ async function send() {
         try {
           const event = JSON.parse(data);
 
-          if (protocol === 'anthropic') {
-            if (event.type === 'content_block_delta' && event.delta && event.delta.text) {
-              fullText += event.delta.text;
-              activeStream.fullText = fullText;
-              tokenCount++;
-              queueRender();
-            } else if (event.type === 'tool_use') {
-              addMsg('tool', '🔧 Tool: ' + event.name + '\n' + JSON.stringify(JSON.parse(event.input || '{}'), null, 2));
-            } else if (event.type === 'error') {
-              addMsg('error', '❌ ' + (event.error && event.error.message ? event.error.message : 'Unknown'));
-            }
-          } else {
-            const choice = event.choices && event.choices[0];
-            if (choice && choice.delta && choice.delta.content) {
-              fullText += choice.delta.content;
-              activeStream.fullText = fullText;
-              tokenCount++;
-              queueRender();
-            } else if (choice && choice.delta && choice.delta.tool_calls) {
-              for (const tc of choice.delta.tool_calls) {
-                const fn = tc.function || {};
-                addMsg('tool', '🔧 Tool: ' + fn.name + '\n' + (fn.arguments || ''));
-              }
+          const choice = event.choices && event.choices[0];
+          if (choice && choice.delta && choice.delta.content) {
+            fullText += choice.delta.content;
+            activeStream.fullText = fullText;
+            tokenCount++;
+            queueRender();
+          } else if (choice && choice.delta && choice.delta.tool_calls) {
+            for (const tc of choice.delta.tool_calls) {
+              const fn = tc.function || {};
+              addMsg('tool', '🔧 Tool: ' + fn.name + '\n' + (fn.arguments || ''));
             }
           }
         } catch (e) { /* skip parse errors */ }
@@ -763,7 +730,7 @@ async function send() {
 addMsg('assistant', 'Chào bạn! Đây là **AI Factory** — chạy **Qwen2.5-Coder-7B** (4-bit).\n\n'
   + '- Câu trả lời được render **markdown**: code block có nút Copy, bảng, list, in đậm...\n'
   + '- Tự cuộn theo câu trả lời dài — cuộn lên để đọc lại, bấm nút **▼** để xuống cuối.\n'
-  + '- Chọn protocol **Anthropic** hoặc **OpenAI** ở góc phải trên.');
+  + '- Mỗi tin nhắn gọi endpoint OpenAI `/v1/chat/completions`.');
 
 // Auto-resize textarea
 document.getElementById('user-input').addEventListener('input', function() {
