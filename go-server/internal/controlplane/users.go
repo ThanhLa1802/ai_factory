@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -114,4 +115,39 @@ func (s *Service) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey,
 		return nil, fmt.Errorf("get api key: %w", err)
 	}
 	return &k, nil
+}
+
+var ErrNotFound = errors.New("not found")
+
+// ListAPIKeys trả các API key của một tenant, mới nhất trước.
+func (s *Service) ListAPIKeys(ctx context.Context, tenantID string) ([]APIKey, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, tenant_id, name, status, expires_at, created_at
+		 FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list api keys: %w", err)
+	}
+	defer rows.Close()
+	out := []APIKey{}
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.TenantID, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// DeleteAPIKey xoá key theo id + tenant (scoping an toàn). ErrNotFound nếu không khớp.
+func (s *Service) DeleteAPIKey(ctx context.Context, id, tenantID string) error {
+	tag, err := s.db.Exec(ctx,
+		`DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2`, id, tenantID)
+	if err != nil {
+		return fmt.Errorf("delete api key: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return ErrNotFound
+	}
+	return nil
 }

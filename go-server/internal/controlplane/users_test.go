@@ -82,3 +82,64 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 		_, _ = d.Pool().Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, key.ID)
 	})
 }
+
+// TestListDeleteAPIKeyIntegration chạy với Postgres thật (set AI_FACTORY_DATABASE_URL).
+func TestListDeleteAPIKeyIntegration(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	svc := NewService(d.Pool())
+
+	tenant, err := svc.CreateTenant(ctx, "keys-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+
+	// keyHash chỉ cần là string bất kỳ — List/Delete không validate hash (tránh import auth → cycle)
+	k, err := svc.CreateAPIKey(ctx, tenant.ID, "test-key", "testhash-"+uuid.NewString(), nil)
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	keys, err := svc.ListAPIKeys(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("ListAPIKeys: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != k.ID {
+		t.Fatalf("ListAPIKeys = %+v, want 1 key %s", keys, k.ID)
+	}
+
+	// scoping: key thuộc tenant A không xoá được bởi tenant B — test TRƯỚC khi xoá thật
+	other, err := svc.CreateTenant(ctx, "keys-other-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatalf("CreateTenant other: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, other.ID) })
+	if err := svc.DeleteAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
+		t.Errorf("delete with wrong tenant = %v, want ErrNotFound", err)
+	}
+
+	// xoá thật (tenant đúng)
+	if err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != nil {
+		t.Fatalf("DeleteAPIKey: %v", err)
+	}
+	keys, _ = svc.ListAPIKeys(ctx, tenant.ID)
+	if len(keys) != 0 {
+		t.Errorf("after delete list = %+v, want empty", keys)
+	}
+	// xoá lần 2 → ErrNotFound
+	if err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != ErrNotFound {
+		t.Errorf("delete again = %v, want ErrNotFound", err)
+	}
+}
