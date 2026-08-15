@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/ai-factory/go-server/internal/circuitbreaker"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/events"
 )
@@ -228,6 +230,53 @@ func TestWorkerOnCreatedTransientAdapterStartRecovers(t *testing.T) {
 		if e.Type == events.TypeDeploymentFailed {
 			t.Fatal("deployment_failed published after transient retry; want recovery to READY")
 		}
+	}
+}
+
+// countingAdapter always fails Start and counts invocations, to prove the
+// circuit breaker fails fast: once open, Start must not be called again.
+type countingAdapter struct {
+	*WorkerAdapter
+	mu     sync.Mutex
+	starts int
+}
+
+func (a *countingAdapter) Start(ctx context.Context, d *controlplane.Deployment) error {
+	a.mu.Lock()
+	a.starts++
+	a.mu.Unlock()
+	return errors.New("runtime exploded")
+}
+
+func TestWorkerCircuitBreakerFailsFast(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	bus := events.NewMemoryEventBus()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	adapter := &countingAdapter{WorkerAdapter: NewWorkerAdapter("localhost:1")}
+	w := NewWorker(store, adapter, NewMockComputeProvider(), bus, bus, log)
+	// Open the breaker after a single failed deployment so the second is fast.
+	w.cb = circuitbreaker.New(1, time.Minute)
+
+	for i := 0; i < 2; i++ {
+		store.deployments["d1"] = validDeployment()
+		ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+		if err := w.handle(ctx, ev); err != nil {
+			t.Fatalf("handle %d: %v", i, err)
+		}
+		store.mu.Lock()
+		st := store.deployments["d1"].Status
+		store.mu.Unlock()
+		if st != controlplane.DeploymentFailed {
+			t.Fatalf("deployment %d status = %s, want FAILED", i, st)
+		}
+	}
+
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if adapter.starts != retryAttempts {
+		t.Fatalf("adapter.Start calls = %d, want %d (only first deployment retries; second must fail fast)",
+			adapter.starts, retryAttempts)
 	}
 }
 
