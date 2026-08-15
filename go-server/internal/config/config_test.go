@@ -25,6 +25,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("AI_FACTORY_DATABASE_URL", "")
 	unsetenv(t, "AI_FACTORY_JWT_SECRET")
 	t.Setenv("AI_FACTORY_LOG_LEVEL", "")
+	t.Setenv("AI_FACTORY_KAFKA_ADDR", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -34,6 +35,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.JWTSecret == "" {
 		t.Error("JWTSecret empty, want non-empty default for dev")
+	}
+	if cfg.KafkaAddr != "localhost:9092" {
+		t.Errorf("KafkaAddr = %q, want localhost:9092", cfg.KafkaAddr)
 	}
 }
 
@@ -48,6 +52,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("AI_FACTORY_DATABASE_URL", "postgres://u:p@localhost:5432/db")
 	t.Setenv("AI_FACTORY_JWT_SECRET", "0123456789abcdef")
 	t.Setenv("AI_FACTORY_LOG_LEVEL", "debug")
+	t.Setenv("AI_FACTORY_KAFKA_ADDR", "localhost:19092")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -60,5 +65,8 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.KafkaAddr != "localhost:19092" {
+		t.Errorf("KafkaAddr = %q, want localhost:19092", cfg.KafkaAddr)
 	}
 }
