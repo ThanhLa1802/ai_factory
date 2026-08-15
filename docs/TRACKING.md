@@ -29,6 +29,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | Tuần 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Xong |
 | Tuần 3–4 | Tự viết tokenizer byte-level BPE | ✅ Xong |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Xong |
+| M2 — Runtime adapter + async deploy | ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker | ✅ Done |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
@@ -117,5 +118,6 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-15 | M2 — Runtime adapter + async deploy (ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker) ✅ Done — spec docs/superpowers/specs/2026-08-15-serving-platform-design.md. |
 | 2026-08-15 | Consumer slice: auth trên inference (JWT/API key) + UI 3 trang; hoãn M2 Task 2–6; spec `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`. |
 | 2026-08-15 | Tạo file tracking; xác nhận các giai đoạn 1–2 + engine llama đã xong; giai đoạn 3 (sampling) là kế tiếp. |

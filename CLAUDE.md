@@ -79,7 +79,9 @@ Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (infere
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
                          ├── Session manager (in-memory, multi-user, 8K ctx)
                          ├── BatchScheduler (static batching: coalesce 100ms, batch ≤ 4)
-                         └── Tool executor (LocalToolExecutor, 4 built-in tools)
+                         ├── Tool executor (LocalToolExecutor, 4 built-in tools)
+                         ├── Events bus (Kafka: serving.deployment.events)
+                         └── Deployment worker (async PENDING→READY via ServingRuntimeAdapter)
 ```
 
 - **Go server**: HTTP handlers, SSE streaming, session management, agentic loop, tool execution, gRPC client, batch scheduler
@@ -183,7 +185,9 @@ cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
 # unreachable. Start it first if not already running:
-#   docker compose -f deployments/docker-compose.yml up -d postgres
+#   docker compose -f deployments/docker-compose.yml up -d postgres kafka
+# Kafka is optional (only the deployment worker needs it): if unreachable the server
+# warns and runs with an in-memory event bus (deployments stay PENDING).
 # The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 
@@ -211,4 +215,7 @@ cd python-worker && python -m worker.generate_proto
 
 # Go: regenerate pb/ with protoc + protoc-gen-go + protoc-gen-go-grpc
 # (current versions recorded in the generated file header: protoc v5.29.3, protoc-gen-go v1.36.11, protoc-gen-go-grpc v1.6.2)
+
+# M2 async-deploy demo (server + postgres + kafka up; requires jq)
+bash scripts/m2-demo.sh
 ```
