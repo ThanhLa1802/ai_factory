@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ai-factory/go-server/internal/db"
+	"github.com/google/uuid"
 )
 
 // TestWorkloadRefAndEndpointIntegration runs against a live Postgres
@@ -33,8 +34,40 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 
+	// Seed FK parents: models → model_versions and serving_templates → serving_template_versions.
+	// deployments has NOT NULL UUID FKs to both; ephemeral names avoid UNIQUE collisions on re-run.
+	model, err := s.CreateModel(ctx, Model{
+		Name: "wl-model-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers",
+	})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM models WHERE id = $1`, model.ID) })
+
+	mv, err := s.CreateModelVersion(ctx, ModelVersion{
+		ModelID: model.ID, Version: "v1", ArtifactURI: "s3://bucket/model",
+	})
+	if err != nil {
+		t.Fatalf("create model version: %v", err)
+	}
+
+	tpl, err := s.CreateTemplate(ctx, ServingTemplate{
+		Name: "wl-template-" + uuid.NewString()[:8], Runtime: "transformers",
+	})
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM serving_templates WHERE id = $1`, tpl.ID) })
+
+	tv, err := s.CreateTemplateVersion(ctx, TemplateVersion{
+		TemplateID: tpl.ID, Version: "v1", Image: "image:latest",
+	})
+	if err != nil {
+		t.Fatalf("create template version: %v", err)
+	}
+
 	deploy, err := s.CreateDeployment(ctx, Deployment{
-		TenantID: tenant.ID, ModelVersionID: "mv-x", TemplateVersionID: "tv-x",
+		TenantID: tenant.ID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
 		Name: "svc", Region: "us-east-1", DesiredReplicas: 1,
 	})
 	if err != nil {
