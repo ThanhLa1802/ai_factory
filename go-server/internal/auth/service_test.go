@@ -67,7 +67,7 @@ func TestLoginInactiveUser(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	hash, _ := HashPassword("correct-password")
-	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantViewer}, hash: hash}
+	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantViewer, Status: "ACTIVE"}, hash: hash}
 	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
 	if _, err := svc.Login(context.Background(), "admin", "wrong"); err != ErrInvalidCredentials {
 		t.Fatalf("Login error = %v, want ErrInvalidCredentials", err)
