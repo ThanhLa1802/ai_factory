@@ -1,0 +1,148 @@
+package controlplane
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type Deployment struct {
+	ID                string    `json:"id"`
+	TenantID          string    `json:"tenant_id"`
+	ModelVersionID    string    `json:"model_version_id"`
+	TemplateVersionID string    `json:"template_version_id"`
+	Name              string    `json:"name"`
+	Region            string    `json:"region"`
+	DesiredReplicas   int       `json:"desired_replicas"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type DeploymentRevision struct {
+	ID           string         `json:"id"`
+	DeploymentID string         `json:"deployment_id"`
+	Revision     int            `json:"revision"`
+	Spec         map[string]any `json:"spec"`
+	CreatedAt    time.Time      `json:"created_at"`
+	CreatedBy    string         `json:"created_by"`
+}
+
+func (s *Service) CreateDeployment(ctx context.Context, d Deployment) (*Deployment, error) {
+	d.ID = uuid.NewString()
+	d.Status = DeploymentPending
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO deployments (id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING created_at, updated_at`,
+		d.ID, d.TenantID, d.ModelVersionID, d.TemplateVersionID, d.Name, d.Region, d.DesiredReplicas, d.Status).
+		Scan(&d.CreatedAt, &d.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create deployment: %w", err)
+	}
+	return &d, nil
+}
+
+func (s *Service) GetDeployment(ctx context.Context, id string) (*Deployment, error) {
+	var d Deployment
+	err := s.db.QueryRow(ctx,
+		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, created_at, updated_at
+		 FROM deployments WHERE id = $1`, id).
+		Scan(&d.ID, &d.TenantID, &d.ModelVersionID, &d.TemplateVersionID, &d.Name,
+			&d.Region, &d.DesiredReplicas, &d.Status, &d.CreatedAt, &d.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get deployment %s: %w", id, err)
+	}
+	return &d, nil
+}
+
+func (s *Service) ListDeployments(ctx context.Context, tenantID string) ([]Deployment, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, created_at, updated_at
+		 FROM deployments WHERE tenant_id = $1 ORDER BY created_at`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments: %w", err)
+	}
+	defer rows.Close()
+	out := []Deployment{}
+	for rows.Next() {
+		var d Deployment
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.ModelVersionID, &d.TemplateVersionID, &d.Name,
+			&d.Region, &d.DesiredReplicas, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+var ErrInvalidTransition = errors.New("invalid deployment state transition")
+
+// TransitionDeployment moves a deployment to `to`, enforcing the state machine.
+func (s *Service) TransitionDeployment(ctx context.Context, id, to string) (*Deployment, error) {
+	d, err := s.GetDeployment(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !CanTransition(d.Status, to) {
+		return nil, fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, d.Status, to)
+	}
+	d.Status = to
+	d.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.Exec(ctx,
+		`UPDATE deployments SET status = $1, updated_at = $2 WHERE id = $3`,
+		d.Status, d.UpdatedAt, d.ID); err != nil {
+		return nil, fmt.Errorf("update deployment: %w", err)
+	}
+	return d, nil
+}
+
+func (s *Service) CreateRevision(ctx context.Context, deploymentID string, spec map[string]any, createdBy string) (*DeploymentRevision, error) {
+	var rev int
+	if err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(MAX(revision), 0) + 1 FROM deployment_revisions WHERE deployment_id = $1`,
+		deploymentID).Scan(&rev); err != nil {
+		return nil, fmt.Errorf("next revision: %w", err)
+	}
+	r := &DeploymentRevision{
+		ID: uuid.NewString(), DeploymentID: deploymentID,
+		Revision: rev, Spec: spec, CreatedBy: createdBy,
+	}
+	if err := s.db.QueryRow(ctx,
+		`INSERT INTO deployment_revisions (id, deployment_id, revision, spec_json, created_by)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING created_at`,
+		r.ID, r.DeploymentID, r.Revision, spec, nullableUUID(createdBy)).Scan(&r.CreatedAt); err != nil {
+		return nil, fmt.Errorf("insert revision: %w", err)
+	}
+	return r, nil
+}
+
+func (s *Service) ListRevisions(ctx context.Context, deploymentID string) ([]DeploymentRevision, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, deployment_id, revision, spec_json, created_at, COALESCE(created_by::TEXT, '')
+		 FROM deployment_revisions WHERE deployment_id = $1 ORDER BY revision`, deploymentID)
+	if err != nil {
+		return nil, fmt.Errorf("list revisions: %w", err)
+	}
+	defer rows.Close()
+	out := []DeploymentRevision{}
+	for rows.Next() {
+		var r DeploymentRevision
+		if err := rows.Scan(&r.ID, &r.DeploymentID, &r.Revision, &r.Spec, &r.CreatedAt, &r.CreatedBy); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// nullableUUID returns a *string (nil for empty) to satisfy the uuid column.
+func nullableUUID(id string) *string {
+	if id == "" {
+		return nil
+	}
+	return &id
+}
