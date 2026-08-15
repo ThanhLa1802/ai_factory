@@ -168,7 +168,8 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 - **Tool-calling is dead on transformers, works on llama** (`ARCHITECTURE.md` §9.1): on the `transformers` engine (Qwen2.5-Coder-7B), the batch path does not detect `tool_use` (only emits `STOP_END_TURN`/`STOP_MAX_TOKENS`) → the tool branch dies. On the `llama` engine (Qwen3.5-9B), tool-use **works and is verified E2E** — the model calls `read_file`, the Go loop executes, the model answers with the file's contents.
 - **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
 - **Minor bug** (§9.4): the `--max-concurrent ≤ 1` flag does not override the batch size; `max_batch` is logged incorrectly when the flag = 1.
-- **Not yet:** auth/rate-limit/persistence, sandbox for `run_command`, observability (metrics/tracing/cost).
+- **Not yet:** rate-limit/persistence, sandbox for `run_command`, observability (usage/tracing/cost).
+- **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` + `/v1/messages` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
 
 ## Running
 
@@ -189,8 +190,12 @@ cd go-server && go run ./cmd/server/
 
 # Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks
 # (the string form "content":"Hello" is rejected by the adapter with 400):
+# NOTE: inference endpoints now require auth. Login first, then pass the JWT (or an API key):
+#   TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+#     -d '{"username":"admin","password":"admin1234"}' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
 
 # Health
