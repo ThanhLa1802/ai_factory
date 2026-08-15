@@ -53,6 +53,30 @@ func TestAcquireRelease(t *testing.T) {
 	}
 }
 
+func TestAcquireLeaseSelfReleases(t *testing.T) {
+	ctx := context.Background()
+	s := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: s.Addr()})
+	t.Cleanup(func() { rdb.Close() })
+	l := NewRedisLimiter(rdb)
+
+	// First holder takes the only slot and arms the lease TTL.
+	ok, err := l.Acquire(ctx, "c", 1)
+	if err != nil || !ok {
+		t.Fatalf("first acquire = (%v,%v), want true", ok, err)
+	}
+	// While the slot is held, a second acquire must fail.
+	if ok, _ := l.Acquire(ctx, "c", 1); ok {
+		t.Fatal("acquire while held = true, want false")
+	}
+	// Advance past the lease: a crashed holder's slot self-releases.
+	s.FastForward(concurrencyLease + time.Minute)
+	ok, err = l.Acquire(ctx, "c", 1)
+	if err != nil || !ok {
+		t.Fatalf("acquire after lease expiry = (%v,%v), want true", ok, err)
+	}
+}
+
 func TestAllowErrorOnUnreachableRedis(t *testing.T) {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
