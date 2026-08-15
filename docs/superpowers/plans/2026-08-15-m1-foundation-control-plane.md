@@ -94,7 +94,7 @@ func TestLoadFromEnv(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd go-server && go test ./internal/config/...`
-Expected: FAIL — `Load()` trả `(nil, nil)` → test truy cập `cfg.LogLevel` trên nil pointer (panic) — test chắc chắn fail.
+Expected: FAIL — `Load() error = nil` khi so sánh `cfg.Port` (nil dereference). (Nếu pass vì `nil,nil` → vẫn fail vì `cfg.Port` nil deref panic trong `t.Fatalf` — test chắc chắn fail.)
 
 - [ ] **Step 3: Implement config.Load()**
 
@@ -320,7 +320,7 @@ func main() {
 	}
 	observability.SetupLogger(cfg.LogLevel)
 	log.Printf("=== AI Factory Server ===")
-	log.Printf("HTTP port: %d", *httpPort) // flag --port hiện có, không đổi
+	log.Printf("HTTP port: %d", cfg.Port)
 	...
 	// Mount /metrics on the same mux used by RegisterRoutes.
 	// (In the existing code, `mux` is created in main; add:)
