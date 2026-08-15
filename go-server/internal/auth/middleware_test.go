@@ -103,7 +103,7 @@ func TestInferenceAuthAPIKey(t *testing.T) {
 		}
 		gotTenant = key.TenantID
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	req.Header.Set("Authorization", "Bearer sk-whatever")
 	rec := httptest.NewRecorder()
 	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)

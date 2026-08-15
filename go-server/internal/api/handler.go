@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -43,7 +42,6 @@ func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, aut
 // RegisterRoutes registers all HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleOpenAIChatCompletions)))
-	mux.Handle("/v1/messages", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleAnthropicMessages)))
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/v1/sessions/", h.handleSessions)
 
@@ -51,218 +49,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/", h.handleUI)
 	// Technical concepts documentation
 	mux.HandleFunc("/concepts", h.handleConcepts)
-}
-
-// ==========================================================================
-// Anthropic /v1/messages
-// ==========================================================================
-
-func (h *Handler) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req AnthropicRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	if err := ValidateAnthropicRequest(&req); err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	// Get or create session
-	sessionID := r.Header.Get("x-session-id")
-	if sessionID == "" {
-		sessionID = session.NewSessionID()
-	}
-	sess := h.sessionMgr.GetOrCreate(sessionID)
-
-	// Convert to internal format
-	msgs, systemPrompt, err := AnthropicToInternal(&req)
-	if err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	if systemPrompt != "" {
-		sess.SetSystemPrompt(systemPrompt)
-	}
-
-	params := inference.DefaultSamplingParams()
-	if req.MaxTokens > 0 {
-		params.MaxTokens = req.MaxTokens
-	}
-
-	// Context with cancel propagation on client disconnect
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	go func() {
-		<-r.Context().Done()
-		log.Printf("[api] Client disconnected for session %s", sessionID)
-		cancel()
-	}()
-
-	if req.Stream {
-		h.handleAnthropicStream(ctx, w, sess, msgs, params, sessionID, req.Model)
-	} else {
-		h.handleAnthropicNonStream(ctx, w, sess, msgs, params, sessionID, req.Model)
-	}
-}
-
-func (h *Handler) handleAnthropicStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, sessionID, modelID string) {
-	sse, err := NewSSEWriter(w)
-	if err != nil {
-		writeAnthropicError(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
-		return
-	}
-
-	messageID := "msg_" + uuid.New().String()[:8]
-	w.Header().Set("x-session-id", sessionID)
-
-	// Send message_start
-	fmt.Fprintf(sse.w, "data: %s\n\n", mustMarshal(map[string]interface{}{
-		"type":    "message_start",
-		"message": map[string]string{"id": messageID, "model": modelID},
-	}))
-	sse.flusher.Flush()
-
-	var (
-		totalTokens   int32
-		promptTokens  int32
-		stopReason    string
-		finishReason  string
-	)
-
-	for _, userMsg := range msgs {
-		// Use streaming loop — tokens arrive one by one (batch scheduler handles concurrency)
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
-
-		for event := range events {
-			switch event.Type {
-			case agent.LoopEventToken:
-				// Real token from gRPC → SSE immediately
-				sse.SendToken(event.Token)
-				totalTokens++
-
-			case agent.LoopEventToolUse:
-				if event.ToolCall != nil {
-					sse.SendToolUse(event.ToolCall.ID, event.ToolCall.Name, event.ToolCall.Arguments)
-				}
-
-			case agent.LoopEventToolResult:
-				// Tool results are sent to model in next iteration, not to client
-				// (they'll be part of the next assistant response)
-
-			case agent.LoopEventFinal:
-				stopReason = event.StopReason
-				finishReason = event.FinishReason
-				if event.Usage != nil {
-					promptTokens = event.Usage.PromptTokens
-				}
-
-			case agent.LoopEventError:
-				sse.SendError(event.Err.Error())
-				return
-			}
-		}
-
-	}
-
-	// Send final [DONE]
-	usageMap := map[string]int32{
-		"input_tokens":  promptTokens,
-		"output_tokens": totalTokens,
-	}
-	sse.SendDone(stopReason, finishReason, usageMap)
-}
-
-func (h *Handler) handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, sessionID, modelID string) {
-	w.Header().Set("x-session-id", sessionID)
-
-	var (
-		contentBlocks []AnthropicContent
-		stopReason    string
-		usage         *inference.Usage
-	)
-
-	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
-
-		var assistantContent string
-		var toolCalls []session.ToolCall
-
-		for event := range events {
-			switch event.Type {
-			case agent.LoopEventToken:
-				assistantContent += event.Token
-
-			case agent.LoopEventToolUse:
-				if event.ToolCall != nil {
-					toolCalls = append(toolCalls, *event.ToolCall)
-				}
-
-			case agent.LoopEventFinal:
-				stopReason = event.StopReason
-				usage = event.Usage
-
-			case agent.LoopEventError:
-				writeAnthropicError(w, http.StatusInternalServerError, "internal_error", event.Err.Error())
-				return
-			}
-		}
-
-		// Build Anthropic content blocks from collected response
-		if assistantContent != "" {
-			contentBlocks = append(contentBlocks, AnthropicContent{
-				Type: "text",
-				Text: assistantContent,
-			})
-		}
-		for _, tc := range toolCalls {
-			var input json.RawMessage
-			json.Unmarshal([]byte(tc.Arguments), &input)
-			contentBlocks = append(contentBlocks, AnthropicContent{
-				Type:  "tool_use",
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: input,
-			})
-		}
-
-	}
-
-	stopMap := map[string]string{
-		"STOP_END_TURN":  "end_turn",
-		"STOP_MAX_TOKENS": "max_tokens",
-		"STOP_TOOL_USE":  "tool_use",
-	}
-
-	resp := map[string]interface{}{
-		"id":      "msg_" + uuid.New().String()[:8],
-		"type":    "message",
-		"role":    "assistant",
-		"content": contentBlocks,
-		"stop_reason": func() string {
-			if s, ok := stopMap[stopReason]; ok {
-				return s
-			}
-			return "end_turn"
-		}(),
-		"model": modelID,
-	}
-	if usage != nil {
-		resp["usage"] = map[string]int32{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
 }
 
 // ==========================================================================
@@ -525,15 +311,6 @@ func (h *Handler) handleConcepts(w http.ResponseWriter, r *http.Request) {
 // Helpers
 // ==========================================================================
 
-func writeAnthropicError(w http.ResponseWriter, status int, typ, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"type":  "error",
-		"error": map[string]string{"type": typ, "message": msg},
-	})
-}
-
 func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -544,9 +321,4 @@ func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 			"code":    status,
 		},
 	})
-}
-
-func mustMarshal(v interface{}) string {
-	data, _ := json.Marshal(v)
-	return string(data)
 }
