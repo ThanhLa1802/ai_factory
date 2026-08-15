@@ -1,0 +1,10 @@
+.git/
+models/
+*.gguf
+*.exe
+*.safetensors
+*.bin
+.superpowers/
+python-worker/
+docs/
+*.md

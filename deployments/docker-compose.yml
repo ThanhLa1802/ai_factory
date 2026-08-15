@@ -39,5 +39,24 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
+  server:
+    build:
+      context: ..
+      dockerfile: go-server/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      AI_FACTORY_DATABASE_URL: postgres://ai_factory:ai_factory@postgres:5432/ai_factory?sslmode=disable
+      AI_FACTORY_JWT_SECRET: ${AI_FACTORY_JWT_SECRET:-dev-secret-change-me-0123456789}
+      AI_FACTORY_LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # NOTE: no /app/server prefix — Dockerfile ENTRYPOINT already runs the binary;
+    # compose `command` is appended as args (pre-scan bug fix).
+    command: ["--port", "8080", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/app"]
+
 volumes:
   pgdata:
