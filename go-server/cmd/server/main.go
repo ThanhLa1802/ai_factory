@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -8,10 +9,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/api"
+	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/config"
+	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/ai-factory/go-server/internal/db"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/session"
@@ -38,6 +43,23 @@ func main() {
 	log.Println("=== AI Factory Server ===")
 	log.Printf("HTTP port: %d", *httpPort)
 	log.Printf("Inference worker: %s", *inferenceAddr)
+
+	// Control plane persistence (mandatory)
+	ctx := context.Background()
+	d, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	defer d.Pool().Close()
+	if err := d.Migrate(ctx); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+	cp := controlplane.NewService(d.Pool())
+	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 15*time.Minute)
+	cph := api.NewControlPlaneHandler(cp, authSvc, []byte(cfg.JWTSecret))
+	if err := seedAdmin(ctx, cp); err != nil {
+		log.Fatalf("seed: %v", err)
+	}
 
 	// Connect to Python inference worker
 	inferenceClient, err := inference.NewClient(*inferenceAddr)
@@ -82,6 +104,7 @@ func main() {
 	// Register routes
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
+	cph.RegisterRoutes(mux)
 
 	// Metrics endpoint (Prometheus) — on the same mux as the API routes.
 	mux.Handle("/metrics", observability.MetricsHandler())
