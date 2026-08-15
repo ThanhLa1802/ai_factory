@@ -262,6 +262,8 @@
     </select>
     <input type="text" id="sys-prompt" placeholder="System prompt (optional)" title="System prompt sent with each request">
     <button id="new-session" title="Start new conversation">+ New</button>
+    <button id="logout-btn" type="button" style="margin-left:8px">Đăng xuất</button>
+    <a href="/keys" style="margin-left:8px;color:#4f8cff">API keys</a>
   </div>
 </header>
 
@@ -283,6 +285,7 @@
 </footer>
 
 <script>
+if (!localStorage.getItem('aif_token')) { location.href = '/'; throw new Error('redirect'); }
 // =========================================================================
 // State
 // =========================================================================
@@ -673,7 +676,7 @@ async function send() {
 
     const resp = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+      headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId, 'Authorization': 'Bearer ' + localStorage.getItem('aif_token') },
       body: body,
     });
 
@@ -766,6 +769,12 @@ addMsg('assistant', 'Chào bạn! Đây là **AI Factory** — chạy **Qwen2.5-
 document.getElementById('user-input').addEventListener('input', function() {
   this.style.height = 'auto';
   this.style.height = Math.min(this.scrollHeight, 140) + 'px';
+});
+
+// Logout
+document.getElementById('logout-btn').addEventListener('click', function () {
+  localStorage.removeItem('aif_token');
+  location.href = '/';
 });
 </script>
 </body>
