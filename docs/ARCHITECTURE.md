@@ -12,7 +12,7 @@ AI Factory là dự án học tập mô phỏng backend của Claude Code / Chat
 
 | Tầng | Ngôn ngữ | Vai trò |
 |---|---|---|
-| **API Server** | Go | HTTP/SSE, dual protocol (Anthropic + OpenAI), session, agentic loop, tool executor |
+| **API Server** | Go | HTTP/SSE, OpenAI Chat Completions (`/v1/chat/completions`), session, agentic loop, tool executor |
 | **Inference Worker** | Python | Load model (HuggingFace), tokenize, forward pass, sampling, batch inference |
 | **Contract** | Protobuf | gRPC server-streaming giữa Go và Python |
 
@@ -27,7 +27,6 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
  Client                │                                                 │
 (SSE / HTTP)  ───────► │  ┌─────────────────────────────────────────────┐ │
                         │  │ api.Handler (internal/api)                  │ │
-                        │  │  ├─ /v1/messages          (Anthropic)       │ │
                         │  │  ├─ /v1/chat/completions  (OpenAI)          │ │
                         │  │  ├─ /health  /v1/sessions/{id}  /  /concepts│ │
                         │  │  └─ adapters.go  ──► internal canonical     │ │
@@ -64,7 +63,7 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
 
 Một request trải qua **3 lần "đổi format"**:
 
-1. **Protocol gốc** (`AnthropicRequest` / `OpenAIRequest`) → `adapters.go` chuyển về **internal canonical format** (`session.Message`).
+1. **Protocol gốc** (`OpenAIRequest`) → `adapters.go` chuyển về **internal canonical format** (`session.Message`).
 2. Internal → **proto** (`inference.pb.go`) tại `internal/inference/client.go` / `batch_scheduler.go`.
 3. Proto → **dict OpenAI-style** tại Python (`server.py` `_messages_from_proto` / `_tools_from_proto`) → chat template của model.
 
@@ -102,30 +101,27 @@ Routes đăng ký ở `handler.go:32-42`:
 
 | Route | Method | Chức năng |
 |---|---|---|
-| `/v1/messages` | POST | Anthropic Messages API (stream/non-stream) |
 | `/v1/chat/completions` | POST | OpenAI Chat Completions (stream/non-stream) |
 | `/health` | GET | Health check JSON |
 | `/v1/sessions/{id}` | GET/DELETE | Đọc / xoá session |
 | `/` , `/ui` | GET | UI test tĩnh (HTML nhúng) |
 | `/concepts` | GET | Tài liệu technical concepts (HTML nhúng) |
 
-**Xử lý request chung** (`handler.go:48-102` cho Anthropic, `260-310` cho OpenAI):
+**Xử lý request chung** (`handler.go`, OpenAI `/v1/chat/completions`):
 
 1. Decode + validate body.
 2. Lấy session ID từ header `x-session-id`, nếu rỗng sinh UUID mới. Đây là cách **multi-user** được phân biệt — không có auth, session hoàn toàn dựa trên header client tự đặt.
-3. `AnthropicToInternal` / `OpenAIToInternal` → internal messages + system prompt. System prompt được lưu vào session (`sess.SetSystemPrompt`), **không** đưa vào message history.
+3. `OpenAIToInternal` → internal messages + system prompt. System prompt được lưu vào session (`sess.SetSystemPrompt`), **không** đưa vào message history.
 4. Cài `context.WithCancel(r.Context())` + goroutine chờ `r.Context().Done()` → đây là khâu đầu của **cancel propagation** (xem §6).
 5. Nhánh `Stream=true` → SSE; ngược lại gom events thành JSON response.
 
 **Adapters** (`adapters.go`):
 
-- `AnthropicToInternal`: system prompt nhận cả dạng `string` hoặc mảng content blocks; `tool_use` → `Message.ToolCalls`, `tool_result` → `Role=tool` + `ToolCallID`.
 - `OpenAIToInternal`: system message → system prompt; `tool_calls`/`tool_call_id` map trực tiếp.
 - `ToolsToInternal` / `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên. ⚠️ **Hai hàm này hiện không được handler gọi** — xem §9.2.
 
 **SSE writer** (`sse.go`): headers `text/event-stream`, `no-cache`, `keep-alive`, `X-Accel-Buffering: no` (chống buffer của nginx). Gửi token ngay mỗi lần + `Flush()`.
 
-- Định dạng Anthropic stream: `message_start` → `content_block_delta` (mỗi token) → `tool_use` → `message_stop` → `[DONE]`.
 - Định dạng OpenAI stream: `chat.completion.chunk` với `delta.content` / `delta.tool_calls`, rồi chunk `finish_reason`, rồi `[DONE]`.
 
 ### 2.2 Session Manager — `internal/session/`
@@ -313,21 +309,23 @@ service BatchInferenceService {
 
 ## 5. Luồng dữ liệu chi tiết
 
-### 5.1 Request Anthropic non-stream
+### 5.1 Request OpenAI non-stream
+
+Trước đây API server expose 2 dialect — Messages API + OpenAI `/v1/chat/completions` — normalize về cùng internal format. Ngày 2026-08-15 repo **collapse về chỉ còn OpenAI `/v1/chat/completions`** để có một contract duy nhất: bỏ adapter Messages API, hàm non-stream của dialect cũ, JSON response kiểu Messages API, và dropdown protocol trong UI. Luồng non-stream giờ chạy như sau:
 
 ```
-POST /v1/messages
-  → decode AnthropicRequest → validate
+POST /v1/chat/completions
+  → decode OpenAIRequest → validate
   → session (x-session-id hoặc uuid mới)
-  → AnthropicToInternal → []session.Message + systemPrompt
+  → OpenAIToInternal → []session.Message + systemPrompt
   → set systemPrompt vào session
-  → handleAnthropicNonStream
+  → handleOpenAINonStream
       → cho từng user message: loop.RunStreaming(...)
           → scheduler.Submit → collectorLoop → gRPC BatchGenerate (batch có thể 1)
           → Python BatchEngine: model.generate → stream (req_id, token)
           → Go route về đúng channel → loop phát LoopEvent...
-      → gom content: text blocks + tool_use blocks
-  → JSON response {content, stop_reason, usage}
+      → gom content: text + tool_calls
+  → JSON response {choices[0].message, finish_reason, usage}
 ```
 
 ### 5.2 Request streaming (SSE)
@@ -471,11 +469,10 @@ cd python-worker && .\.venv\Scripts\python -m worker.server --engine llama --ggu
 # Terminal 2: Go server (mặc định port 8080)
 cd go-server && go run ./cmd/server/
 
-# Test nhanh (Anthropic adapter) — LƯU Ý: content phải là MẢNG content blocks,
-# dạng string "content":"Hello" bị adapter reject với 400:
-curl -X POST http://localhost:8080/v1/messages \
+# Test nhanh (OpenAI adapter) — content là STRING thường:
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
+  -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Health
 curl http://localhost:8080/health
@@ -486,7 +483,7 @@ curl http://localhost:8080/health
 | Giai đoạn | Nội dung | Trạng thái trong code |
 |---|---|---|
 | Tuần 1-2 | End-to-end: proto → gRPC → Go → model | ✅ Đã xong |
-| Tuần 1-2 | Dual protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §9.1) |
+| Tuần 1-2 | OpenAI protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §9.1) |
 | Tuần 1-2 | Continuous batching (static) | ✅ Đã xong (static batch) |
 | Tuần 3-4 | Tự viết tokenizer (BPE) | ✅ Đã xong — `worker/model/tokenizer/`, 40 test đối chiếu == HF (§8) |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) — ngoài roadmap gốc | ✅ Đã xong — tool calling hoạt động & verified E2E trên engine này (§3.4, §9.1) |

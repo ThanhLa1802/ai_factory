@@ -14,7 +14,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, dual protocol, SSE, agentic loop, static batching | Tuần 5–6: sampling loop (hiện do HF `model.generate()` đảm nhiệm) | Tuần 7–8: KV cache + dynamic batching |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 5–6: sampling loop (hiện do HF `model.generate()` đảm nhiệm) | Tuần 7–8: KV cache + dynamic batching |
 | Tuần 3–4: Tokenizer byte-level BPE tự viết | | Tuần 9+: Forward pass, prefix caching, PagedAttention |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
@@ -26,7 +26,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 | Giai đoạn | Nội dung | Trạng thái |
 |---|---|---|
-| Tuần 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Xong |
+| Tuần 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Xong |
 | Tuần 3–4 | Tự viết tokenizer byte-level BPE | ✅ Xong |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp |
@@ -35,7 +35,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ---
 
-## ✅ Giai đoạn 1 — Tuần 1–2: E2E + dual protocol + agentic loop
+## ✅ Giai đoạn 1 — Tuần 1–2: E2E + OpenAI protocol + agentic loop
 
 Trạng thái: **✅ Xong**
 
@@ -43,7 +43,7 @@ Trạng thái: **✅ Xong**
 - [x] gRPC server Python (InferenceServicer + BatchInferenceServicer) — [`python-worker/worker/server.py`](../python-worker/worker/server.py)
 - [x] gRPC client Go + route event theo `request_id` — [`go-server/internal/inference/client.go`](../go-server/internal/inference/client.go)
 - [x] BatchScheduler static batching (gom 100ms, batch ≤ 4) — [`go-server/internal/inference/batch_scheduler.go`](../go-server/internal/inference/batch_scheduler.go)
-- [x] Dual protocol (Anthropic + OpenAI → canonical format) — [`go-server/internal/api/adapters.go`](../go-server/internal/api/adapters.go)
+- [x] OpenAI protocol (`/v1/chat/completions` → canonical format) — [`go-server/internal/api/adapters.go`](../go-server/internal/api/adapters.go)
 - [x] SSE streaming — [`go-server/internal/api/sse.go`](../go-server/internal/api/sse.go)
 - [x] Session manager in-memory (8K ctx, truncation) — [`go-server/internal/session/`](../go-server/internal/session/)
 - [x] Agentic loop (max 10 iter) — [`go-server/internal/agent/loop.go`](../go-server/internal/agent/loop.go)
@@ -108,7 +108,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 - [ ] **Tool-calling chết trên engine transformers** (§9.1) — đường batch không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`). Hiện chỉ hoạt động trên engine llama.
 - [ ] **Tool từ client chưa nối** (§9.2) — loop luôn dùng 4 built-in tools, tool client khai báo trong request bị bỏ qua.
 - [ ] **Bug nhỏ `--max-concurrent`** (§9.4) — flag ≤ 1 không ghi đè batch size; log `max_batch` sai khi flag = 1.
-- [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions` + `/v1/messages`; UI login/chat/keys.
+- [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
 - [ ] Chưa có: rate-limit / persistence, sandbox cho `run_command`, observability (usage/tracing/cost).
 
 ---

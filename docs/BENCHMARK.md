@@ -170,9 +170,9 @@ Request: 10 token prompt → generate 100 tokens
 
 1. ✅ **Kiến trúc tách biệt** — Go API server + Python inference worker (giống production: API gateway + vLLM/TensorRT-LLM backend)
 2. ✅ **Streaming token-level** — gRPC server-streaming + SSE (giống production)
-3. ✅ **Multi-turn agentic loop** — đúng pattern tool-use của Anthropic/OpenAI
+3. ✅ **Multi-turn agentic loop** — đúng pattern tool-use của OpenAI
 4. ✅ **Cancel propagation** — context cancellation xuyên suốt chain
-5. ✅ **Dual protocol** — Anthropic + OpenAI compatibility
+5. ✅ **OpenAI protocol** — Chat Completions compatibility
 
 ### Những thứ khác biệt (do phần cứng)
 

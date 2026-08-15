@@ -75,7 +75,6 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ```
 Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (inference)
                          │
-                         ├── Anthropic adapter (/v1/messages)
                          ├── OpenAI adapter (/v1/chat/completions)
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
                          ├── Session manager (in-memory, multi-user, 8K ctx)
@@ -97,7 +96,7 @@ ai_factory/
 │   ├── go.mod / go.sum
 │   ├── cmd/server/main.go       #   Entry point (flags: --port, --inference-addr, --max-concurrent)
 │   └── internal/
-│       ├── api/                 #   handler.go, adapters.go, sse.go (HTTP + dual protocol + SSE)
+│       ├── api/                 #   handler.go, adapters.go, sse.go (HTTP + OpenAI protocol + SSE)
 │       ├── agent/               #   loop.go (agentic loop), tools.go (ToolExecutor)
 │       ├── session/             #   session.go, manager.go (in-memory, truncation)
 │       └── inference/           #   client.go (gRPC), batch_scheduler.go, pb/ (codegen)
@@ -133,7 +132,7 @@ ai_factory/
 - **Context window:** 8K tokens; truncation logic in Go when `EstimatedTokens() > 90%` of the budget.
 - **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. This is **static batching** (coalesced before a single forward pass), not dynamic/continuous batching.
 - **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), streams each token immediately.
-- **Dual protocol:** Anthropic `/v1/messages` + OpenAI `/v1/chat/completions` → converted to the internal canonical format (`session.Message`).
+- **Protocol:** OpenAI `/v1/chat/completions` only. The dual protocol was collapsed to OpenAI-only on 2026-08-15 — the Messages API dialect, its adapter, and the UI protocol dropdown were removed to keep a single contract. Requests convert to the internal canonical format (`session.Message`).
 - **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` without a sandbox). The interface allows swapping in a sandbox later.
 - **Agentic loop:** max `MaxToolIterations = 10`; tool results are not streamed back to the client; they are fed into the session for the next inference turn.
 - **Error handling:** Cancel propagation from client → Go → gRPC → Python (100ms poll); tool errors first, the rest later.
@@ -155,7 +154,7 @@ Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
 
 | Phase | Content | Status |
 |---|---|---|
-| Weeks 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Done |
+| Weeks 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Done |
 | Weeks 3–4 | Hand-write byte-level BPE tokenizer | ✅ Done — spec approved, integrated into pipeline |
 | Weeks 5–6 | Hand-write the sampling loop (greedy / temperature / top-p / top-k) | 🔜 Next — currently handled by HF `model.generate()` |
 | Weeks 7–8 | Hand-manage KV cache + dynamic batching | 🔜 Not yet |
@@ -169,7 +168,7 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 - **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
 - **Minor bug** (§9.4): the `--max-concurrent ≤ 1` flag does not override the batch size; `max_batch` is logged incorrectly when the flag = 1.
 - **Not yet:** rate-limit/persistence, sandbox for `run_command`, observability (usage/tracing/cost).
-- **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` + `/v1/messages` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
+- **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
 
 ## Running
 
@@ -188,15 +187,14 @@ cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen
 # The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 
-# Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks
-# (the string form "content":"Hello" is rejected by the adapter with 400):
+# Quick test (OpenAI adapter) — content is a plain STRING
 # NOTE: inference endpoints now require auth. Login first, then pass the JWT (or an API key):
 #   TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
 #     -d '{"username":"admin","password":"admin1234"}' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
-curl -X POST http://localhost:8080/v1/messages \
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
+  -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Health
 curl http://localhost:8080/health
