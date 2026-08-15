@@ -1,0 +1,167 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/ai-factory/go-server/internal/events"
+)
+
+// DeploymentStore is the slice of the control plane the worker needs. It is
+// satisfied by *controlplane.Service (all methods exist after Task 3).
+type DeploymentStore interface {
+	GetDeployment(ctx context.Context, id string) (*controlplane.Deployment, error)
+	TransitionDeployment(ctx context.Context, id, to string) (*controlplane.Deployment, error)
+	CreateRevision(ctx context.Context, deploymentID string, spec map[string]any, createdBy string) (*controlplane.DeploymentRevision, error)
+	SetWorkloadRef(ctx context.Context, id, ref string) error
+	CreateEndpoint(ctx context.Context, deploymentID, path, protocol string) (*controlplane.Endpoint, error)
+}
+
+// Worker consumes deployment events and drives the deployment state machine
+// asynchronously: deployment_created -> PENDING..READY, deployment_stop_requested
+// -> STOPPED. Idempotent by construction: events whose deployment is already
+// in flight/ready/stopped/failed are no-ops (the state machine guard).
+type Worker struct {
+	store    DeploymentStore
+	adapter  ServingRuntimeAdapter
+	compute  ComputeProvider
+	producer events.Producer
+	consumer events.Consumer
+	log      *slog.Logger
+}
+
+func NewWorker(store DeploymentStore, adapter ServingRuntimeAdapter, compute ComputeProvider, producer events.Producer, consumer events.Consumer, log *slog.Logger) *Worker {
+	return &Worker{store: store, adapter: adapter, compute: compute, producer: producer, consumer: consumer, log: log}
+}
+
+// Run subscribes the worker to the deployment topic. Subscribe is non-blocking
+// (handlers run on the bus's goroutine), so Run returns the subscribe error or
+// nil immediately.
+func (w *Worker) Run(ctx context.Context) error {
+	return w.consumer.Subscribe(ctx, events.TopicDeploymentEvents, w.handle)
+}
+
+// handle routes deployment-topic events; unknown types are ignored.
+func (w *Worker) handle(ctx context.Context, ev events.Event) error {
+	switch ev.Type {
+	case events.TypeDeploymentCreated:
+		return w.onCreated(ctx, ev)
+	case events.TypeDeploymentStopRequested:
+		return w.onStop(ctx, ev)
+	default:
+		return nil
+	}
+}
+
+func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
+	d, err := w.store.GetDeployment(ctx, ev.ResourceID)
+	if err != nil {
+		return fmt.Errorf("get deployment %s: %w", ev.ResourceID, err)
+	}
+
+	// Idempotency guard: already in flight / ready / failed => nothing to do.
+	switch d.Status {
+	case controlplane.DeploymentProvisioning, controlplane.DeploymentStarting, controlplane.DeploymentReady, controlplane.DeploymentFailed:
+		w.log.Info("deployment already handled", "id", d.ID, "status", d.Status)
+		return nil
+	case controlplane.DeploymentStopped:
+		// Restart: STOPPED -> PENDING, then proceed from PENDING below.
+		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentPending); err != nil {
+			return fmt.Errorf("restart to pending: %w", err)
+		}
+	}
+
+	createdBy, _ := ev.Payload["created_by"].(string)
+	if _, err := w.store.CreateRevision(ctx, d.ID, specMap(d), createdBy); err != nil {
+		return fmt.Errorf("create revision: %w", err)
+	}
+
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentProvisioning); err != nil {
+		return w.fail(ctx, d, err)
+	}
+
+	ref, err := w.compute.RequestCapacity(ctx, d)
+	if err != nil {
+		return w.fail(ctx, d, fmt.Errorf("request capacity: %w", err))
+	}
+	if err := w.store.SetWorkloadRef(ctx, d.ID, ref); err != nil {
+		return fmt.Errorf("set workload ref: %w", err)
+	}
+
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStarting); err != nil {
+		return w.fail(ctx, d, err)
+	}
+
+	if err := w.adapter.Start(ctx, d); err != nil {
+		return w.fail(ctx, d, fmt.Errorf("adapter start: %w", err))
+	}
+
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentReady); err != nil {
+		return w.fail(ctx, d, err)
+	}
+
+	if _, err := w.store.CreateEndpoint(ctx, d.ID, endpointPath(d.ID), "openai"); err != nil {
+		w.log.Warn("endpoint not created", "deployment", d.ID, "err", err)
+	}
+
+	w.log.Info("deployment ready", "id", d.ID, "workload_ref", ref)
+	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
+		events.TypeDeploymentReady, d.TenantID, d.ID, map[string]any{"workload_ref": ref}))
+}
+
+func (w *Worker) onStop(ctx context.Context, ev events.Event) error {
+	d, err := w.store.GetDeployment(ctx, ev.ResourceID)
+	if err != nil {
+		return fmt.Errorf("get deployment %s: %w", ev.ResourceID, err)
+	}
+	if d.Status == controlplane.DeploymentStopped || d.Status == controlplane.DeploymentStopping {
+		w.log.Info("deployment already stopped/stopping", "id", d.ID, "status", d.Status)
+		return nil
+	}
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStopping); err != nil {
+		return fmt.Errorf("transition to stopping: %w", err)
+	}
+	if err := w.adapter.Stop(ctx, d); err != nil {
+		return w.fail(ctx, d, fmt.Errorf("adapter stop: %w", err))
+	}
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentStopped); err != nil {
+		return w.fail(ctx, d, err)
+	}
+	if err := w.compute.ReleaseCapacity(ctx, d); err != nil {
+		w.log.Warn("release capacity", "deployment", d.ID, "err", err)
+	}
+	w.log.Info("deployment stopped", "id", d.ID)
+	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
+		events.TypeDeploymentStopped, d.TenantID, d.ID, nil))
+}
+
+// fail transitions to FAILED (terminal) and publishes deployment_failed.
+func (w *Worker) fail(ctx context.Context, d *controlplane.Deployment, cause error) error {
+	w.log.Error("deployment failed", "id", d.ID, "cause", cause)
+	if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentFailed); err != nil &&
+		!errors.Is(err, controlplane.ErrInvalidTransition) {
+		return fmt.Errorf("mark failed: %w", err)
+	}
+	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
+		events.TypeDeploymentFailed, d.TenantID, d.ID, map[string]any{"error": cause.Error()}))
+}
+
+// specMap captures the deployment spec for a revision record.
+func specMap(d *controlplane.Deployment) map[string]any {
+	return map[string]any{
+		"name":                d.Name,
+		"region":              d.Region,
+		"desired_replicas":    d.DesiredReplicas,
+		"model_version_id":    d.ModelVersionID,
+		"template_version_id": d.TemplateVersionID,
+	}
+}
+
+// endpointPath is the placeholder routable path for a READY deployment
+// (spec §5 routing; a real inference gateway resolves this in M3).
+func endpointPath(deploymentID string) string {
+	return "/v1/chat/completions/" + deploymentID
+}
