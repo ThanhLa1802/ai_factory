@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -261,11 +262,30 @@ func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *h
 		return
 	}
 	d.TenantID = claims.TenantID // derive tenant from auth, never trust body
+
+	// Idempotency-Key: a client retry with the same key returns the same
+	// deployment instead of creating a duplicate (roadmap A5 — idempotency).
+	if key := r.Header.Get("Idempotency-Key"); key != "" {
+		if existingID, err := h.cp.ResolveIdempotencyKey(r.Context(), claims.TenantID, key, "deployment"); err == nil {
+			if existing, gerr := h.cp.GetDeployment(r.Context(), existingID); gerr == nil {
+				writeJSON(w, http.StatusOK, existing)
+				return
+			}
+		}
+	}
+
 	created, err := h.cp.CreateDeployment(r.Context(), d)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
+
+	if key := r.Header.Get("Idempotency-Key"); key != "" {
+		if err := h.cp.SaveIdempotencyKey(r.Context(), claims.TenantID, key, "deployment", created.ID); err != nil {
+			log.Printf("warn: save idempotency key: %v", err) // non-fatal: replay safety is best-effort
+		}
+	}
+
 	ev := events.NewEvent(events.TypeDeploymentCreated, claims.TenantID, created.ID, map[string]any{
 		"name":                created.Name,
 		"region":              created.Region,

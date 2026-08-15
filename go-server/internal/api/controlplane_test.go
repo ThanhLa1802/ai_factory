@@ -155,6 +155,73 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	}
 }
 
+// TestCreateDeploymentIdempotencyKey asserts two POST /deployments with the same
+// Idempotency-Key return the same deployment (no duplicate).
+func TestCreateDeploymentIdempotencyKey(t *testing.T) {
+	ctx := context.Background()
+	d := dbConnOrSkip(t)
+	cp := controlplane.NewService(d.Pool())
+	secret := []byte("0123456789abcdef")
+	authSvc := auth.NewService(cp, secret, time.Hour)
+
+	tenant, _ := cp.CreateTenant(ctx, "idem-api-"+uuid.NewString()[:8])
+	hash, _ := auth.HashPassword("admin-pass")
+	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RolePlatformAdmin, tenant.ID)
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+
+	bus := events.NewMemoryEventBus()
+	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	token := loginHelper(t, mux, user.Username, "admin-pass")
+
+	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	if err != nil {
+		t.Fatalf("create model version: %v", err)
+	}
+	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	if err != nil {
+		t.Fatalf("create template version: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model_version_id": mv.ID, "template_version_id": tv.ID,
+		"name": "svc", "region": "us-east-1", "desired_replicas": 1,
+	})
+
+	create := func(wantStatus int) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/deployments", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Idempotency-Key", "deploy-idem-1")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != wantStatus {
+			t.Fatalf("create deployment code = %d (want %d), body = %s", rec.Code, wantStatus, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out
+	}
+
+	first := create(http.StatusAccepted)
+	second := create(http.StatusOK) // replay, not a new create
+	if first["id"] != second["id"] {
+		t.Fatalf("idempotency violated: first id=%v second id=%v", first["id"], second["id"])
+	}
+}
+
 func dbConnOrSkip(t *testing.T) *db.DB {
 	t.Helper()
 	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
