@@ -11,7 +11,9 @@ import (
 
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/api"
+	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/session"
 )
 
@@ -24,6 +26,13 @@ func main() {
 		uiDir             = flag.String("ui-dir", "", "Directory with standalone UI HTML (default: auto-detect ui/ or ../ui)")
 	)
 	flag.Parse()
+
+	// Load config from environment + structured logger (JSON slog).
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	observability.SetupLogger(cfg.LogLevel)
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("=== AI Factory Server ===")
@@ -73,6 +82,9 @@ func main() {
 	// Register routes
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
+
+	// Metrics endpoint (Prometheus) — on the same mux as the API routes.
+	mux.Handle("/metrics", observability.MetricsHandler())
 
 	// Middleware: CORS trước (cho UI chạy độc lập ở origin khác), rồi logging
 	loggedMux := corsMiddleware(loggingMiddleware(mux))
