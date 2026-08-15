@@ -135,8 +135,16 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 				Tools:          sessToolDefs,
 			}
 
-			// Submit to batch scheduler — may wait up to 100ms to collect a batch
-			grpcEvents := l.scheduler.Submit(ctx, req)
+			// Submit to batch scheduler — may wait up to 100ms to collect a batch.
+			// TrySubmit sheds load (ErrOverloaded → 503) when the queue is full.
+			grpcEvents, err := l.scheduler.TrySubmit(ctx, req)
+			if err != nil {
+				events <- LoopEvent{
+					Type: LoopEventError,
+					Err:  fmt.Errorf("submit inference: %w", err),
+				}
+				return
+			}
 
 			// Collect response while streaming tokens
 			var (

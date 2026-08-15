@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -16,7 +17,14 @@ const (
 	DefaultBatchWindow = 100 * time.Millisecond
 	// DefaultMaxBatchSize prevents VRAM overflow.
 	DefaultMaxBatchSize = 4
+	// submitChCapacity bounds how many requests may sit in the scheduler's
+	// pending queue before TrySubmit sheds load (backpressure).
+	submitChCapacity = 100
 )
+
+// ErrOverloaded is returned by TrySubmit when the scheduler's pending queue is
+// full. Callers should shed the request (e.g. respond 503) instead of blocking.
+var ErrOverloaded = errors.New("batch scheduler overloaded")
 
 // BatchScheduler collects concurrent inference requests into batches
 // and dispatches them to the Python worker via gRPC BatchGenerate RPC.
@@ -51,14 +59,20 @@ type batchItem struct {
 	events chan<- GenerateEvent
 }
 
-// NewBatchScheduler creates a batch scheduler.
-func NewBatchScheduler(client *Client) *BatchScheduler {
-	bs := &BatchScheduler{
+// newBatchScheduler builds a scheduler without starting the collector loop,
+// so tests can exercise Submit/TrySubmit against a raw queue.
+func newBatchScheduler(client *Client) *BatchScheduler {
+	return &BatchScheduler{
 		client:       client,
-		submitCh:     make(chan *batchItem, 100),
+		submitCh:     make(chan *batchItem, submitChCapacity),
 		maxBatchSize: DefaultMaxBatchSize,
 		batchWindow:  DefaultBatchWindow,
 	}
+}
+
+// NewBatchScheduler creates a batch scheduler.
+func NewBatchScheduler(client *Client) *BatchScheduler {
+	bs := newBatchScheduler(client)
 	bs.wg.Add(1)
 	go bs.collectorLoop()
 	return bs
@@ -78,13 +92,26 @@ func (bs *BatchScheduler) SetBatchWindow(d time.Duration) {
 // Returns a channel that receives streaming events (same interface as Client.GenerateStream).
 // The channel is closed when generation completes or on fatal error.
 func (bs *BatchScheduler) Submit(ctx context.Context, req GenerateRequest) <-chan GenerateEvent {
+	events, _ := bs.TrySubmit(ctx, req)
+	return events
+}
+
+// TrySubmit is the non-blocking variant of Submit (load shedding / backpressure).
+// If the pending queue is full it returns ErrOverloaded immediately instead of
+// blocking, so the caller can reject the request (e.g. 503) rather than pile up
+// goroutines behind a saturated worker.
+func (bs *BatchScheduler) TrySubmit(ctx context.Context, req GenerateRequest) (<-chan GenerateEvent, error) {
 	events := make(chan GenerateEvent, 100)
-	bs.submitCh <- &batchItem{
+	select {
+	case bs.submitCh <- &batchItem{
 		ctx:    ctx,
 		req:    req,
 		events: events,
+	}:
+		return events, nil
+	default:
+		return nil, ErrOverloaded
 	}
-	return events
 }
 
 // Shutdown gracefully stops the collector loop.

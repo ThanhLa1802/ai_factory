@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -247,6 +248,13 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				sse.flusher.Flush()
 
 			case agent.LoopEventError:
+				// Overload is load shedding (backpressure): the worker queue is
+				// saturated, so tell the client to back off. SSE already started,
+				// so surface it as an error frame rather than an HTTP status.
+				if errors.Is(event.Err, inference.ErrOverloaded) {
+					sse.SendError("OVERLOADED: " + event.Err.Error())
+					return
+				}
 				sse.SendError(event.Err.Error())
 				return
 			}
@@ -274,6 +282,10 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 			case agent.LoopEventFinal:
 				usage = event.Usage
 			case agent.LoopEventError:
+				if errors.Is(event.Err, inference.ErrOverloaded) {
+					writeOpenAIError(w, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
+					return
+				}
 				writeOpenAIError(w, http.StatusInternalServerError, "internal_error", event.Err.Error())
 				return
 			}
