@@ -94,9 +94,9 @@ API Gateway (Go — MỘT binary, hai mặt)
 | `model_versions` | id, model_id, version, artifact_uri, metadata_json, status |
 | `serving_templates` | id, name, description, runtime, status |
 | `serving_template_versions` | id, template_id, version, image, command, environment, config_schema |
-| `deployments` | id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, endpoint_id |
+| `deployments` | id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status |
 | `deployment_revisions` | id, deployment_id, revision, spec_json, created_at, created_by |
-| `endpoints` | id, deployment_id, path, protocol, status |
+| `endpoints` | id, deployment_id (1:1), path, protocol, status |
 | `pricing` | model_id, region, price_per_million_input_tokens, price_per_million_output_tokens, price_per_gpu_hour, currency |
 | `billing_usage` | tenant_id, period, request_count, input_tokens, output_tokens, gpu_hours, amount |
 | `invoices` | tenant_id, period, line_items_json, total, status |
@@ -374,6 +374,8 @@ Cấu hình qua env vars + flags. `python-worker` và `proto/` không đổi c�
 | **M3** Inference gateway + usage events + quota | API key auth trên `/v1/chat/completions`; rate limit (Redis); quota enforcement; routing model→deployment→worker; gRPC usage info; emit inference events → raw table | Gọi inference bằng API key; usage event ghi vào raw; vượt quota → 429 |
 | **M4** Usage analytics + billing | Aggregation hourly/daily; tenant/model/region tables + gpu_hours; views vw_*; `/api/v1/usage`; billing service + `/api/v1/billing/*`; Prometheus dashboard | Superset hiện: top tenants, GPU by region, model usage; invoice draft |
 | **M5** Phase sau | OTel tracing, bật lại agentic loop + chat UI, autoscaling/canary | — |
+
+> **Phạm vi planning:** kế hoạch triển khai chia theo milestone. Plan đầu tiên tập trung **M1** (Foundation + Control plane); các milestone sau có plan riêng sau khi M1 hoàn tất.
 
 ---
 
