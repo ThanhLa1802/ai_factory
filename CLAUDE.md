@@ -81,7 +81,9 @@ Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (infere
                          ├── BatchScheduler (static batching: coalesce 100ms, batch ≤ 4)
                          ├── Tool executor (LocalToolExecutor, 4 built-in tools)
                          ├── Events bus (Kafka: serving.deployment.events)
-                         └── Deployment worker (async PENDING→READY via ServingRuntimeAdapter)
+                         ├── Deployment worker (async PENDING→READY via ServingRuntimeAdapter)
+                         ├── Routing (model→deployment READY, tenant-scoped)
+                         └── Rate limiter (Redis)
 ```
 
 - **Go server**: HTTP handlers, SSE streaming, session management, agentic loop, tool execution, gRPC client, batch scheduler
@@ -139,6 +141,7 @@ ai_factory/
 - **Agentic loop:** max `MaxToolIterations = 10`; tool results are not streamed back to the client; they are fed into the session for the next inference turn.
 - **Error handling:** Cancel propagation from client → Go → gRPC → Python (100ms poll); tool errors first, the rest later.
 - **Multi-user:** In-memory sessions distinguished by the `x-session-id` header (set by the client); no auth.
+- **Routing + rate limit (M3):** `/v1/chat/completions` resolves request `model` (a `Model.name` in the registry) → the tenant's newest READY deployment; 404 `RESOURCE_NOT_FOUND` if none. Rate limit: Redis-backed (`AI_FACTORY_REDIS_ADDR`, default `localhost:6379`) — tenant RPM (`AI_FACTORY_RATE_LIMIT_RPM`, default 60) + deployment concurrency (`AI_FACTORY_RATE_LIMIT_CONCURRENCY`, default 4); fail-open on Redis down.
 - **gRPC codegen:** Go uses `protoc-gen-go-grpc`, Python uses `grpcio-tools` (regenerated via `python -m worker.generate_proto`).
 
 ## Engine selection
@@ -169,7 +172,7 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 - **Tool-calling is dead on transformers, works on llama** (`ARCHITECTURE.md` §9.1): on the `transformers` engine (Qwen2.5-Coder-7B), the batch path does not detect `tool_use` (only emits `STOP_END_TURN`/`STOP_MAX_TOKENS`) → the tool branch dies. On the `llama` engine (Qwen3.5-9B), tool-use **works and is verified E2E** — the model calls `read_file`, the Go loop executes, the model answers with the file's contents.
 - **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
 - **Minor bug** (§9.4): the `--max-concurrent ≤ 1` flag does not override the batch size; `max_batch` is logged incorrectly when the flag = 1.
-- **Not yet:** rate-limit/persistence, sandbox for `run_command`, observability (usage/tracing/cost).
+- **Not yet:** persistence, sandbox for `run_command`, observability (usage/tracing/cost).
 - **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
 
 ## Running
@@ -185,9 +188,11 @@ cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
 # unreachable. Start it first if not already running:
-#   docker compose -f deployments/docker-compose.yml up -d postgres kafka
+#   docker compose -f deployments/docker-compose.yml up -d postgres kafka redis
 # Kafka is optional (only the deployment worker needs it): if unreachable the server
 # warns and runs with an in-memory event bus (deployments stay PENDING).
+# Redis backs the rate limiter. On boot, seedDemo seeds model `qwen-3b` + a READY
+# deployment for the demo tenant (best-effort; skip with AI_FACTORY_SKIP_SEED=1).
 # The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 

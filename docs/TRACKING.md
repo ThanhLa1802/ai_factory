@@ -110,7 +110,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 - [ ] **Tool từ client chưa nối** (§9.2) — loop luôn dùng 4 built-in tools, tool client khai báo trong request bị bỏ qua.
 - [ ] **Bug nhỏ `--max-concurrent`** (§9.4) — flag ≤ 1 không ghi đè batch size; log `max_batch` sai khi flag = 1.
 - [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
-- [ ] Chưa có: rate-limit / persistence, sandbox cho `run_command`, observability (usage/tracing/cost).
+- [ ] Chưa có: persistence, sandbox cho `run_command`, observability (usage/tracing/cost).
 
 ---
 
@@ -118,6 +118,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-15 | M3 — inference routing (model→deployment READY, tenant isolation) + rate limit (Redis: tenant RPM + concurrency). Spec docs/superpowers/specs/2026-08-15-inference-routing-rate-limit-design.md. |
 | 2026-08-15 | M2 — Runtime adapter + async deploy (ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker) ✅ Done — spec docs/superpowers/specs/2026-08-15-serving-platform-design.md. |
 | 2026-08-15 | Consumer slice: auth trên inference (JWT/API key) + UI 3 trang; hoãn M2 Task 2–6; spec `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`. |
 | 2026-08-15 | Tạo file tracking; xác nhận các giai đoạn 1–2 + engine llama đã xong; giai đoạn 3 (sampling) là kế tiếp. |
