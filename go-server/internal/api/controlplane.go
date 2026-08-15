@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -26,6 +27,8 @@ func (h *ControlPlaneHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", h.handleLogin)
 
 	mux.Handle("POST /api/v1/api-keys", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleCreateAPIKey)))
+	mux.Handle("GET /api/v1/api-keys", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleListAPIKeys)))
+	mux.Handle("DELETE /api/v1/api-keys/", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleDeleteAPIKey)))
 
 	mux.Handle("POST /api/v1/tenants", auth.RequirePermission(h.secret, auth.ActionTenantManage)(http.HandlerFunc(h.handleCreateTenant)))
 	mux.Handle("GET /api/v1/tenants", auth.RequirePermission(h.secret, auth.ActionTenantRead)(http.HandlerFunc(h.handleListTenants)))
@@ -85,6 +88,30 @@ func (h *ControlPlaneHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": key.ID, "tenant_id": key.TenantID, "name": key.Name, "key": raw})
+}
+
+func (h *ControlPlaneHandler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	keys, err := h.cp.ListAPIKeys(r.Context(), claims.TenantID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, keys)
+}
+
+func (h *ControlPlaneHandler) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/api-keys/")
+	if err := h.cp.DeleteAPIKey(r.Context(), id, claims.TenantID); err != nil {
+		if errors.Is(err, controlplane.ErrNotFound) {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "api key not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- tenants ---
