@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +16,9 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -64,7 +68,7 @@ func TestLoginE2E(t *testing.T) {
 		_, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
 	})
 
-	h := NewControlPlaneHandler(cp, authSvc, secret)
+	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
@@ -85,6 +89,203 @@ func TestLoginE2E(t *testing.T) {
 	}
 	if resp.AccessToken == "" {
 		t.Fatal("empty access_token")
+	}
+}
+
+// TestCreateDeploymentPublishesEvent asserts POST /deployments returns 202 and
+// publishes deployment_created on the bus.
+func TestCreateDeploymentPublishesEvent(t *testing.T) {
+	ctx := context.Background()
+	d := dbConnOrSkip(t) // helper below
+	cp := controlplane.NewService(d.Pool())
+	secret := []byte("0123456789abcdef")
+	authSvc := auth.NewService(cp, secret, time.Hour)
+
+	tenant, _ := cp.CreateTenant(ctx, "pub-ev-"+uuid.NewString()[:8])
+	hash, _ := auth.HashPassword("admin-pass")
+	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+
+	bus := events.NewMemoryEventBus()
+	var published []events.Event
+	if err := bus.Subscribe(ctx, events.TopicDeploymentEvents,
+		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	token := loginHelper(t, mux, user.Username, "admin-pass")
+
+	// deployments has FKs to model_versions / serving_template_versions, so
+	// create real catalog rows first.
+	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	if err != nil {
+		t.Fatalf("create model: %v", err)
+	}
+	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	if err != nil {
+		t.Fatalf("create model version: %v", err)
+	}
+	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	if err != nil {
+		t.Fatalf("create template version: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"model_version_id": mv.ID, "template_version_id": tv.ID,
+		"name": "svc", "region": "us-east-1", "desired_replicas": 1,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/deployments", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create deployment code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	if len(published) != 1 || published[0].Type != events.TypeDeploymentCreated {
+		t.Fatalf("published = %+v, want exactly one deployment_created", published)
+	}
+}
+
+func dbConnOrSkip(t *testing.T) *db.DB {
+	t.Helper()
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return d
+}
+
+func loginHelper(t *testing.T, mux *http.ServeMux, user, pass string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"username": user, "password": pass})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal login: %v", err)
+	}
+	if resp.AccessToken == "" {
+		t.Fatal("empty access_token")
+	}
+	return resp.AccessToken
+}
+
+// TestAsyncDeployE2E drives the full M2 path: create deployment via HTTP -> the
+// memory bus synchronously invokes the worker -> deployment reaches READY.
+func TestAsyncDeployE2E(t *testing.T) {
+	d := dbConnOrSkip(t)
+	ctx := context.Background()
+	cp := controlplane.NewService(d.Pool())
+	secret := []byte("0123456789abcdef")
+	authSvc := auth.NewService(cp, secret, time.Hour)
+
+	suffix := uuid.NewString()[:8]
+	tenant, err := cp.CreateTenant(ctx, "async-"+suffix)
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	hash, _ := auth.HashPassword("admin-pass")
+	// NOTE: catalog writes (models/templates) are platform-admin only in the M1
+	// RBAC, so this E2E boots a PLATFORM_ADMIN (deviation from brief, which used
+	// TENANT_ADMIN — that role cannot POST /api/v1/models|/templates → 403).
+	user, err := cp.CreateUser(ctx, "admin-"+suffix, "admin-"+suffix+"@io", hash, auth.RolePlatformAdmin, tenant.ID)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+
+	bus := events.NewMemoryEventBus()
+	worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := worker.Run(ctx); err != nil { // Subscribe is non-blocking
+		t.Fatalf("worker run: %v", err)
+	}
+
+	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	token := loginHelper(t, mux, user.Username, "admin-pass")
+
+	post := func(path string, body any, want int) map[string]any {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("POST %s code = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal %s: %v", path, err)
+		}
+		return out
+	}
+	get := func(path string, want int) map[string]any {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Fatalf("GET %s code = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal %s: %v", path, err)
+		}
+		return out
+	}
+
+	model := post("/api/v1/models", map[string]any{"name": "qwen-" + suffix, "task": "text-generation", "framework": "transformers"}, http.StatusCreated)
+	mv := post("/api/v1/models/"+model["id"].(string)+"/versions",
+		map[string]any{"version": "1.0", "artifact_uri": "file:///m"}, http.StatusCreated)
+	tpl := post("/api/v1/templates", map[string]any{"name": "tpl-" + suffix, "runtime": "python"}, http.StatusCreated)
+	tv := post("/api/v1/templates/"+tpl["id"].(string)+"/versions",
+		map[string]any{"version": "1.0", "image": "ai-factory:latest"}, http.StatusCreated)
+
+	dep := post("/api/v1/deployments", map[string]any{
+		"model_version_id": mv["id"].(string),
+		"template_version_id": tv["id"].(string),
+		"name": "svc-" + suffix, "region": "us-east-1", "desired_replicas": 1,
+	}, http.StatusAccepted)
+	depID := dep["id"].(string)
+
+	// Memory bus dispatch is synchronous: the worker finished before 202 returned.
+	got := get("/api/v1/deployments/"+depID, http.StatusOK)
+	if got["status"] != "READY" {
+		t.Fatalf("deployment status = %v, want READY", got["status"])
+	}
+	if got["workload_ref"] == "" {
+		t.Fatal("deployment workload_ref empty, want mock ref")
 	}
 }
 
@@ -121,7 +322,7 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	h := NewControlPlaneHandler(cp, authSvc, secret)
+	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 

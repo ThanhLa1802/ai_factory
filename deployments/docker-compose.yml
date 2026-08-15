@@ -49,6 +49,11 @@ services:
       AI_FACTORY_DATABASE_URL: postgres://ai_factory:ai_factory@postgres:5432/ai_factory?sslmode=disable
       AI_FACTORY_JWT_SECRET: ${AI_FACTORY_JWT_SECRET:-dev-secret-change-me-0123456789}
       AI_FACTORY_LOG_LEVEL: info
+      # NOTE: kafka advertises localhost:9092 (host-only), so the containerized
+      # server cannot reach it; it warns and runs with a memory event bus
+      # (deployments stay PENDING). Async deploy in Docker needs a dual
+      # advertised listener — out of scope for M2.
+      AI_FACTORY_KAFKA_ADDR: kafka:9092
     depends_on:
       postgres:
         condition: service_healthy

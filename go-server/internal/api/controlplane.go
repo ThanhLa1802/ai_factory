@@ -9,17 +9,19 @@ import (
 
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/ai-factory/go-server/internal/events"
 )
 
 // ControlPlaneHandler mounts /api/v1/* routes.
 type ControlPlaneHandler struct {
-	cp     *controlplane.Service
-	auth   *auth.Service
-	secret []byte
+	cp       *controlplane.Service
+	auth     *auth.Service
+	secret   []byte
+	producer events.Producer
 }
 
-func NewControlPlaneHandler(cp *controlplane.Service, authSvc *auth.Service, secret []byte) *ControlPlaneHandler {
-	return &ControlPlaneHandler{cp: cp, auth: authSvc, secret: secret}
+func NewControlPlaneHandler(cp *controlplane.Service, authSvc *auth.Service, secret []byte, producer events.Producer) *ControlPlaneHandler {
+	return &ControlPlaneHandler{cp: cp, auth: authSvc, secret: secret, producer: producer}
 }
 
 // RegisterRoutes mounts all control plane routes.
@@ -264,6 +266,19 @@ func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *h
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
+	ev := events.NewEvent(events.TypeDeploymentCreated, claims.TenantID, created.ID, map[string]any{
+		"name":                created.Name,
+		"region":              created.Region,
+		"desired_replicas":    created.DesiredReplicas,
+		"model_version_id":    created.ModelVersionID,
+		"template_version_id": created.TemplateVersionID,
+		"created_by":          claims.UserID,
+	})
+	if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
+		// The deployment is persisted but not queued: surface it loudly.
+		writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
+		return
+	}
 	writeJSON(w, http.StatusAccepted, created)
 }
 
@@ -312,22 +327,30 @@ func (h *ControlPlaneHandler) handleDeploymentAction(w http.ResponseWriter, r *h
 		writeAPIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
 		return
 	}
-	var to string
+	// Async: the worker performs the actual state transitions.
 	switch action {
 	case "start":
-		to = controlplane.DeploymentPending
+		ev := events.NewEvent(events.TypeDeploymentCreated, claims.TenantID, id, map[string]any{
+			"name": d.Name, "region": d.Region, "desired_replicas": d.DesiredReplicas,
+			"model_version_id": d.ModelVersionID, "template_version_id": d.TemplateVersionID,
+			"created_by": claims.UserID,
+		})
+		if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, d)
 	case "stop":
-		to = controlplane.DeploymentStopping
+		ev := events.NewEvent(events.TypeDeploymentStopRequested, claims.TenantID, id, nil)
+		if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, d)
 	default:
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "unknown action "+action)
 		return
 	}
-	updated, err := h.cp.TransitionDeployment(r.Context(), id, to)
-	if err != nil {
-		writeAPIError(w, http.StatusConflict, "RESOURCE_CONFLICT", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, updated)
 }
 
 // --- quotas ---

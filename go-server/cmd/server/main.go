@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,8 +19,10 @@ import (
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
 )
 
@@ -57,10 +60,30 @@ func main() {
 	}
 	cp := controlplane.NewService(d.Pool())
 	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 15*time.Minute)
-	cph := api.NewControlPlaneHandler(cp, authSvc, []byte(cfg.JWTSecret))
 	if err := seedAdmin(ctx, cp); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
+
+	// Events bus (Kafka) — optional. The deployment worker needs it, but the
+	// chat/inference path must boot without it: fall back to an in-memory bus
+	// (deployments stay PENDING) and warn.
+	var producer events.Producer
+	var consumer events.Consumer
+	if kafkaBus, kafkaErr := events.NewKafkaEventBus(cfg.KafkaAddr); kafkaErr != nil {
+		log.Printf("WARN: kafka unreachable at %s — deployment worker disabled (%v)", cfg.KafkaAddr, kafkaErr)
+		mem := events.NewMemoryEventBus()
+		producer, consumer = mem, mem
+	} else {
+		defer kafkaBus.Close()
+		log.Printf("Kafka event bus connected: %s", cfg.KafkaAddr)
+		producer, consumer = kafkaBus, kafkaBus
+		worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter(*inferenceAddr), runtime.NewMockComputeProvider(), producer, consumer, slog.Default())
+		if err := worker.Run(ctx); err != nil {
+			log.Fatalf("deployment worker: %v", err)
+		}
+		log.Println("Deployment worker started (async deploy)")
+	}
+	cph := api.NewControlPlaneHandler(cp, authSvc, []byte(cfg.JWTSecret), producer)
 
 	// Connect to Python inference worker
 	inferenceClient, err := inference.NewClient(*inferenceAddr)
