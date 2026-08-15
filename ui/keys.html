@@ -44,7 +44,9 @@
   if (!token) { location.href = '/'; return; }
   const H = { 'Authorization': 'Bearer ' + token };
   async function api(path, opts) {
-    const resp = await fetch(path, Object.assign({ headers: H }, opts));
+    opts = opts || {};
+    const headers = Object.assign({}, H, opts.headers);
+    const resp = await fetch(path, Object.assign({}, opts, { headers: headers }));
     if (resp.status === 401) { location.href = '/'; throw new Error('unauthorized'); }
     return resp;
   }
