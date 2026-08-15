@@ -18,6 +18,7 @@ type Deployment struct {
 	Region            string    `json:"region"`
 	DesiredReplicas   int       `json:"desired_replicas"`
 	Status            string    `json:"status"`
+	WorkloadRef       string    `json:"workload_ref,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -29,6 +30,17 @@ type DeploymentRevision struct {
 	Spec         map[string]any `json:"spec"`
 	CreatedAt    time.Time      `json:"created_at"`
 	CreatedBy    string         `json:"created_by"`
+}
+
+// Endpoint is the routable serving address created when a deployment reaches
+// READY (spec §5 routing).
+type Endpoint struct {
+	ID           string    `json:"id"`
+	DeploymentID string    `json:"deployment_id"`
+	Path         string    `json:"path"`
+	Protocol     string    `json:"protocol"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 func (s *Service) CreateDeployment(ctx context.Context, d Deployment) (*Deployment, error) {
@@ -49,10 +61,10 @@ func (s *Service) CreateDeployment(ctx context.Context, d Deployment) (*Deployme
 func (s *Service) GetDeployment(ctx context.Context, id string) (*Deployment, error) {
 	var d Deployment
 	err := s.db.QueryRow(ctx,
-		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, created_at, updated_at
+		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, workload_ref, created_at, updated_at
 		 FROM deployments WHERE id = $1`, id).
 		Scan(&d.ID, &d.TenantID, &d.ModelVersionID, &d.TemplateVersionID, &d.Name,
-			&d.Region, &d.DesiredReplicas, &d.Status, &d.CreatedAt, &d.UpdatedAt)
+			&d.Region, &d.DesiredReplicas, &d.Status, &d.WorkloadRef, &d.CreatedAt, &d.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get deployment %s: %w", id, err)
 	}
@@ -61,7 +73,7 @@ func (s *Service) GetDeployment(ctx context.Context, id string) (*Deployment, er
 
 func (s *Service) ListDeployments(ctx context.Context, tenantID string) ([]Deployment, error) {
 	rows, err := s.db.Query(ctx,
-		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, created_at, updated_at
+		`SELECT id, tenant_id, model_version_id, template_version_id, name, region, desired_replicas, status, workload_ref, created_at, updated_at
 		 FROM deployments WHERE tenant_id = $1 ORDER BY created_at`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list deployments: %w", err)
@@ -71,7 +83,7 @@ func (s *Service) ListDeployments(ctx context.Context, tenantID string) ([]Deplo
 	for rows.Next() {
 		var d Deployment
 		if err := rows.Scan(&d.ID, &d.TenantID, &d.ModelVersionID, &d.TemplateVersionID, &d.Name,
-			&d.Region, &d.DesiredReplicas, &d.Status, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			&d.Region, &d.DesiredReplicas, &d.Status, &d.WorkloadRef, &d.CreatedAt, &d.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -137,6 +149,34 @@ func (s *Service) ListRevisions(ctx context.Context, deploymentID string) ([]Dep
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetWorkloadRef records the compute reference bound to a deployment by its
+// ComputeProvider.
+func (s *Service) SetWorkloadRef(ctx context.Context, id, ref string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE deployments SET workload_ref = $1, updated_at = now() WHERE id = $2`,
+		ref, id)
+	if err != nil {
+		return fmt.Errorf("set workload ref: %w", err)
+	}
+	return nil
+}
+
+// CreateEndpoint records a routable endpoint for a READY deployment.
+func (s *Service) CreateEndpoint(ctx context.Context, deploymentID, path, protocol string) (*Endpoint, error) {
+	e := &Endpoint{
+		ID: uuid.NewString(), DeploymentID: deploymentID,
+		Path: path, Protocol: protocol, Status: "ACTIVE",
+	}
+	err := s.db.QueryRow(ctx,
+		`INSERT INTO endpoints (id, deployment_id, path, protocol, status)
+		 VALUES ($1, $2, $3, $4, $5) RETURNING created_at`,
+		e.ID, e.DeploymentID, e.Path, e.Protocol, e.Status).Scan(&e.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create endpoint: %w", err)
+	}
+	return e, nil
 }
 
 // nullableUUID returns a *string (nil for empty) to satisfy the uuid column.
