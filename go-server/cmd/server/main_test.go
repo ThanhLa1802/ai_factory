@@ -32,3 +32,20 @@ func TestMetricsMiddleware(t *testing.T) {
 		t.Fatalf("status passthrough = %d, want %d", rec.Code, http.StatusTeapot)
 	}
 }
+
+// statusRecorder phải thỏa http.Flusher để SSE streaming hoạt động.
+// Trước fix, statusRecorder embed http.ResponseWriter (interface không khai báo
+// Flush) nên w.(http.Flusher) trong NewSSEWriter fail → 500 "streaming not supported".
+func TestStatusRecorderImplementsFlusher(t *testing.T) {
+	// Compile-time: statusRecorder giờ có Flush() delegate.
+	var _ http.Flusher = (*statusRecorder)(nil)
+
+	// Runtime, đúng path NewSSEWriter: assertion qua biến kiểu http.ResponseWriter.
+	rec := httptest.NewRecorder()
+	var w http.ResponseWriter = &statusRecorder{ResponseWriter: rec}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		t.Fatal("statusRecorder must implement http.Flusher so SSE streaming survives the metrics middleware")
+	}
+	flusher.Flush()
+}

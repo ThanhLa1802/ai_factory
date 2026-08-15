@@ -185,3 +185,13 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
 }
+
+// Flush delegating xuống writer gốc nếu nó hỗ trợ (SSE streaming).
+// http.ResponseWriter là interface không khai báo Flush, nên nếu không
+// override, statusRecorder không thỏa http.Flusher → NewSSEWriter fail
+// với "streaming not supported" trên cả /v1/messages lẫn /v1/chat/completions.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
