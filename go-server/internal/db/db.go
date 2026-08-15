@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -46,7 +47,11 @@ func (d *DB) Migrate(ctx context.Context) error {
 		return fmt.Errorf("open sql db: %w", err)
 	}
 	defer sqlDB.Close()
-	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migrationsFS, goose.WithVerbose(false))
+	migFS, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("sub migrations fs: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, sqlDB, migFS, goose.WithVerbose(false))
 	if err != nil {
 		return fmt.Errorf("goose provider: %w", err)
 	}
