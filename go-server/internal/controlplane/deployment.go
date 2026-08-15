@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type Deployment struct {
@@ -89,6 +90,31 @@ func (s *Service) ListDeployments(ctx context.Context, tenantID string) ([]Deplo
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// ResolveDeployment trả deployment READY mới nhất của tenant serve model `modelName`.
+// ErrNotFound nếu không có model/version/deployment READY khớp tenant.
+func (s *Service) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*Deployment, error) {
+	var d Deployment
+	err := s.db.QueryRow(ctx,
+		`SELECT d.id, d.tenant_id, d.model_version_id, d.template_version_id, d.name,
+		        d.region, d.desired_replicas, d.status, d.workload_ref, d.created_at, d.updated_at
+		 FROM deployments d
+		 JOIN model_versions mv ON mv.id = d.model_version_id
+		 JOIN models m        ON m.id  = mv.model_id
+		 WHERE m.name = $1 AND d.tenant_id = $2 AND d.status = $3
+		 ORDER BY d.created_at DESC
+		 LIMIT 1`,
+		modelName, tenantID, DeploymentReady).
+		Scan(&d.ID, &d.TenantID, &d.ModelVersionID, &d.TemplateVersionID, &d.Name,
+			&d.Region, &d.DesiredReplicas, &d.Status, &d.WorkloadRef, &d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve deployment: %w", err)
+	}
+	return &d, nil
 }
 
 var ErrInvalidTransition = errors.New("invalid deployment state transition")
