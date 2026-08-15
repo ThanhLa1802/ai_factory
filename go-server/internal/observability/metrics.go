@@ -41,3 +41,11 @@ func Registry() *prometheus.Registry { return registry }
 func MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 }
+
+// RouteLabelSetter lets an HTTP handler record serving-domain labels on the
+// metrics middleware's response recorder, so serving metrics resolve after
+// routing (the handler knows tenant/deployment/model/region; the middleware
+// only knows the HTTP status).
+type RouteLabelSetter interface {
+	SetRouteLabels(tenant, deployment, model, region string)
+}

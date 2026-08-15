@@ -14,6 +14,7 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
@@ -123,11 +124,14 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 
 	tenantID, _ := auth.TenantIDFromContext(r.Context())
-	_, release, ok := h.resolveForTenant(r.Context(), w, tenantID, req.Model)
+	d, release, ok := h.resolveForTenant(r.Context(), w, tenantID, req.Model)
 	if !ok {
 		return
 	}
 	defer release()
+	if ls, ok := w.(observability.RouteLabelSetter); ok {
+		ls.SetRouteLabels(d.TenantID, d.ID, req.Model, d.Region)
+	}
 
 	sessionID := r.Header.Get("x-session-id")
 	if sessionID == "" {

@@ -193,28 +193,40 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // metricsMiddleware ghi status + duration của mỗi request vào Prometheus.
-// Labels tenant/deployment/model/region (serving-domain, chưa resolve ở tầng HTTP)
-// để trống; status ghi HTTP status code thật.
+// Labels tenant/deployment/model/region được handler set trên statusRecorder
+// sau khi route resolve (xem observability.RouteLabelSetter); nếu handler không
+// set thì chúng để trống. Status ghi HTTP status code thật.
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		status := strconv.Itoa(rec.status)
-		observability.HTTPRequestsTotal.WithLabelValues("", "", "", "", status).Inc()
-		observability.RequestDurationSeconds.WithLabelValues("", "", "", "", status).Observe(time.Since(start).Seconds())
+		observability.HTTPRequestsTotal.WithLabelValues(rec.tenant, rec.deployment, rec.model, rec.region, status).Inc()
+		observability.RequestDurationSeconds.WithLabelValues(rec.tenant, rec.deployment, rec.model, rec.region, status).Observe(time.Since(start).Seconds())
 	})
 }
 
-// statusRecorder bắt status code thực tế của handler (mặc định 200 khi WriteHeader không được gọi).
+// statusRecorder bắt status code thực tế của handler (mặc định 200 khi WriteHeader không được gọi)
+// và lưu serving-domain labels (tenant/deployment/model/region) mà handler set sau route resolve.
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status     int
+	tenant     string
+	deployment string
+	model      string
+	region     string
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// SetRouteLabels implements observability.RouteLabelSetter — handler gọi sau
+// khi resolve deployment để metrics ghi nhãn theo route thật.
+func (r *statusRecorder) SetRouteLabels(tenant, deployment, model, region string) {
+	r.tenant, r.deployment, r.model, r.region = tenant, deployment, model, region
 }
 
 // Flush delegating xuống writer gốc nếu nó hỗ trợ (SSE streaming).
