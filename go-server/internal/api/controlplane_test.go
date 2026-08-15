@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -183,5 +186,50 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || bytes.Contains(rec.Body.Bytes(), []byte(created.ID)) {
 		t.Fatalf("after delete: code = %d, body = %s, want 200 without key", rec.Code, rec.Body.String())
+	}
+}
+
+// TestInferenceAuthRequiredE2E: /v1/chat/completions không auth phải 401 (không cần worker,
+// middleware chặn trước khi vào handler). Dựng api.Handler với authSvc + secret thật.
+func TestInferenceAuthRequiredE2E(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	cp := controlplane.NewService(d.Pool())
+	secret := []byte("0123456789abcdef")
+	authSvc := auth.NewService(cp, secret, time.Hour)
+
+	// worker addr chỉ dùng khi gọi thật; grpc.NewClient là lazy nên không cần worker chạy
+	ic, err := inference.NewClient("localhost:59999")
+	if err != nil {
+		t.Fatalf("inference.NewClient: %v", err)
+	}
+	t.Cleanup(func() { ic.Close() })
+	bs := inference.NewBatchScheduler(ic)
+	te := agent.NewLocalToolExecutor(t.TempDir())
+	loop := agent.NewLoop(bs, te)
+	sess := session.NewManager()
+	h := NewHandler(sess, loop, t.TempDir(), authSvc, secret)
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no-auth code = %d, body = %s, want 401", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"code":"UNAUTHORIZED"`)) {
+		t.Errorf("body = %s, want UNAUTHORIZED json", rec.Body.String())
 	}
 }

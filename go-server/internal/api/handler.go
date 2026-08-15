@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ai-factory/go-server/internal/agent"
+	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
@@ -23,22 +24,26 @@ import (
 type Handler struct {
 	sessionMgr *session.Manager
 	loop       *agent.Loop
-	uiDir      string // thư mục chứa UI tĩnh (chat.html, concepts.html)
+	uiDir      string // thư mục chứa UI tĩnh (index.html, chat.html, keys.html)
+	authSvc    *auth.Service
+	secret     []byte
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr,
 		loop:       loop,
 		uiDir:      uiDir,
+		authSvc:    authSvc,
+		secret:     secret,
 	}
 }
 
 // RegisterRoutes registers all HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/messages", h.handleAnthropicMessages)
-	mux.HandleFunc("/v1/chat/completions", h.handleOpenAIChatCompletions)
+	mux.Handle("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleOpenAIChatCompletions)))
+	mux.Handle("/v1/messages", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleAnthropicMessages)))
 	mux.HandleFunc("/health", h.handleHealth)
 	mux.HandleFunc("/v1/sessions/", h.handleSessions)
 
@@ -497,11 +502,19 @@ func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/ui" && r.URL.Path != "/ui/" {
+	var file string
+	switch r.URL.Path {
+	case "/":
+		file = "index.html"
+	case "/chat":
+		file = "chat.html"
+	case "/keys":
+		file = "keys.html"
+	default:
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(h.uiDir, "chat.html"))
+	http.ServeFile(w, r, filepath.Join(h.uiDir, file))
 }
 
 func (h *Handler) handleConcepts(w http.ResponseWriter, r *http.Request) {

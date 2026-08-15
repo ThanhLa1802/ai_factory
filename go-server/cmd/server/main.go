@@ -100,7 +100,7 @@ func main() {
 	log.Printf("UI directory: %s", dir)
 
 	// HTTP handler
-	handler := api.NewHandler(sessionMgr, loop, dir)
+	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret))
 
 	// Register routes
 	mux := http.NewServeMux()
