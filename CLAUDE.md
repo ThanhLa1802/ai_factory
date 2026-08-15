@@ -2,7 +2,7 @@
 
 A learning project simulating a Claude Code / ChatGPT server, comprising an inference engine, an agentic loop, and an API server.
 
-> **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
+> **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), [`docs/LEARNING_ROADMAP.md`](docs/LEARNING_ROADMAP.md) (project-specific learning roadmap — 2 tracks: backend/platform + self-written inference), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
 
 ## Behavioral Guidelines
 
