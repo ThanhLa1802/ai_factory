@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/auth"
+	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -19,6 +23,11 @@ import (
 // serve UI tĩnh từ thư mục ui/ (không nhúng HTML vào binary).
 // Package comment đặt ở đây vì các file UI đã tách thành file HTML độc lập.
 
+// DeploymentResolver resolves model name → READY deployment. Satisfied by *controlplane.Service.
+type DeploymentResolver interface {
+	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*controlplane.Deployment, error)
+}
+
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	sessionMgr *session.Manager
@@ -26,16 +35,17 @@ type Handler struct {
 	uiDir      string // thư mục chứa UI tĩnh (index.html, chat.html, keys.html)
 	authSvc    *auth.Service
 	secret     []byte
+	resolver   DeploymentResolver
+	limiter    ratelimit.Limiter
+	rpmLimit   int
+	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, limiter ratelimit.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
-		sessionMgr: sessionMgr,
-		loop:       loop,
-		uiDir:      uiDir,
-		authSvc:    authSvc,
-		secret:     secret,
+		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, authSvc: authSvc, secret: secret,
+		resolver: resolver, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
@@ -55,6 +65,46 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 // OpenAI /v1/chat/completions
 // ==========================================================================
 
+// resolveForTenant resolves tenant+model → READY deployment, then applies RPM +
+// concurrency limits (fail-open on Redis error). On success returns the
+// deployment and a release func (for concurrency); on failure writes the error
+// response and returns nil, nil, false.
+func (h *Handler) resolveForTenant(ctx context.Context, w http.ResponseWriter, tenantID, model string) (*controlplane.Deployment, func(), bool) {
+	d, err := h.resolver.ResolveDeployment(ctx, tenantID, model)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
+		return nil, nil, false
+	}
+	if !h.allow(ctx, "tenant:"+tenantID+":rpm", h.rpmLimit, time.Minute) {
+		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
+		return nil, nil, false
+	}
+	if !h.acquire(ctx, "deployment:"+d.ID+":concurrency", h.concLimit) {
+		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
+		return nil, nil, false
+	}
+	release := func() { _ = h.limiter.Release(context.Background(), "deployment:"+d.ID+":concurrency") }
+	return d, release, true
+}
+
+func (h *Handler) allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+	ok, err := h.limiter.Allow(ctx, key, limit, window)
+	if err != nil {
+		log.Printf("rate limit allow error (fail-open): %v", err)
+		return true
+	}
+	return ok
+}
+
+func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
+	ok, err := h.limiter.Acquire(ctx, key, limit)
+	if err != nil {
+		log.Printf("rate limit acquire error (fail-open): %v", err)
+		return true
+	}
+	return ok
+}
+
 func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -71,6 +121,13 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+
+	tenantID, _ := auth.TenantIDFromContext(r.Context())
+	_, release, ok := h.resolveForTenant(r.Context(), w, tenantID, req.Model)
+	if !ok {
+		return
+	}
+	defer release()
 
 	sessionID := r.Header.Get("x-session-id")
 	if sessionID == "" {
