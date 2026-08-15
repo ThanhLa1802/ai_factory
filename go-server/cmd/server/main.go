@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -109,8 +110,8 @@ func main() {
 	// Metrics endpoint (Prometheus) — on the same mux as the API routes.
 	mux.Handle("/metrics", observability.MetricsHandler())
 
-	// Middleware: CORS trước (cho UI chạy độc lập ở origin khác), rồi logging
-	loggedMux := corsMiddleware(loggingMiddleware(mux))
+	// Middleware: CORS trước (cho UI chạy độc lập ở origin khác), rồi logging, rồi metrics
+	loggedMux := corsMiddleware(loggingMiddleware(metricsMiddleware(mux)))
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *httpPort),
@@ -158,4 +159,29 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// metricsMiddleware ghi status + duration của mỗi request vào Prometheus.
+// Labels tenant/deployment/model/region (serving-domain, chưa resolve ở tầng HTTP)
+// để trống; status ghi HTTP status code thật.
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		status := strconv.Itoa(rec.status)
+		observability.HTTPRequestsTotal.WithLabelValues("", "", "", "", status).Inc()
+		observability.RequestDurationSeconds.WithLabelValues("", "", "", "", status).Observe(time.Since(start).Seconds())
+	})
+}
+
+// statusRecorder bắt status code thực tế của handler (mặc định 200 khi WriteHeader không được gọi).
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }
