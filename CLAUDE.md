@@ -1,8 +1,74 @@
 # CLAUDE.md — AI Factory
 
-Dự án học tập mô phỏng server Claude Code / ChatGPT, gồm inference engine, agentic loop, và API server.
+A learning project simulating a Claude Code / ChatGPT server, comprising an inference engine, an agentic loop, and an API server.
 
-> **Đọc thêm:** `docs/ARCHITECTURE.md` (kiến trúc chi tiết, deep-dive từng thành phần + lỗ hổng tích hợp), `docs/BENCHMARK.md` (số liệu hiệu năng), `CONTEXT.md` (glossary domain), `docs/superpowers/specs/` (design docs đã duyệt). File này chỉ là tổng quan + lộ trình.
+> **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
+
+## Behavioral Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
 ## Architecture
 
@@ -13,13 +79,13 @@ Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (infere
                          ├── OpenAI adapter (/v1/chat/completions)
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
                          ├── Session manager (in-memory, multi-user, 8K ctx)
-                         ├── BatchScheduler (static batching: gom 100ms, batch ≤ 4)
+                         ├── BatchScheduler (static batching: coalesce 100ms, batch ≤ 4)
                          └── Tool executor (LocalToolExecutor, 4 built-in tools)
 ```
 
 - **Go server**: HTTP handlers, SSE streaming, session management, agentic loop, tool execution, gRPC client, batch scheduler
-- **Python worker**: Model loading (HuggingFace), tokenizer BPE tự viết, forward pass, sampling, gRPC server-streaming (single + batch)
-- **Proto**: Shared gRPC contract giữa hai bên — 2 service server-streaming: `InferenceService.Generate` (single) và `BatchInferenceService.BatchGenerate` (batch)
+- **Python worker**: Model loading (HuggingFace), hand-written BPE tokenizer, forward pass, sampling, gRPC server-streaming (single + batch)
+- **Proto**: Shared gRPC contract between the two sides — 2 server-streaming services: `InferenceService.Generate` (single) and `BatchInferenceService.BatchGenerate` (batch)
 
 ## Project Structure
 
@@ -37,22 +103,22 @@ ai_factory/
 │       └── inference/           #   client.go (gRPC), batch_scheduler.go, pb/ (codegen)
 ├── python-worker/               # Python inference worker
 │   ├── pyproject.toml
-│   ├── benchmark.py             #   benchmark số liệu hiệu năng
+│   ├── benchmark.py             #   performance benchmark
 │   ├── continuous_batching_demo.py
 │   ├── tests/                   #   conftest.py, test_tokenizer.py (pytest)
 │   └── worker/
 │       ├── server.py            #   gRPC server entry (InferenceServicer + BatchInferenceServicer)
 │       ├── engine.py            #   InferenceEngine (single, streaming) — transformers
 │       ├── batch_engine.py      #   BatchEngine (batched model.generate)
-│       ├── engines/             #   EngineBackend interface + registry (chọn bằng --engine)
+│       ├── engines/             #   EngineBackend interface + registry (selected via --engine)
 │       │   ├── base.py          #     EngineBackend (interface) + get_backend()
 │       │   ├── transformers.py  #     TransformersBackend (Qwen2.5-Coder-7B)
 │       │   └── llama/           #     LlamaBackend (Qwen3.5-9B GGUF) — server.py, client.py
-│       ├── generate_proto.py    #   sinh lại pb/ từ proto
+│       ├── generate_proto.py    #   regenerate pb/ from proto
 │       ├── pb/                  #   generated gRPC stubs
-│       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — tự viết
+│       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
 ├── models/                      # GGUF + llama.cpp: Qwen3.5-9B-Q4_K_M.gguf, llama.cpp/llama-server.exe
-├── ui/                          # Static test UI: chat.html, concepts.html (HTML nhúng)
+├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
 ├── docs/                        # ARCHITECTURE.md, BENCHMARK.md, superpowers/specs/
 ├── scripts/                     # setup.sh, setup.ps1
 ├── CONTEXT.md                   # Domain glossary
@@ -61,64 +127,64 @@ ai_factory/
 
 ## Key Decisions
 
-- **Model:** Qwen2.5-Coder-7B-Instruct (default, `--engine transformers`), quant 4-bit NF4 (bitsandbytes), `device_map="auto"`, RTX 3060 12GB (ungated, không cần HF login). Naming convention: Go gửi `"model":"qwen-3b"` (transformers); llama backend gửi `"model":"qwen3.5-9b"` cho llama-server. Docs cũ ghi "Qwen 2.5 3B" — code chạy 7B từ trước.
-- **Token cần quan tâm:** EOS `151645` (`<|im_end|>`), PAD `151643` (`<|endoftext|>`).
-- **Tokenizer:** tự viết byte-level BPE (`worker/model/tokenizer/`), IDs khớp 100% với HF, dùng cho encode/decode/batch trong cả `engine.py` lẫn `batch_engine.py`. HF `AutoTokenizer` chỉ giữ để `apply_chat_template` (quyết định D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`).
-- **Context window:** 8K tokens, truncate logic ở Go khi `EstimatedTokens() > 90%` budget.
-- **Batching:** `BatchScheduler` gom request trong window **100ms** hoặc tới **batch 4**, gửi `BatchGenerate`; Go route event theo `request_id`. Đây là **static batch** (gom trước 1 forward pass), không phải dynamic/continuous batching.
-- **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), gửi từng token ngay.
-- **Dual protocol:** Anthropic `/v1/messages` + OpenAI `/v1/chat/completions` → chuyển về internal canonical format (`session.Message`).
-- **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; timeout 30s; `run_command` dùng `sh -c` không sandbox). Interface cho phép swap sandbox sau.
-- **Agentic loop:** max `MaxToolIterations = 10`; tool results không stream về client, được đưa vào session cho lượt inference kế.
-- **Error handling:** Cancel propagation từ client → Go → gRPC → Python (poll 100ms) + tool error trước, còn lại để sau.
-- **Multi-user:** In-memory sessions phân biệt bằng header `x-session-id` (client tự đặt); không auth.
-- **gRPC codegen:** Go dùng `protoc-gen-go-grpc`, Python dùng `grpcio-tools` (sinh lại bằng `python -m worker.generate_proto`).
+- **Model:** Qwen2.5-Coder-7B-Instruct (default, `--engine transformers`), 4-bit NF4 quant (bitsandbytes), `device_map="auto"`, RTX 3060 12GB (ungated, no HF login needed). Naming convention: Go sends `"model":"qwen-3b"` (transformers); the llama backend sends `"model":"qwen3.5-9b"` to llama-server. Old docs say "Qwen 2.5 3B" — the code has been running 7B all along.
+- **Tokens to care about:** EOS `151645` (`<|im_end|>`), PAD `151643` (`<|endoftext|>`).
+- **Tokenizer:** hand-written byte-level BPE (`worker/model/tokenizer/`), IDs match HF 100%, used for encode/decode/batch in both `engine.py` and `batch_engine.py`. HF `AutoTokenizer` is kept only for `apply_chat_template` (decision D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`).
+- **Context window:** 8K tokens; truncation logic in Go when `EstimatedTokens() > 90%` of the budget.
+- **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. This is **static batching** (coalesced before a single forward pass), not dynamic/continuous batching.
+- **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), streams each token immediately.
+- **Dual protocol:** Anthropic `/v1/messages` + OpenAI `/v1/chat/completions` → converted to the internal canonical format (`session.Message`).
+- **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` without a sandbox). The interface allows swapping in a sandbox later.
+- **Agentic loop:** max `MaxToolIterations = 10`; tool results are not streamed back to the client; they are fed into the session for the next inference turn.
+- **Error handling:** Cancel propagation from client → Go → gRPC → Python (100ms poll); tool errors first, the rest later.
+- **Multi-user:** In-memory sessions distinguished by the `x-session-id` header (set by the client); no auth.
+- **gRPC codegen:** Go uses `protoc-gen-go-grpc`, Python uses `grpcio-tools` (regenerated via `python -m worker.generate_proto`).
 
 ## Engine selection
 
-Worker hỗ trợ 2 engine, chọn lúc khởi động (mỗi lúc 1 model, 12GB VRAM):
+The worker supports 2 engines, chosen at startup (one model at a time, 12GB VRAM):
 
 | Flag | Engine | Model | Runtime |
 |---|---|---|---|
 | `--engine transformers` (default) | TransformersBackend | Qwen2.5-Coder-7B (4-bit NF4) | transformers + bitsandbytes + BPETokenizer |
 | `--engine llama` | LlamaBackend | Qwen3.5-9B (GGUF Q4_K_M) | llama-server (llama.cpp) + httpx proxy |
 
-Chi tiết: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
+Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
 
-## Lộ trình học tập (learning roadmap)
+## Learning Roadmap
 
-| Giai đoạn | Nội dung | Trạng thái |
+| Phase | Content | Status |
 |---|---|---|
-| Tuần 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Xong |
-| Tuần 3–4 | Tự viết tokenizer byte-level BPE | ✅ Xong — spec đã duyệt, tích hợp vào pipeline |
-| Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp — hiện do HF `model.generate()` đảm nhiệm |
-| Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
-| Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
+| Weeks 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Done |
+| Weeks 3–4 | Hand-write byte-level BPE tokenizer | ✅ Done — spec approved, integrated into pipeline |
+| Weeks 5–6 | Hand-write the sampling loop (greedy / temperature / top-p / top-k) | 🔜 Next — currently handled by HF `model.generate()` |
+| Weeks 7–8 | Hand-manage KV cache + dynamic batching | 🔜 Not yet |
+| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | 🔜 Not yet |
 
-Chi tiết map code ↔ roadmap: `docs/ARCHITECTURE.md` §12.
+Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 
-## Known Gaps / Lỗ hổng hiện tại
+## Known Gaps
 
-- **Tool-calling chết trên transformers, hoạt động trên llama** (`ARCHITECTURE.md` §9.1): trên engine `transformers` (Qwen2.5-Coder-7B), đường batch không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`) → nhánh tool chết. Trên engine `llama` (Qwen3.5-9B), tool-use **đã hoạt động và verified E2E** — model gọi `read_file`, Go loop execute, model trả lời nội dung file.
-- **Tool từ client chưa nối** (§9.2): loop luôn dùng 4 built-in tools của `LocalToolExecutor`, tool client khai báo trong request bị bỏ qua.
-- **Bug nhỏ** (§9.4): flag `--max-concurrent ≤ 1` không ghi đè batch size; log `max_batch` sai khi flag = 1.
-- **Chưa có:** auth/rate-limit/persistence, sandbox cho `run_command`, observability (metrics/tracing/cost).
+- **Tool-calling is dead on transformers, works on llama** (`ARCHITECTURE.md` §9.1): on the `transformers` engine (Qwen2.5-Coder-7B), the batch path does not detect `tool_use` (only emits `STOP_END_TURN`/`STOP_MAX_TOKENS`) → the tool branch dies. On the `llama` engine (Qwen3.5-9B), tool-use **works and is verified E2E** — the model calls `read_file`, the Go loop executes, the model answers with the file's contents.
+- **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
+- **Minor bug** (§9.4): the `--max-concurrent ≤ 1` flag does not override the batch size; `max_batch` is logged incorrectly when the flag = 1.
+- **Not yet:** auth/rate-limit/persistence, sandbox for `run_command`, observability (metrics/tracing/cost).
 
 ## Running
 
 ```bash
-# Terminal 1: Python worker (mặc định port 50051) — engine transformers (default, Qwen2.5-Coder-7B)
+# Terminal 1: Python worker (default port 50051) — engine transformers (default, Qwen2.5-Coder-7B)
 cd python-worker && python -m worker.server
 
-#   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081.
-#   (thêm --llama-bin ..\models\llama.cpp\llama-server.exe nếu llama-server chưa có trên PATH)
+#   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
+#   (add --llama-bin ..\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
 cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
 
-# Terminal 2: Go server (mặc định port 8080)
+# Terminal 2: Go server (default port 8080)
 cd go-server && go run ./cmd/server/
 
-# Test nhanh (Anthropic adapter) — LƯU Ý: content phải là MẢNG content blocks
-# (dạng string "content":"Hello" bị adapter reject với 400):
+# Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks
+# (the string form "content":"Hello" is rejected by the adapter with 400):
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
@@ -130,12 +196,12 @@ curl http://localhost:8080/health
 ## Development
 
 ```bash
-# Test (tokenizer, CPU-only — cần môi trường có transformers)
+# Tests (tokenizer, CPU-only — requires an environment with transformers)
 cd python-worker && python -m pytest tests/
 
-# Sinh lại gRPC stubs Python sau khi sửa proto/inference.proto
+# Regenerate Python gRPC stubs after editing proto/inference.proto
 cd python-worker && python -m worker.generate_proto
 
-# Go: sinh lại pb/ bằng protoc + protoc-gen-go + protoc-gen-go-grpc
-# (phiên bản hiện tại ghi trong header file sinh: protoc v5.29.3, protoc-gen-go v1.36.11, protoc-gen-go-grpc v1.6.2)
+# Go: regenerate pb/ with protoc + protoc-gen-go + protoc-gen-go-grpc
+# (current versions recorded in the generated file header: protoc v5.29.3, protoc-gen-go v1.36.11, protoc-gen-go-grpc v1.6.2)
 ```
