@@ -37,6 +37,9 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 	if err != nil {
 		return "", ErrInvalidCredentials
 	}
+	if user.Status != "ACTIVE" {
+		return "", ErrInvalidCredentials
+	}
 	if !VerifyPassword(hash, password) {
 		return "", ErrInvalidCredentials
 	}

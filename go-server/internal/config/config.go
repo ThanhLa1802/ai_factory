@@ -15,7 +15,13 @@ type Config struct {
 
 // Load reads configuration from the environment.
 func Load() (*Config, error) {
-	secret := env("AI_FACTORY_JWT_SECRET", "dev-secret-change-me")
+	secret, ok := os.LookupEnv("AI_FACTORY_JWT_SECRET")
+	if ok && secret == "" {
+		return nil, fmt.Errorf("AI_FACTORY_JWT_SECRET is set but empty")
+	}
+	if secret == "" {
+		secret = "dev-secret-change-me"
+	}
 	if len(secret) < 16 {
 		return nil, fmt.Errorf("AI_FACTORY_JWT_SECRET must be at least 16 characters")
 	}

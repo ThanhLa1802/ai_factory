@@ -41,7 +41,7 @@ func TestLoginSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword error = %v", err)
 	}
-	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin}, hash: hash}
+	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "ACTIVE"}, hash: hash}
 	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
 	token, err := svc.Login(context.Background(), "admin", "correct-password")
 	if err != nil {
@@ -53,6 +53,15 @@ func TestLoginSuccess(t *testing.T) {
 	}
 	if claims.TenantID != "t1" || claims.Role != RoleTenantAdmin {
 		t.Errorf("claims = %+v", claims)
+	}
+}
+
+func TestLoginInactiveUser(t *testing.T) {
+	hash, _ := HashPassword("correct-password")
+	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "INACTIVE"}, hash: hash}
+	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	if _, err := svc.Login(context.Background(), "admin", "correct-password"); err != ErrInvalidCredentials {
+		t.Fatalf("Login error = %v, want ErrInvalidCredentials", err)
 	}
 }
 

@@ -36,7 +36,9 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer d.Pool().Close()
+	// Register the pool close FIRST: t.Cleanup runs LIFO, so the delete
+	// cleanups below execute before the pool is closed.
+	t.Cleanup(func() { d.Pool().Close() })
 	if err := d.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -68,4 +70,15 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 	if err != nil || found.ID != key.ID {
 		t.Errorf("GetAPIKeyByHash = (%+v, %v)", found, err)
 	}
+	// Clean up the created rows by exact id. Registered parent-first because
+	// t.Cleanup runs LIFO: api_key → user (cascades memberships) → tenant.
+	t.Cleanup(func() {
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+	})
+	t.Cleanup(func() {
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
+	})
+	t.Cleanup(func() {
+		_, _ = d.Pool().Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, key.ID)
+	})
 }

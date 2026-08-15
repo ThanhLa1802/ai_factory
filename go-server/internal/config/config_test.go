@@ -1,12 +1,30 @@
 package config
 
 import (
+	"os"
 	"testing"
 )
 
+// unsetenv removes key for the duration of the test, restoring the prior value.
+func unsetenv(t *testing.T, key string) {
+	t.Helper()
+	prev, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("Unsetenv(%q): %v", key, err)
+	}
+	t.Cleanup(func() {
+		if had {
+			os.Setenv(key, prev)
+		} else {
+			os.Unsetenv(key)
+		}
+	})
+}
+
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("AI_FACTORY_DATABASE_URL", "")
-	t.Setenv("AI_FACTORY_JWT_SECRET", "")
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_LOG_LEVEL", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -16,6 +34,13 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.JWTSecret == "" {
 		t.Error("JWTSecret empty, want non-empty default for dev")
+	}
+}
+
+func TestLoadJWTSecretSetButEmpty(t *testing.T) {
+	t.Setenv("AI_FACTORY_JWT_SECRET", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want set-but-empty to fail loudly")
 	}
 }
 
