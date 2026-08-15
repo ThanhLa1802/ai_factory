@@ -118,6 +118,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-15 | A5 (Reliability) — bắt đầu: retry/backoff/jitter (`internal/retry` + áp dụng vào worker provisioning: RequestCapacity, adapter.Start). Còn lại A5: idempotency, circuit breaker, backpressure, load shedding. |
 | 2026-08-15 | M3 — inference routing (model→deployment READY, tenant isolation) + rate limit (Redis: tenant RPM + concurrency). Spec docs/superpowers/specs/2026-08-15-inference-routing-rate-limit-design.md. |
 | 2026-08-15 | M2 — Runtime adapter + async deploy (ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker) ✅ Done — spec docs/superpowers/specs/2026-08-15-serving-platform-design.md. |
 | 2026-08-15 | Consumer slice: auth trên inference (JWT/API key) + UI 3 trang; hoãn M2 Task 2–6; spec `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`. |

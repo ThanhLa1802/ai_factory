@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/events"
+	"github.com/ai-factory/go-server/internal/retry"
 )
 
 // DeploymentStore is the slice of the control plane the worker needs. It is
@@ -35,6 +37,27 @@ type Worker struct {
 
 func NewWorker(store DeploymentStore, adapter ServingRuntimeAdapter, compute ComputeProvider, producer events.Producer, consumer events.Consumer, log *slog.Logger) *Worker {
 	return &Worker{store: store, adapter: adapter, compute: compute, producer: producer, consumer: consumer, log: log}
+}
+
+// retryAttempts / retryInitialDelay bound the in-process retry of transient
+// provisioning steps (roadmap A5). Small and fast: a permanent failure still
+// resolves to FAILED within ~150ms, while a transient runtime blip (worker or
+// compute temporarily unreachable) is absorbed without failing the deployment.
+const (
+	retryAttempts     = 3
+	retryInitialDelay = 50 * time.Millisecond
+)
+
+// retryProvision runs fn with exponential backoff + jitter. If every attempt
+// fails, it fails the deployment exactly like a direct failure would (release
+// capacity, publish deployment_failed), so a transient error cannot leave the
+// deployment permanently FAILED just because the runtime hiccuped once.
+func (w *Worker) retryProvision(ctx context.Context, d *controlplane.Deployment, op string, fn func() error) error {
+	err := retry.Do(ctx, retry.Options{Attempts: retryAttempts, InitialDelay: retryInitialDelay}, fn)
+	if err == nil {
+		return nil
+	}
+	return w.fail(ctx, d, fmt.Errorf("%s: %w", op, err))
 }
 
 // Run subscribes the worker to the deployment topic. Subscribe is non-blocking
@@ -94,9 +117,12 @@ func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
 	}
 
 	if d.Status == controlplane.DeploymentProvisioning {
-		ref, err = w.compute.RequestCapacity(ctx, d)
-		if err != nil {
-			return w.fail(ctx, d, fmt.Errorf("request capacity: %w", err))
+		if err := w.retryProvision(ctx, d, "request capacity", func() error {
+			var e error
+			ref, e = w.compute.RequestCapacity(ctx, d)
+			return e
+		}); err != nil {
+			return err
 		}
 		if err := w.store.SetWorkloadRef(ctx, d.ID, ref); err != nil {
 			return w.fail(ctx, d, fmt.Errorf("set workload ref: %w", err))
@@ -108,8 +134,10 @@ func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
 	}
 
 	if d.Status == controlplane.DeploymentStarting {
-		if err := w.adapter.Start(ctx, d); err != nil {
-			return w.fail(ctx, d, fmt.Errorf("adapter start: %w", err))
+		if err := w.retryProvision(ctx, d, "adapter start", func() error {
+			return w.adapter.Start(ctx, d)
+		}); err != nil {
+			return err
 		}
 		if _, err := w.store.TransitionDeployment(ctx, d.ID, controlplane.DeploymentReady); err != nil {
 			return w.fail(ctx, d, err)

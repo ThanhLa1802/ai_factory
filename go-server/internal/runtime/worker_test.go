@@ -184,6 +184,53 @@ func TestWorkerOnCreatedAdapterFailure(t *testing.T) {
 	}
 }
 
+// flakyAdapter fails Start a fixed number of times, then delegates to the real
+// WorkerAdapter (which validates the spec). Exercises the A5 retry path: a
+// transient runtime blip must not permanently fail the deployment.
+type flakyAdapter struct {
+	*WorkerAdapter
+	mu    sync.Mutex
+	fails int
+}
+
+func (a *flakyAdapter) Start(ctx context.Context, d *controlplane.Deployment) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.fails > 0 {
+		a.fails--
+		return errors.New("runtime temporarily unreachable")
+	}
+	return a.WorkerAdapter.Start(ctx, d)
+}
+
+func TestWorkerOnCreatedTransientAdapterStartRecovers(t *testing.T) {
+	store := newFakeStore()
+	store.deployments["d1"] = validDeployment()
+
+	bus := events.NewMemoryEventBus()
+	var published []events.Event
+	if err := bus.Subscribe(context.Background(), events.TopicDeploymentEvents,
+		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	w := newTestWorker(store, &flakyAdapter{WorkerAdapter: NewWorkerAdapter("localhost:1"), fails: 2}, bus)
+
+	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	if err := w.handle(context.Background(), ev); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
+		t.Fatalf("status = %s, want %s (transient failure must not fail deployment)", got, controlplane.DeploymentReady)
+	}
+	for _, e := range published {
+		if e.Type == events.TypeDeploymentFailed {
+			t.Fatal("deployment_failed published after transient retry; want recovery to READY")
+		}
+	}
+}
+
 func TestWorkerOnStopHappyPath(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
