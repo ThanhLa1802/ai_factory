@@ -128,7 +128,6 @@ func main() {
 	}()
 
 	log.Printf("Server listening on http://localhost:%d", *httpPort)
-	log.Printf("  Anthropic: POST http://localhost:%d/v1/messages", *httpPort)
 	log.Printf("  OpenAI:    POST http://localhost:%d/v1/chat/completions", *httpPort)
 	log.Printf("  Health:    GET  http://localhost:%d/health", *httpPort)
 
@@ -189,7 +188,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 // Flush delegating xuống writer gốc nếu nó hỗ trợ (SSE streaming).
 // http.ResponseWriter là interface không khai báo Flush, nên nếu không
 // override, statusRecorder không thỏa http.Flusher → NewSSEWriter fail
-// với "streaming not supported" trên cả /v1/messages lẫn /v1/chat/completions.
+// với "streaming not supported" trên /v1/chat/completions.
 func (r *statusRecorder) Flush() {
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
