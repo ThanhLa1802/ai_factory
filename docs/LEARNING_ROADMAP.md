@@ -24,7 +24,7 @@
 | Kafka: event bus, consumer, idempotency | Deployment events (`serving.deployment.events`), worker PENDING→READY | ✅ Xong (M2, Kafka optional / in-memory fallback) |
 | PostgreSQL: control plane, transaction | Postgres lưu models/deployments | ✅ Xong (M2) |
 | Auth / tenant / quota | Consumer slice: JWT + API key, UI login/chat/keys | ✅ Xong |
-| Distributed Systems: retry, backoff, timeout, backpressure | Một phần: agentic loop, cancel, fail-open rate limit; retry/backoff/circuit breaker **chưa có** | 🔶 Một phần |
+| Distributed Systems: retry, backoff, timeout, backpressure | `internal/retry` (exp backoff + jitter), `internal/circuitbreaker` (3-state CLOSED/OPEN/HALF-OPEN), BatchScheduler `TrySubmit` backpressure + load shedding → 503, cancel propagation | ✅ Xong |
 | LLM Serving concepts (tokenization, prefill, decode, KV cache, batching, TTFT/TPOT) | Đúng phần lõi dự án — đang tự viết từng phần | 🔜 Đang làm |
 | Observability (logs/metrics/traces, structured logging, không log prompt/key) | **Chưa có** — đúng mục tiêu kế tiếp | 🔜 Kế tiếp |
 | System Design (10 câu hỏi §30) | Áp dụng khi review kiến trúc (routing, cancel, async deploy) | 🔜 Thường trực |
@@ -59,7 +59,7 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 | A2. Control plane | Postgres, deployment PENDING→READY, Kafka events, ServingRuntimeAdapter | ✅ Xong (M2) |
 | A3. Routing + rate limit | Model→deployment READY (tenant-scoped), Redis RPM + concurrency | ✅ Xong (M3) |
 | A4. Auth + tenant | JWT/API key trên inference, UI login/chat/keys | ✅ Xong |
-| A5. Reliability | Retry/backoff/jitter ✅ (mới: `internal/retry` + áp dụng vào worker provisioning); còn lại: idempotency (Kafka consumer, deploy), circuit breaker, backpressure, load shedding | 🔶 Một phần |
+| A5. Reliability | Retry/backoff/jitter (`internal/retry` + worker provisioning), idempotency (Kafka consumer state-machine guard + deploy `Idempotency-Key` + `idempotency_keys` table), circuit breaker (`internal/circuitbreaker` + worker), backpressure/load shedding (BatchScheduler `TrySubmit` → 503) | ✅ Xong |
 | A6. Observability | Structured logs, metrics (Prometheus-style), traces (OTel), usage metering (requests/tokens) | 🔜 Kế tiếp |
 | A7. Data platform | Kafka → ClickHouse → Superset (nếu mở rộng) | ⛔ Hoãn |
 | A8. Infra | Dockerfile hoàn chỉnh, K8s manifest (nếu cần) | ⛔ Hoãn |

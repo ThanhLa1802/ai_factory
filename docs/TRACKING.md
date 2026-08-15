@@ -118,6 +118,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-15 | A5 (Reliability) — hoàn tất: circuit breaker (`internal/circuitbreaker` 3-state + gắn vào worker provisioning), idempotency deploy (`Idempotency-Key` header + bảng `idempotency_keys`), backpressure/load shedding (BatchScheduler `TrySubmit` → `ErrOverloaded` → 503). Kafka consumer idempotent sẵn qua state-machine guard trong worker. |
 | 2026-08-15 | A5 (Reliability) — bắt đầu: retry/backoff/jitter (`internal/retry` + áp dụng vào worker provisioning: RequestCapacity, adapter.Start). Còn lại A5: idempotency, circuit breaker, backpressure, load shedding. |
 | 2026-08-15 | M3 — inference routing (model→deployment READY, tenant isolation) + rate limit (Redis: tenant RPM + concurrency). Spec docs/superpowers/specs/2026-08-15-inference-routing-rate-limit-design.md. |
 | 2026-08-15 | M2 — Runtime adapter + async deploy (ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker) ✅ Done — spec docs/superpowers/specs/2026-08-15-serving-platform-design.md. |
