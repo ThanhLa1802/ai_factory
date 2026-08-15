@@ -69,3 +69,62 @@ func envOr(key, def string) string {
 	}
 	return def
 }
+
+// seedDemo seeds a demo model + READY deployment for the demo tenant so routing
+// works without Kafka. Idempotent: skips if a READY deployment already resolves.
+func seedDemo(ctx context.Context, cp *controlplane.Service) error {
+	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
+		return nil
+	}
+	tenantName := envOr("AI_FACTORY_DEMO_TENANT", "acme")
+	tenants, err := cp.ListTenants(ctx)
+	if err != nil {
+		return err
+	}
+	var tenantID string
+	for _, t := range tenants {
+		if t.Name == tenantName {
+			tenantID = t.ID
+			break
+		}
+	}
+	if tenantID == "" {
+		return nil // no demo tenant yet; nothing to seed
+	}
+	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen-3b"); err == nil {
+		return nil // already seeded
+	} else if !errors.Is(err, controlplane.ErrNotFound) {
+		return fmt.Errorf("resolve for seed: %w", err)
+	}
+
+	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-3b", Task: "text-generation", Framework: "transformers"})
+	if err != nil {
+		return fmt.Errorf("seed model: %w", err)
+	}
+	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen-3b"})
+	if err != nil {
+		return fmt.Errorf("seed model version: %w", err)
+	}
+	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "transformers", Runtime: "transformers"})
+	if err != nil {
+		return fmt.Errorf("seed template: %w", err)
+	}
+	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen-3b:latest"})
+	if err != nil {
+		return fmt.Errorf("seed template version: %w", err)
+	}
+	d, err := cp.CreateDeployment(ctx, controlplane.Deployment{
+		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
+		Name: "qwen-3b-prod", Region: "local", DesiredReplicas: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("seed deployment: %w", err)
+	}
+	for _, to := range []string{controlplane.DeploymentProvisioning, controlplane.DeploymentStarting, controlplane.DeploymentReady} {
+		if _, err := cp.TransitionDeployment(ctx, d.ID, to); err != nil {
+			return fmt.Errorf("seed transition to %s: %w", to, err)
+		}
+	}
+	log.Printf("seeded demo model qwen-3b + READY deployment %s (tenant %s)", d.ID, tenantID)
+	return nil
+}

@@ -22,8 +22,10 @@ import (
 	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -63,6 +65,13 @@ func main() {
 	if err := seedAdmin(ctx, cp); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
+	if err := seedDemo(ctx, cp); err != nil {
+		log.Printf("WARN: seed demo deployment: %v", err)
+	}
+
+	// Redis-backed rate limiter (fixed-window RPM + concurrency).
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	limiter := ratelimit.NewRedisLimiter(rdb)
 
 	// Events bus (Kafka) — optional. The deployment worker needs it, but the
 	// chat/inference path must boot without it: fall back to an in-memory bus
@@ -123,7 +132,7 @@ func main() {
 	log.Printf("UI directory: %s", dir)
 
 	// HTTP handler
-	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret))
+	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret), cp, limiter, cfg.RateLimitRPM, cfg.RateLimitConcurrency)
 
 	// Register routes
 	mux := http.NewServeMux()
