@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,5 +163,23 @@ func TestInferenceAuthInactiveKey(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"code":"FORBIDDEN"`) {
 		t.Errorf("body = %s, want FORBIDDEN error json", rec.Body.String())
+	}
+}
+
+func TestTenantIDFromContext(t *testing.T) {
+	ctx := context.Background()
+
+	if _, ok := TenantIDFromContext(ctx); ok {
+		t.Fatal("empty context → want ok=false")
+	}
+
+	claims := &Claims{UserID: "u1", TenantID: "tenant-1", Role: RoleTenantAdmin}
+	if id, ok := TenantIDFromContext(context.WithValue(ctx, ctxKey{}, claims)); !ok || id != "tenant-1" {
+		t.Fatalf("claims → (%q,%v), want (tenant-1,true)", id, ok)
+	}
+
+	key := &controlplane.APIKey{ID: "k1", TenantID: "tenant-2"}
+	if id, ok := TenantIDFromContext(context.WithValue(ctx, apiKeyCtxKey{}, key)); !ok || id != "tenant-2" {
+		t.Fatalf("api key → (%q,%v), want (tenant-2,true)", id, ok)
 	}
 }

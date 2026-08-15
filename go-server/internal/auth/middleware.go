@@ -67,6 +67,17 @@ func APIKeyFromContext(ctx context.Context) (*controlplane.APIKey, bool) {
 	return k, ok
 }
 
+// TenantIDFromContext trả tenant từ Claims (JWT) hoặc APIKey, bất kể đường auth nào.
+func TenantIDFromContext(ctx context.Context) (string, bool) {
+	if c, ok := ClaimsFromContext(ctx); ok {
+		return c.TenantID, true
+	}
+	if k, ok := APIKeyFromContext(ctx); ok {
+		return k.TenantID, true
+	}
+	return "", false
+}
+
 // InferenceAuth gates inference routes behind a Bearer JWT or a Bearer API key.
 // A JWT puts Claims in the context under ctxKey (so ClaimsFromContext works); an
 // API key goes under apiKeyCtxKey (read via APIKeyFromContext). Invalid → 401;
