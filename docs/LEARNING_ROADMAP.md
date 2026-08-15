@@ -59,7 +59,7 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 | A2. Control plane | Postgres, deployment PENDING→READY, Kafka events, ServingRuntimeAdapter | ✅ Xong (M2) |
 | A3. Routing + rate limit | Model→deployment READY (tenant-scoped), Redis RPM + concurrency | ✅ Xong (M3) |
 | A4. Auth + tenant | JWT/API key trên inference, UI login/chat/keys | ✅ Xong |
-| A5. Reliability | Retry/backoff/jitter, idempotency (Kafka consumer, deploy), circuit breaker, backpressure, load shedding | 🔜 Kế tiếp |
+| A5. Reliability | Retry/backoff/jitter ✅ (mới: `internal/retry` + áp dụng vào worker provisioning); còn lại: idempotency (Kafka consumer, deploy), circuit breaker, backpressure, load shedding | 🔶 Một phần |
 | A6. Observability | Structured logs, metrics (Prometheus-style), traces (OTel), usage metering (requests/tokens) | 🔜 Kế tiếp |
 | A7. Data platform | Kafka → ClickHouse → Superset (nếu mở rộng) | ⛔ Hoãn |
 | A8. Infra | Dockerfile hoàn chỉnh, K8s manifest (nếu cần) | ⛔ Hoãn |
