@@ -28,7 +28,7 @@ message GenerateRequest {
   repeated ToolDefinition tools = 6;
 }
 
-// Message — internal canonical format, Go đã convert từ Anthropic/OpenAI.
+// Message — internal canonical format, Go đã convert từ OpenAI.
 message Message {
   string role = 1;         // "user" | "assistant" | "system"
   string content = 2;      // plain text content (tool results được inline vào đây)
