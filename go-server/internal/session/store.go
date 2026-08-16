@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +17,16 @@ var (
 	ErrSessionForbidden = errors.New("session belongs to another tenant")
 )
 
+// SessionSummary is a lightweight row for the chat sidebar list.
+type SessionSummary struct {
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	Model        string    `json:"model"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	MessageCount int       `json:"message_count"`
+}
+
 // Store persists sessions and their messages. A nil store keeps the Manager
 // purely in-memory (tests, or when the DB is unavailable).
 type Store interface {
@@ -25,6 +36,12 @@ type Store interface {
 	LoadSession(ctx context.Context, id, tenantID string) (*Session, error)
 	// AppendMessage inserts one message for a session at the given seq.
 	AppendMessage(ctx context.Context, sessionID string, seq int, m Message) error
+	// ListSessions returns sidebar summaries for the tenant, newest first.
+	ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error)
+	// RenameSession sets the display title.
+	RenameSession(ctx context.Context, id, tenantID, title string) error
+	// DeleteSession removes a session and its messages.
+	DeleteSession(ctx context.Context, id, tenantID string) error
 }
 
 // PGStore is a PostgreSQL-backed Store.
@@ -41,15 +58,16 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // is ignored rather than claimed.
 func (p *PGStore) UpsertSession(ctx context.Context, s *Session) error {
 	_, err := p.pool.Exec(ctx, `
-		INSERT INTO sessions (id, tenant_id, user_id, model, system_prompt, max_tokens)
-		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, $4, $5, $6::int)
+		INSERT INTO sessions (id, tenant_id, user_id, model, system_prompt, max_tokens, title)
+		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, $4, $5, $6::int, $7)
 		ON CONFLICT (id) DO UPDATE SET
 			model         = EXCLUDED.model,
 			system_prompt = EXCLUDED.system_prompt,
 			max_tokens    = EXCLUDED.max_tokens,
+			title         = EXCLUDED.title,
 			updated_at    = now()
 		WHERE sessions.tenant_id = EXCLUDED.tenant_id`,
-		s.ID, s.TenantID, s.UserID, s.Model, s.SystemPrompt, s.MaxTokens)
+		s.ID, s.TenantID, s.UserID, s.Model, s.SystemPrompt, s.MaxTokens, s.Title)
 	return err
 }
 
@@ -60,9 +78,9 @@ func (p *PGStore) LoadSession(ctx context.Context, id, tenantID string) (*Sessio
 		userID *string // nullable
 	)
 	err := p.pool.QueryRow(ctx, `
-		SELECT tenant_id, user_id, model, system_prompt, max_tokens, created_at, updated_at
+		SELECT tenant_id, user_id, model, system_prompt, max_tokens, title, created_at, updated_at
 		FROM sessions WHERE id = $1 AND tenant_id = $2`, id, tenantID).
-		Scan(&s.TenantID, &userID, &s.Model, &s.SystemPrompt, &s.MaxTokens, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.TenantID, &userID, &s.Model, &s.SystemPrompt, &s.MaxTokens, &s.Title, &s.CreatedAt, &s.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -123,4 +141,61 @@ func (p *PGStore) AppendMessage(ctx context.Context, sessionID string, seq int, 
 		VALUES ($1, $2::int, $3, $4, $5::jsonb, $6, $7, $8)`,
 		sessionID, seq, m.Role, m.Content, toolCalls, m.ToolCallID, m.ToolResult, m.IsError)
 	return err
+}
+
+// ListSessions returns sidebar summaries for the tenant, newest first. The title
+// falls back to the first user message so legacy rows (empty title) still show
+// something meaningful.
+func (p *PGStore) ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error) {
+	rows, err := p.pool.Query(ctx, `
+		SELECT s.id,
+		       COALESCE(NULLIF(s.title, ''),
+		                (SELECT m.content FROM messages m
+		                 WHERE m.session_id = s.id AND m.role = 'user'
+		                 ORDER BY m.seq ASC LIMIT 1),
+		                '') AS title,
+		       s.model, s.created_at, s.updated_at,
+		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)::int AS message_count
+		FROM sessions s
+		WHERE s.tenant_id = $1::uuid
+		ORDER BY s.updated_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SessionSummary{}
+	for rows.Next() {
+		var s SessionSummary
+		if err := rows.Scan(&s.ID, &s.Title, &s.Model, &s.CreatedAt, &s.UpdatedAt, &s.MessageCount); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// RenameSession sets the display title, scoped to the tenant.
+func (p *PGStore) RenameSession(ctx context.Context, id, tenantID, title string) error {
+	tag, err := p.pool.Exec(ctx, `
+		UPDATE sessions SET title = $3, updated_at = now()
+		WHERE id = $1 AND tenant_id = $2::uuid`, id, tenantID, title)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
+// DeleteSession removes a session (messages cascade), scoped to the tenant.
+func (p *PGStore) DeleteSession(ctx context.Context, id, tenantID string) error {
+	tag, err := p.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1 AND tenant_id = $2::uuid`, id, tenantID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
 }

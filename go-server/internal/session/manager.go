@@ -101,6 +101,51 @@ func (m *Manager) List() []string {
 	return ids
 }
 
+// ListSessions returns sidebar summaries for the tenant (store-backed).
+func (m *Manager) ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	return m.store.ListSessions(ctx, tenantID)
+}
+
+// GetPersisted loads a session + messages from the store, scoped to the tenant.
+// Returns ErrSessionNotFound when absent. The returned session is wired to the
+// store so a later AddMessage persists rather than re-upserting.
+func (m *Manager) GetPersisted(ctx context.Context, id, tenantID string) (*Session, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	s, err := m.store.LoadSession(ctx, id, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	s.store = m.store
+	return s, nil
+}
+
+// RenameSession renames a session by id, scoped to the tenant.
+func (m *Manager) RenameSession(ctx context.Context, id, tenantID, title string) error {
+	if m.store == nil {
+		return fmt.Errorf("session store not configured")
+	}
+	return m.store.RenameSession(ctx, id, tenantID, title)
+}
+
+// DeleteSession removes a session from the store and the in-memory cache.
+func (m *Manager) DeleteSession(ctx context.Context, id, tenantID string) error {
+	if m.store == nil {
+		return fmt.Errorf("session store not configured")
+	}
+	if err := m.store.DeleteSession(ctx, id, tenantID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
+	return nil
+}
+
 // NewSessionID generates a unique session ID.
 func NewSessionID() string {
 	return uuid.New().String()

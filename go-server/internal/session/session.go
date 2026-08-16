@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -60,6 +61,10 @@ type Session struct {
 	// System prompt for this session.
 	SystemPrompt string `json:"system_prompt,omitempty"`
 
+	// Display title for the chat sidebar — auto-generated from the first user
+	// message, or renamed by the user.
+	Title string `json:"title,omitempty"`
+
 	// Persistence (nil means in-memory only).
 	store     Store
 	seq       int  // next message sequence number
@@ -88,6 +93,9 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.Messages = append(s.Messages, msg)
 	s.seq++
 	s.UpdatedAt = time.Now()
+	if s.Title == "" && msg.Role == RoleUser {
+		s.Title = truncateTitle(msg.Content)
+	}
 
 	if s.store == nil {
 		return
@@ -122,6 +130,16 @@ func (s *Session) GetMessages() []Message {
 
 // ID returns the session ID.
 func (s *Session) GetID() string { return s.ID }
+
+// truncateTitle collapses whitespace and trims to 40 runes for the sidebar title.
+func truncateTitle(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) > 40 {
+		return string(runes[:40]) + "…"
+	}
+	return s
+}
 
 // EstimatedTokens returns a rough estimate of token count.
 // Go does a character-based estimate; Python worker gives exact count.

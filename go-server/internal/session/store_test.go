@@ -82,3 +82,102 @@ func TestPGStoreRoundTrip(t *testing.T) {
 		t.Errorf("cross-tenant load err = %v, want ErrSessionNotFound", err)
 	}
 }
+
+// TestStoreListRenameDeleteTitle exercises ListSessions/RenameSession/DeleteSession
+// and title persistence against a real Postgres.
+func TestStoreListRenameDeleteTitle(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewPGStore(d.Pool())
+
+	const tenantID = "00000000-0000-0000-0000-000000000001"
+	if _, err := d.Pool().Exec(ctx,
+		`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+		tenantID, "session-store-test"); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	const sessionID = "test-store-list"
+
+	// Clean slate.
+	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	// Build a session + one user message through the Manager so auto-title runs.
+	mgr := NewManagerWithStore(store)
+	s, err := mgr.GetOrCreate(ctx, sessionID, tenantID, "")
+	if err != nil {
+		t.Fatalf("get or create: %v", err)
+	}
+	s.Model = "qwen-3b"
+	s.AddMessage(ctx, Message{Role: RoleUser, Content: "first message that is quite long and will be truncated"})
+
+	// Auto-title: truncate to 40 runes + ellipsis.
+	loaded, err := store.LoadSession(ctx, sessionID, tenantID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Title == "" {
+		t.Fatalf("title empty, want auto-generated")
+	}
+	if runes := []rune(loaded.Title); len(runes) > 41 {
+		t.Fatalf("title = %q, want ≤ 41 runes", loaded.Title)
+	}
+
+	// List returns the session with a title + 1 message.
+	list, err := store.ListSessions(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatalf("list empty, want ≥ 1")
+	}
+	var found *SessionSummary
+	for i := range list {
+		if list[i].ID == sessionID {
+			found = &list[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("list = %+v, want contain %s", list, sessionID)
+	}
+	if found.MessageCount != 1 || found.Title == "" {
+		t.Fatalf("found = %+v, want message_count=1 + non-empty title", *found)
+	}
+
+	// Rename.
+	if err := store.RenameSession(ctx, sessionID, tenantID, "Renamed chat"); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	loaded2, err := store.LoadSession(ctx, sessionID, tenantID)
+	if err != nil {
+		t.Fatalf("load after rename: %v", err)
+	}
+	if loaded2.Title != "Renamed chat" {
+		t.Fatalf("title = %q, want Renamed chat", loaded2.Title)
+	}
+
+	// Cross-tenant rename must NOT find the session.
+	if err := store.RenameSession(ctx, sessionID, "00000000-0000-0000-0000-000000000002", "x"); err != ErrSessionNotFound {
+		t.Fatalf("cross-tenant rename err = %v, want ErrSessionNotFound", err)
+	}
+
+	// Delete.
+	if err := store.DeleteSession(ctx, sessionID, tenantID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := store.LoadSession(ctx, sessionID, tenantID); err != ErrSessionNotFound {
+		t.Fatalf("load after delete err = %v, want ErrSessionNotFound", err)
+	}
+}
