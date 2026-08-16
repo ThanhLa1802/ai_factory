@@ -30,6 +30,11 @@ type DeploymentResolver interface {
 	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*controlplane.Deployment, error)
 }
 
+// UsageRecorder persists token usage per completed turn. Satisfied by *controlplane.Service.
+type UsageRecorder interface {
+	RecordUsage(ctx context.Context, tenantID, model string, promptTokens, completionTokens int) error
+}
+
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	sessionMgr *session.Manager
@@ -38,16 +43,17 @@ type Handler struct {
 	authSvc    *auth.Service
 	secret     []byte
 	resolver   DeploymentResolver
+	usage      UsageRecorder
 	limiter    ratelimit.Limiter
 	rpmLimit   int
 	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, limiter ratelimit.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, usage UsageRecorder, limiter ratelimit.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, authSvc: authSvc, secret: secret,
-		resolver: resolver, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
+		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
@@ -242,9 +248,14 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}
 
 			case agent.LoopEventFinal:
-				// Usage metering (A6): record prompt/completion tokens.
+				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
 					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+					if h.usage != nil {
+						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+							slog.Warn("record usage", "err", err)
+						}
+					}
 				}
 				// Send final chunk
 				data, _ := json.Marshal(map[string]interface{}{
@@ -298,9 +309,14 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 				content += event.Token
 			case agent.LoopEventFinal:
 				usage = event.Usage
-				// Usage metering (A6): record prompt/completion tokens.
+				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
 					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+					if h.usage != nil {
+						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+							slog.Warn("record usage", "err", err)
+						}
+					}
 				}
 			case agent.LoopEventError:
 				if errors.Is(event.Err, inference.ErrOverloaded) {

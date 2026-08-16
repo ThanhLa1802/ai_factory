@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,8 @@ func (h *ControlPlaneHandler) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.Handle("POST /api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionQuotaManage)(http.HandlerFunc(h.handleUpsertQuota)))
 	mux.Handle("GET /api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionUsageRead)(http.HandlerFunc(h.handleListQuotas)))
+
+	mux.Handle("GET /api/v1/usage", auth.RequirePermission(h.secret, auth.ActionUsageRead)(http.HandlerFunc(h.handleGetUsage)))
 }
 
 // --- auth ---
@@ -401,6 +404,53 @@ func (h *ControlPlaneHandler) handleListQuotas(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusOK, qs)
+}
+
+func (h *ControlPlaneHandler) handleGetUsage(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+
+	days := 30
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 90 {
+			days = n
+		}
+	}
+
+	// +5s tolerance on `now`: the DB clock may be slightly ahead of the app host
+	// (WSL2/Docker clock drift); without it, just-inserted usage rows can fall
+	// outside the exclusive `to` bounds and be missed.
+	now := time.Now().UTC().Add(5 * time.Second)
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	monthStart := now.AddDate(0, 0, -30)
+	dailyStart := now.AddDate(0, 0, -(days - 1))
+
+	today, err := h.cp.UsageSummary(r.Context(), claims.TenantID, todayStart, now)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	month, err := h.cp.UsageSummary(r.Context(), claims.TenantID, monthStart, now)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	daily, err := h.cp.UsageDaily(r.Context(), claims.TenantID, dailyStart, now)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	byModel, err := h.cp.UsageByModel(r.Context(), claims.TenantID, monthStart, now)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"today":    today,
+		"month":    month,
+		"daily":    daily,
+		"by_model": byModel,
+	})
 }
 
 // --- helpers ---

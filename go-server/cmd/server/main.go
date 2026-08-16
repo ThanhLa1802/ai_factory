@@ -133,7 +133,7 @@ func main() {
 	slog.Info("ui directory", "dir", dir)
 
 	// HTTP handler
-	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret), cp, limiter, cfg.RateLimitRPM, cfg.RateLimitConcurrency)
+	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret), cp, cp, limiter, cfg.RateLimitRPM, cfg.RateLimitConcurrency)
 
 	// Register routes
 	mux := http.NewServeMux()

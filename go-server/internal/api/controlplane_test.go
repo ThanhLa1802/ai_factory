@@ -487,7 +487,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	te := agent.NewLocalToolExecutor(t.TempDir())
 	loop := agent.NewLoop(bs, te)
 	sess := session.NewManager()
-	h := NewHandler(sess, loop, t.TempDir(), authSvc, secret, cp, nil, 60, 4)
+	h := NewHandler(sess, loop, t.TempDir(), authSvc, secret, cp, cp, nil, 60, 4)
 
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
