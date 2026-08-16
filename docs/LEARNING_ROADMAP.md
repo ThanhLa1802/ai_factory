@@ -61,6 +61,7 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 | A4. Auth + tenant | JWT/API key trên inference, UI login/chat/keys | ✅ Xong |
 | A5. Reliability | Retry/backoff/jitter (`internal/retry` + worker provisioning), idempotency (Kafka consumer state-machine guard + deploy `Idempotency-Key` + `idempotency_keys` table), circuit breaker (`internal/circuitbreaker` + worker), backpressure/load shedding (BatchScheduler `TrySubmit` → 503) | ✅ Xong |
 | A6. Observability | Structured logs (slog JSON toàn bộ), metrics (Prometheus `serving_*`: requests, duration, tokens, inflight, overloaded), trace span kiểu W3C `traceparent` (dependency-free; OTel SDK có thể thay sau), usage metering (prompt/completion tokens) | ✅ Xong |
+| A9. UI (NextJS) | Web app `web/` — platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` về Go qua rewrites; JWT + role gating | ✅ Xong |
 | A7. Data platform | Kafka → ClickHouse → Superset (nếu mở rộng) | ⛔ Hoãn |
 | A8. Infra | Dockerfile hoàn chỉnh, K8s manifest (nếu cần) | ⛔ Hoãn |
 

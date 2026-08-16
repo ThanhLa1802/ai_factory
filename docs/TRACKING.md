@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-08-15** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-08-16** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -30,9 +30,24 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | Tuần 3–4 | Tự viết tokenizer byte-level BPE | ✅ Xong |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Xong |
 | M2 — Runtime adapter + async deploy | ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker | ✅ Done |
+| UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
+
+---
+
+## ✅ UI — NextJS app (`web/`)
+
+Trạng thái: **✅ Xong** (2026-08-16) — lớp giao diện thay/nhánh song song UI tĩnh cũ (`ui/`) để **test Track A** (control plane + inference) trên browser.
+
+Go server không đổi; NextJS proxy `/api/v1/*`, `/v1/*`, `/health`, `/metrics` về Go server qua `rewrites()` (`AI_FACTORY_API_URL`, mặc định `http://localhost:8080`) nên browser chỉ gọi same-origin (SSE stream không vướng CORS).
+
+- **Routes:** `/login` (JWT), `/chat` (SSE chat, markdown, model selector — mặc định `qwen-3b`, giữ lịch sử qua `x-session-id`), `/keys` (API key CRUD), `/platform` (deployments + start/stop, models + versions, templates + versions, quotas), `/admin` (tenants — chỉ `PLATFORM_ADMIN`).
+- **Auth:** JWT lưu `localStorage`; decode payload client-side để phân role (`PLATFORM_ADMIN`/`TENANT_ADMIN`/`TENANT_DEVELOPER`/`TENANT_VIEWER`); mọi API gọi kèm `Authorization: Bearer`. Dùng `useSyncExternalStore` cho auth state (không effect-hydration).
+- **Tech:** Next 16.3.1 (App Router), React 19, Tailwind v4, TypeScript, `react-markdown` + `remark-gfm`. `npm run lint` + `npm run build` sạch.
+- **Chạy:** `cd web && npm install && npm run dev` → http://localhost:3000 (cần Go server chạy ở 8080; Python worker nếu muốn infer thật).
+- **Ghi chú smoke test:** `/health`, `/api/v1/auth/login`, `/api/v1/models`, `/api/v1/deployments` proxy OK. Streaming `/v1/chat/completions` có thể trả `"streaming not supported"` nếu Go server đang chạy binary cũ — fix `statusRecorder.Flush` ở commit `094fcc0`; restart Go server để SSE chạy.
 
 ---
 
@@ -118,6 +133,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-16 | UI — NextJS app (`web/`): platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` + `/health` + `/metrics` về Go server qua rewrites; routes `/login` `/chat` `/keys` `/platform` `/admin`; auth JWT + role gating. |
 | 2026-08-16 | A6 (Observability) — hoàn tất: toàn bộ log chuyển sang slog JSON (không còn `log.Printf`); metrics mới `serving_tokens_total` (usage metering), `serving_inflight_requests`, `serving_overloaded_total`; trace span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng JSON structured log, dependency-free (`internal/observability/trace.go`); ghi token usage ở handler khi nhận `final` event. |
 | 2026-08-15 | A5 (Reliability) — hoàn tất: circuit breaker (`internal/circuitbreaker` 3-state + gắn vào worker provisioning), idempotency deploy (`Idempotency-Key` header + bảng `idempotency_keys`), backpressure/load shedding (BatchScheduler `TrySubmit` → `ErrOverloaded` → 503). Kafka consumer idempotent sẵn qua state-machine guard trong worker. |
 | 2026-08-15 | A5 (Reliability) — bắt đầu: retry/backoff/jitter (`internal/retry` + áp dụng vào worker provisioning: RequestCapacity, adapter.Start). Còn lại A5: idempotency, circuit breaker, backpressure, load shedding. |

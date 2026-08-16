@@ -122,6 +122,7 @@ ai_factory/
 │       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
 ├── models/                      # GGUF + llama.cpp: Qwen3.5-9B-Q4_K_M.gguf, llama.cpp/llama-server.exe
 ├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
+├── web/                         # NextJS UI (App Router): /login /chat /keys /platform /admin
 ├── docs/                        # ARCHITECTURE.md, BENCHMARK.md, superpowers/specs/
 ├── scripts/                     # setup.sh, setup.ps1
 ├── CONTEXT.md                   # Domain glossary
@@ -195,6 +196,9 @@ cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen
 # deployment for the demo tenant (best-effort; skip with AI_FACTORY_SKIP_SEED=1).
 # The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
+
+# Terminal 3: NextJS UI (default port 3000) — proxies /api/v1 + /v1 + SSE to the Go server.
+cd web && npm install && npm run dev
 
 # Quick test (OpenAI adapter) — content is a plain STRING
 # NOTE: inference endpoints now require auth. Login first, then pass the JWT (or an API key):
