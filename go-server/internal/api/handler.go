@@ -153,6 +153,12 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 	}
 	sess, err := h.sessionMgr.GetOrCreate(r.Context(), sessionID, tenantID, userID)
 	if err != nil {
+		// A cross-tenant session-id collision must be indistinguishable from a
+		// missing session — 404 never reveals that the id exists elsewhere.
+		if errors.Is(err, session.ErrSessionForbidden) {
+			writeOpenAIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		}
 		writeOpenAIError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
 		return
 	}

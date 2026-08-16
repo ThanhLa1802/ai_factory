@@ -34,6 +34,10 @@ type Store interface {
 	UpsertSession(ctx context.Context, s *Session) error
 	// LoadSession fetches a session + its messages by id, scoped to the tenant.
 	LoadSession(ctx context.Context, id, tenantID string) (*Session, error)
+	// SessionExists reports whether a session row with the given id exists under
+	// ANY tenant (no tenant filter) — used to reject cross-tenant session-id
+	// collisions on a cold cache.
+	SessionExists(ctx context.Context, id string) (bool, error)
 	// AppendMessage inserts one message for a session at the given seq.
 	AppendMessage(ctx context.Context, sessionID string, seq int, m Message) error
 	// ListSessions returns sidebar summaries for the tenant, newest first.
@@ -55,9 +59,9 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // UpsertSession inserts the session on first use and refreshes mutable metadata
 // (model, system prompt, token budget) on subsequent messages. tenant_id/user_id
 // are never overwritten on conflict — a colliding session id from another tenant
-// is ignored rather than claimed.
+// surfaces as ErrSessionForbidden rather than being silently claimed.
 func (p *PGStore) UpsertSession(ctx context.Context, s *Session) error {
-	_, err := p.pool.Exec(ctx, `
+	ct, err := p.pool.Exec(ctx, `
 		INSERT INTO sessions (id, tenant_id, user_id, model, system_prompt, max_tokens, title)
 		VALUES ($1, $2::uuid, NULLIF($3, '')::uuid, $4, $5, $6::int, $7)
 		ON CONFLICT (id) DO UPDATE SET
@@ -68,7 +72,29 @@ func (p *PGStore) UpsertSession(ctx context.Context, s *Session) error {
 			updated_at    = now()
 		WHERE sessions.tenant_id = EXCLUDED.tenant_id`,
 		s.ID, s.TenantID, s.UserID, s.Model, s.SystemPrompt, s.MaxTokens, s.Title)
-	return err
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		// The conflict fired on a row whose tenant_id != EXCLUDED.tenant_id, so the
+		// guarded UPDATE no-oped. The id belongs to another tenant — never silently
+		// claim it (that would let this caller write into a foreign conversation).
+		return ErrSessionForbidden
+	}
+	return nil
+}
+
+// SessionExists reports whether a session row with the given id exists under ANY
+// tenant (no tenant filter). Used to tell "id never existed" apart from "id is
+// already claimed by another tenant" so a cold cache never mints a shadow session.
+func (p *PGStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	var exists bool
+	err := p.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1)`, id).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // LoadSession reconstructs a Session from the sessions + messages tables.

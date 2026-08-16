@@ -65,6 +65,17 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID, tenantID, userID s
 			return s, nil
 		} else if !errors.Is(err, ErrSessionNotFound) {
 			slog.Error("load session", "session_id", sessionID, "err", err)
+		} else {
+			// The id isn't visible to this tenant, but it may still exist under
+			// another tenant's ownership. Distinguish "never existed" from
+			// "claimed elsewhere" so a cold cache doesn't mint a shadow session
+			// that would let this tenant write into a foreign conversation.
+			exists, exErr := m.store.SessionExists(ctx, sessionID)
+			if exErr != nil {
+				slog.Error("session exists", "session_id", sessionID, "err", exErr)
+			} else if exists {
+				return nil, ErrSessionForbidden
+			}
 		}
 	}
 

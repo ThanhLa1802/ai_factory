@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -80,6 +81,129 @@ func TestPGStoreRoundTrip(t *testing.T) {
 	// Scoping: a different tenant must not see the session.
 	if _, err := store.LoadSession(ctx, s.ID, "00000000-0000-0000-0000-000000000002"); err != ErrSessionNotFound {
 		t.Errorf("cross-tenant load err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+// TestSessionForbiddenCrossTenantGetOrCreate reproduces the cross-tenant write
+// bug: tenant B presents tenant A's session id on a cold cache. GetOrCreate must
+// return ErrSessionForbidden (not mint a shadow session) and must not insert any
+// message into A's persisted conversation.
+func TestSessionForbiddenCrossTenantGetOrCreate(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewPGStore(d.Pool())
+
+	const (
+		tenantA   = "00000000-0000-0000-0000-000000000011"
+		tenantB   = "00000000-0000-0000-0000-000000000012"
+		sessionID = "test-forbidden-session"
+	)
+	for i, id := range []string{tenantA, tenantB} {
+		if _, err := d.Pool().Exec(ctx,
+			`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+			id, fmt.Sprintf("session-forbidden-test-%d", i)); err != nil {
+			t.Fatalf("insert tenant %s: %v", id, err)
+		}
+	}
+	// Clean slate so re-runs don't hit the (session_id, seq) unique constraint.
+	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	// Tenant A persists a session with one private message.
+	mgrA := NewManagerWithStore(store)
+	sA, err := mgrA.GetOrCreate(ctx, sessionID, tenantA, "")
+	if err != nil {
+		t.Fatalf("tenant A get or create: %v", err)
+	}
+	sA.AddMessage(ctx, Message{Role: RoleUser, Content: "private"})
+
+	// Cold cache: a fresh manager has no in-memory copy of A's session.
+	mgrB := NewManagerWithStore(store)
+	if _, err := mgrB.GetOrCreate(ctx, sessionID, tenantB, ""); err != ErrSessionForbidden {
+		t.Fatalf("tenant B get or create err = %v, want ErrSessionForbidden", err)
+	}
+
+	// B's attempt must not have written any messages into A's session.
+	var n int
+	if err := d.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("messages under %s = %d, want 1 (only A's)", sessionID, n)
+	}
+}
+
+// TestSessionForbiddenUpsertZeroRow covers the defense-in-depth layer: even if
+// a colliding session reaches UpsertSession, the ON CONFLICT ... WHERE tenant_id
+// guard no-ops and must surface as ErrSessionForbidden instead of a silent success.
+func TestSessionForbiddenUpsertZeroRow(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	d, err := db.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Pool().Close() })
+	if err := d.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	store := NewPGStore(d.Pool())
+
+	const (
+		tenantA   = "00000000-0000-0000-0000-000000000013"
+		tenantB   = "00000000-0000-0000-0000-000000000014"
+		sessionID = "test-forbidden-upsert"
+	)
+	for i, id := range []string{tenantA, tenantB} {
+		if _, err := d.Pool().Exec(ctx,
+			`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+			id, fmt.Sprintf("session-forbidden-upsert-%d", i)); err != nil {
+			t.Fatalf("insert tenant %s: %v", id, err)
+		}
+	}
+	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+
+	// Tenant A persists a session with one message.
+	mgrA := NewManagerWithStore(store)
+	sA, err := mgrA.GetOrCreate(ctx, sessionID, tenantA, "")
+	if err != nil {
+		t.Fatalf("tenant A get or create: %v", err)
+	}
+	sA.AddMessage(ctx, Message{Role: RoleUser, Content: "private"})
+
+	// Tenant B upserts a session object with the colliding id directly.
+	sB := NewSession(sessionID, DefaultMaxTokens)
+	sB.TenantID = tenantB
+	sB.Model = "qwen-3b"
+	if err := store.UpsertSession(ctx, sB); err != ErrSessionForbidden {
+		t.Fatalf("upsert err = %v, want ErrSessionForbidden", err)
+	}
+
+	var n int
+	if err := d.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("messages under %s = %d, want 1 (only A's)", sessionID, n)
 	}
 }
 
