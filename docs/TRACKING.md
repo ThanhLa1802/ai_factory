@@ -110,7 +110,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 - [ ] **Tool từ client chưa nối** (§9.2) — loop luôn dùng 4 built-in tools, tool client khai báo trong request bị bỏ qua.
 - [ ] **Bug nhỏ `--max-concurrent`** (§9.4) — flag ≤ 1 không ghi đè batch size; log `max_batch` sai khi flag = 1.
 - [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
-- [ ] Chưa có: persistence, sandbox cho `run_command`, observability (usage/tracing/cost).
+- [ ] Chưa có: persistence, sandbox cho `run_command`, cost metering (billing theo usage).
 
 ---
 
@@ -118,6 +118,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-16 | A6 (Observability) — hoàn tất: toàn bộ log chuyển sang slog JSON (không còn `log.Printf`); metrics mới `serving_tokens_total` (usage metering), `serving_inflight_requests`, `serving_overloaded_total`; trace span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng JSON structured log, dependency-free (`internal/observability/trace.go`); ghi token usage ở handler khi nhận `final` event. |
 | 2026-08-15 | A5 (Reliability) — hoàn tất: circuit breaker (`internal/circuitbreaker` 3-state + gắn vào worker provisioning), idempotency deploy (`Idempotency-Key` header + bảng `idempotency_keys`), backpressure/load shedding (BatchScheduler `TrySubmit` → `ErrOverloaded` → 503). Kafka consumer idempotent sẵn qua state-machine guard trong worker. |
 | 2026-08-15 | A5 (Reliability) — bắt đầu: retry/backoff/jitter (`internal/retry` + áp dụng vào worker provisioning: RequestCapacity, adapter.Start). Còn lại A5: idempotency, circuit breaker, backpressure, load shedding. |
 | 2026-08-15 | M3 — inference routing (model→deployment READY, tenant isolation) + rate limit (Redis: tenant RPM + concurrency). Spec docs/superpowers/specs/2026-08-15-inference-routing-rate-limit-design.md. |

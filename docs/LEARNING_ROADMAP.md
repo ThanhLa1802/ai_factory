@@ -26,7 +26,7 @@
 | Auth / tenant / quota | Consumer slice: JWT + API key, UI login/chat/keys | ✅ Xong |
 | Distributed Systems: retry, backoff, timeout, backpressure | `internal/retry` (exp backoff + jitter), `internal/circuitbreaker` (3-state CLOSED/OPEN/HALF-OPEN), BatchScheduler `TrySubmit` backpressure + load shedding → 503, cancel propagation | ✅ Xong |
 | LLM Serving concepts (tokenization, prefill, decode, KV cache, batching, TTFT/TPOT) | Đúng phần lõi dự án — đang tự viết từng phần | 🔜 Đang làm |
-| Observability (logs/metrics/traces, structured logging, không log prompt/key) | **Chưa có** — đúng mục tiêu kế tiếp | 🔜 Kế tiếp |
+| Observability (logs/metrics/traces, structured logging, không log prompt/key) | slog JSON toàn bộ, Prometheus `serving_*` (requests/duration/tokens/inflight/overloaded), trace span kiểu W3C `traceparent` (log-based, không OTel SDK), usage metering | ✅ Xong |
 | System Design (10 câu hỏi §30) | Áp dụng khi review kiến trúc (routing, cancel, async deploy) | 🔜 Thường trực |
 
 ### 1.2 Phần KHÔNG khớp với dự án hiện tại (chỉ để tham khảo)
@@ -60,7 +60,7 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 | A3. Routing + rate limit | Model→deployment READY (tenant-scoped), Redis RPM + concurrency | ✅ Xong (M3) |
 | A4. Auth + tenant | JWT/API key trên inference, UI login/chat/keys | ✅ Xong |
 | A5. Reliability | Retry/backoff/jitter (`internal/retry` + worker provisioning), idempotency (Kafka consumer state-machine guard + deploy `Idempotency-Key` + `idempotency_keys` table), circuit breaker (`internal/circuitbreaker` + worker), backpressure/load shedding (BatchScheduler `TrySubmit` → 503) | ✅ Xong |
-| A6. Observability | Structured logs, metrics (Prometheus-style), traces (OTel), usage metering (requests/tokens) | 🔜 Kế tiếp |
+| A6. Observability | Structured logs (slog JSON toàn bộ), metrics (Prometheus `serving_*`: requests, duration, tokens, inflight, overloaded), trace span kiểu W3C `traceparent` (dependency-free; OTel SDK có thể thay sau), usage metering (prompt/completion tokens) | ✅ Xong |
 | A7. Data platform | Kafka → ClickHouse → Superset (nếu mở rộng) | ⛔ Hoãn |
 | A8. Infra | Dockerfile hoàn chỉnh, K8s manifest (nếu cần) | ⛔ Hoãn |
 

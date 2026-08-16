@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,43 +29,43 @@ import (
 
 func main() {
 	var (
-		httpPort         = flag.Int("port", 8080, "HTTP server port")
-		inferenceAddr    = flag.String("inference-addr", "localhost:50051", "Python inference worker gRPC address")
-		workDir          = flag.String("workdir", ".", "Working directory for tool execution")
-		maxConcurrent     = flag.Int("max-concurrent", 1, "Max concurrent inference requests")
-		uiDir             = flag.String("ui-dir", "", "Directory with standalone UI HTML (default: auto-detect ui/ or ../ui)")
+		httpPort      = flag.Int("port", 8080, "HTTP server port")
+		inferenceAddr = flag.String("inference-addr", "localhost:50051", "Python inference worker gRPC address")
+		workDir       = flag.String("workdir", ".", "Working directory for tool execution")
+		maxConcurrent = flag.Int("max-concurrent", 1, "Max concurrent inference requests")
+		uiDir         = flag.String("ui-dir", "", "Directory with standalone UI HTML (default: auto-detect ui/ or ../ui)")
 	)
 	flag.Parse()
 
 	// Load config from environment + structured logger (JSON slog).
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		slog.Error("config", "err", err)
+		os.Exit(1)
 	}
 	observability.SetupLogger(cfg.LogLevel)
-
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("=== AI Factory Server ===")
-	log.Printf("HTTP port: %d", *httpPort)
-	log.Printf("Inference worker: %s", *inferenceAddr)
+	slog.Info("AI Factory Server starting", "http_port", *httpPort, "inference_addr", *inferenceAddr)
 
 	// Control plane persistence (mandatory)
 	ctx := context.Background()
 	d, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("database: %v", err)
+		slog.Error("database", "err", err)
+		os.Exit(1)
 	}
 	defer d.Pool().Close()
 	if err := d.Migrate(ctx); err != nil {
-		log.Fatalf("migrate: %v", err)
+		slog.Error("migrate", "err", err)
+		os.Exit(1)
 	}
 	cp := controlplane.NewService(d.Pool())
 	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 15*time.Minute)
 	if err := seedAdmin(ctx, cp); err != nil {
-		log.Fatalf("seed: %v", err)
+		slog.Error("seed", "err", err)
+		os.Exit(1)
 	}
 	if err := seedDemo(ctx, cp); err != nil {
-		log.Printf("WARN: seed demo deployment: %v", err)
+		slog.Warn("seed demo deployment", "err", err)
 	}
 
 	// Redis-backed rate limiter (fixed-window RPM + concurrency).
@@ -79,40 +78,41 @@ func main() {
 	var producer events.Producer
 	var consumer events.Consumer
 	if kafkaBus, kafkaErr := events.NewKafkaEventBus(cfg.KafkaAddr); kafkaErr != nil {
-		log.Printf("WARN: kafka unreachable at %s — deployment worker disabled (%v)", cfg.KafkaAddr, kafkaErr)
+		slog.Warn("kafka unreachable; deployment worker disabled", "addr", cfg.KafkaAddr, "err", kafkaErr)
 		mem := events.NewMemoryEventBus()
 		producer, consumer = mem, mem
 	} else {
 		defer kafkaBus.Close()
-		log.Printf("Kafka event bus connected: %s", cfg.KafkaAddr)
+		slog.Info("kafka event bus connected", "addr", cfg.KafkaAddr)
 		producer, consumer = kafkaBus, kafkaBus
 		worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter(*inferenceAddr), runtime.NewMockComputeProvider(), producer, consumer, slog.Default())
 		if err := worker.Run(ctx); err != nil {
-			log.Fatalf("deployment worker: %v", err)
+			slog.Error("deployment worker", "err", err)
+			os.Exit(1)
 		}
-		log.Println("Deployment worker started (async deploy)")
+		slog.Info("deployment worker started (async deploy)")
 	}
 	cph := api.NewControlPlaneHandler(cp, authSvc, []byte(cfg.JWTSecret), producer)
 
 	// Connect to Python inference worker
 	inferenceClient, err := inference.NewClient(*inferenceAddr)
 	if err != nil {
-		log.Fatalf("Failed to connect to inference worker: %v", err)
+		slog.Error("connect inference worker", "addr", *inferenceAddr, "err", err)
+		os.Exit(1)
 	}
 	defer inferenceClient.Close()
-	log.Println("Connected to inference worker")
+	slog.Info("connected to inference worker", "addr", *inferenceAddr)
 
 	// Batch scheduler — collects requests in 100ms windows for GPU batching
 	batchScheduler := inference.NewBatchScheduler(inferenceClient)
 	if *maxConcurrent > 1 {
 		batchScheduler.SetMaxBatchSize(*maxConcurrent)
 	}
-	log.Printf("Batch scheduler ready: window=%v, max_batch=%d",
-		inference.DefaultBatchWindow, *maxConcurrent)
+	slog.Info("batch scheduler ready", "window", inference.DefaultBatchWindow.String(), "max_batch", *maxConcurrent)
 
 	// Tool executor
 	toolExecutor := agent.NewLocalToolExecutor(*workDir)
-	log.Printf("Tool executor ready with %d tools", len(toolExecutor.ListTools()))
+	slog.Info("tool executor ready", "tools", len(toolExecutor.ListTools()))
 
 	// Agentic loop — uses batch scheduler instead of direct inference
 	loop := agent.NewLoop(batchScheduler, toolExecutor)
@@ -129,7 +129,7 @@ func main() {
 			dir = "../ui"
 		}
 	}
-	log.Printf("UI directory: %s", dir)
+	slog.Info("ui directory", "dir", dir)
 
 	// HTTP handler
 	handler := api.NewHandler(sessionMgr, loop, dir, authSvc, []byte(cfg.JWTSecret), cp, limiter, cfg.RateLimitRPM, cfg.RateLimitConcurrency)
@@ -142,8 +142,9 @@ func main() {
 	// Metrics endpoint (Prometheus) — on the same mux as the API routes.
 	mux.Handle("/metrics", observability.MetricsHandler())
 
-	// Middleware: CORS trước (cho UI chạy độc lập ở origin khác), rồi logging, rồi metrics
-	loggedMux := corsMiddleware(loggingMiddleware(metricsMiddleware(mux)))
+	// Middleware chain: CORS trước (cho UI chạy độc lập ở origin khác), rồi trace
+	// (root span per request), rồi logging, rồi metrics.
+	loggedMux := corsMiddleware(traceMiddleware(loggingMiddleware(metricsMiddleware(mux))))
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%d", *httpPort),
@@ -155,24 +156,26 @@ func main() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Println("Shutting down...")
+		slog.Info("shutting down")
 		server.Close()
 	}()
 
-	log.Printf("Server listening on http://localhost:%d", *httpPort)
-	log.Printf("  OpenAI:    POST http://localhost:%d/v1/chat/completions", *httpPort)
-	log.Printf("  Health:    GET  http://localhost:%d/health", *httpPort)
+	slog.Info("server listening",
+		"addr", fmt.Sprintf(":%d", *httpPort),
+		"openai", fmt.Sprintf("http://localhost:%d/v1/chat/completions", *httpPort),
+		"health", fmt.Sprintf("http://localhost:%d/health", *httpPort))
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("Server error: %v", err)
+		slog.Error("server error", "err", err)
+		os.Exit(1)
 	}
-	log.Println("Server stopped.")
+	slog.Info("server stopped")
 }
 
-// loggingMiddleware logs each request.
+// loggingMiddleware logs each request as a structured JSON line.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("[http] %s %s", r.Method, r.URL.Path)
+		slog.Info("http request", "method", r.Method, "path", r.URL.Path)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -192,13 +195,28 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// traceMiddleware continues an inbound W3C traceparent (if any) and starts a
+// root span for the request. The span — and therefore the trace — ends when the
+// handler returns. See observability.StartSpan/End (A6 — traces).
+func traceMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := observability.ExtractTraceparent(r.Context(), r.Header.Get(observability.TraceparentHeader))
+		ctx, span := observability.StartSpan(ctx, "http "+r.Method+" "+r.URL.Path)
+		defer span.End()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // metricsMiddleware ghi status + duration của mỗi request vào Prometheus.
 // Labels tenant/deployment/model/region được handler set trên statusRecorder
 // sau khi route resolve (xem observability.RouteLabelSetter); nếu handler không
 // set thì chúng để trống. Status ghi HTTP status code thật.
+// Đồng thời theo dõi số request đang phục vụ (serving_inflight_requests).
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		observability.IncInflight()
+		defer observability.DecInflight()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		status := strconv.Itoa(rec.status)

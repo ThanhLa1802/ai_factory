@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/ai-factory/go-server/internal/auth"
@@ -59,7 +59,7 @@ func seedAdmin(ctx context.Context, cp *controlplane.Service) error {
 	if _, err := cp.CreateUser(ctx, username, username+"@localhost", hash, auth.RolePlatformAdmin, tenant.ID); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
-	log.Printf("seeded tenant=%s admin=%s (password in AI_FACTORY_ADMIN_PASSWORD or default)", tenantName, username)
+	slog.Info("seeded admin", "tenant", tenantName, "admin", username)
 	return nil
 }
 
@@ -125,6 +125,6 @@ func seedDemo(ctx context.Context, cp *controlplane.Service) error {
 			return fmt.Errorf("seed transition to %s: %w", to, err)
 		}
 	}
-	log.Printf("seeded demo model qwen-3b + READY deployment %s (tenant %s)", d.ID, tenantID)
+	slog.Info("seeded demo model + READY deployment", "model", "qwen-3b", "deployment", d.ID, "tenant", tenantID)
 	return nil
 }

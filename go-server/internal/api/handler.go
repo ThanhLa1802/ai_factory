@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -92,7 +92,7 @@ func (h *Handler) resolveForTenant(ctx context.Context, w http.ResponseWriter, t
 func (h *Handler) allow(ctx context.Context, key string, limit int, window time.Duration) bool {
 	ok, err := h.limiter.Allow(ctx, key, limit, window)
 	if err != nil {
-		log.Printf("rate limit allow error (fail-open): %v", err)
+		slog.Warn("rate limit allow error (fail-open)", "err", err)
 		return true
 	}
 	return ok
@@ -101,7 +101,7 @@ func (h *Handler) allow(ctx context.Context, key string, limit int, window time.
 func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
 	ok, err := h.limiter.Acquire(ctx, key, limit)
 	if err != nil {
-		log.Printf("rate limit acquire error (fail-open): %v", err)
+		slog.Warn("rate limit acquire error (fail-open)", "err", err)
 		return true
 	}
 	return ok
@@ -163,13 +163,13 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 	}()
 
 	if req.Stream {
-		h.handleOpenAIStream(ctx, w, sess, msgs, params, req.Model)
+		h.handleOpenAIStream(ctx, w, sess, msgs, params, req.Model, tenantID)
 	} else {
-		h.handleOpenAINonStream(ctx, w, sess, msgs, params, req.Model)
+		h.handleOpenAINonStream(ctx, w, sess, msgs, params, req.Model, tenantID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
@@ -230,6 +230,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}
 
 			case agent.LoopEventFinal:
+				// Usage metering (A6): record prompt/completion tokens.
+				if event.Usage != nil {
+					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+				}
 				// Send final chunk
 				data, _ := json.Marshal(map[string]interface{}{
 					"id":      completionID,
@@ -252,6 +256,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				// saturated, so tell the client to back off. SSE already started,
 				// so surface it as an error frame rather than an HTTP status.
 				if errors.Is(event.Err, inference.ErrOverloaded) {
+					observability.IncOverloaded(tenantID, modelID)
 					sse.SendError("OVERLOADED: " + event.Err.Error())
 					return
 				}
@@ -266,7 +271,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
 	var (
 		content string
 		usage   *inference.Usage
@@ -281,8 +286,13 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 				content += event.Token
 			case agent.LoopEventFinal:
 				usage = event.Usage
+				// Usage metering (A6): record prompt/completion tokens.
+				if event.Usage != nil {
+					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+				}
 			case agent.LoopEventError:
 				if errors.Is(event.Err, inference.ErrOverloaded) {
+					observability.IncOverloaded(tenantID, modelID)
 					writeOpenAIError(w, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
 					return
 				}
@@ -294,9 +304,9 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	}
 
 	resp := map[string]interface{}{
-		"id":      "chatcmpl-" + uuid.New().String()[:8],
-		"object":  "chat.completion",
-		"model":   modelID,
+		"id":     "chatcmpl-" + uuid.New().String()[:8],
+		"object": "chat.completion",
+		"model":  modelID,
 		"choices": []map[string]interface{}{
 			{
 				"index": 0,

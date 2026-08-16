@@ -3,7 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -282,7 +282,7 @@ func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *h
 
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		if err := h.cp.SaveIdempotencyKey(r.Context(), claims.TenantID, key, "deployment", created.ID); err != nil {
-			log.Printf("warn: save idempotency key: %v", err) // non-fatal: replay safety is best-effort
+			slog.Warn("save idempotency key", "err", err) // non-fatal: replay safety is best-effort
 		}
 	}
 

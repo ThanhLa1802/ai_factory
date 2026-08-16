@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	pb "github.com/ai-factory/go-server/internal/inference/pb"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -173,8 +174,14 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 	}
 
 	batchID := uuid.New().String()[:8]
-	log.Printf("[batch_scheduler] Dispatching batch %s: %d requests (window=%v, max=%d)",
-		batchID, len(batch), bs.batchWindow, bs.maxBatchSize)
+	// A6 trace: the batch is a child of the first request's span (agent.loop).
+	bctx := context.Background()
+	if len(batch) > 0 {
+		bctx = batch[0].ctx
+	}
+	_, span := observability.StartSpan(bctx, "inference.batch", "batch_id", batchID, "batch_size", len(batch))
+	defer span.End()
+	slog.Info("dispatching batch", "batch_id", batchID, "requests", len(batch), "window", bs.batchWindow.String(), "max", bs.maxBatchSize)
 
 	// Build index: request_id → batchItem
 	index := make(map[string]*batchItem, len(batch))
@@ -193,7 +200,7 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 	ctx := context.Background()
 	stream, err := bs.client.BatchGenerate(ctx, pbBatch)
 	if err != nil {
-		log.Printf("[batch_scheduler] Batch %s: gRPC error: %v", batchID, err)
+		slog.Error("batch gRPC error", "batch_id", batchID, "err", err)
 		bs.failAll(batch, fmt.Errorf("batch generate failed: %w", err))
 		return
 	}
@@ -205,10 +212,9 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 		if err != nil {
 			// Stream ended (io.EOF) or error
 			if isEOF(err) {
-				log.Printf("[batch_scheduler] Batch %s complete: %d requests, %d tokens",
-					batchID, len(batch), totalTokens)
+				slog.Info("batch complete", "batch_id", batchID, "requests", len(batch), "tokens", totalTokens)
 			} else {
-				log.Printf("[batch_scheduler] Batch %s stream error: %v", batchID, err)
+				slog.Error("batch stream error", "batch_id", batchID, "err", err)
 				// On real error, fail only unfinished requests still in index
 				for _, item := range index {
 					select {
@@ -229,7 +235,7 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 		// Route event to correct request
 		item, ok := index[pbResp.RequestId]
 		if !ok {
-			log.Printf("[batch_scheduler] Unknown request_id in batch response: %s", pbResp.RequestId)
+			slog.Warn("unknown request_id in batch response", "batch_id", batchID, "request_id", pbResp.RequestId)
 			continue
 		}
 
@@ -359,4 +365,3 @@ func isEOF(err error) bool {
 
 // To implement inference executor interface for backward compat.
 // BatchScheduler can be used wherever the inference client was used.
-

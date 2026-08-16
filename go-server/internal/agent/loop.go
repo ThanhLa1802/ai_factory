@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -91,6 +92,9 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 	go func() {
 		defer close(events)
+		// A6 trace: one span per generation (may run multiple iterations).
+		_, span := observability.StartSpan(ctx, "agent.loop", "session_id", sess.GetID())
+		defer span.End()
 
 		// Add user message to session
 		sess.AddMessage(userMessage)
@@ -185,10 +189,10 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 					usage = event.Usage
 
 					if event.StopReason == "STOP_ERROR" {
-						log.Printf("[loop] Inference error: %s", event.Error)
+						slog.Error("inference error", "error", event.Error)
 						events <- LoopEvent{
-							Type:  LoopEventError,
-							Err:   errors.New(event.Error),
+							Type: LoopEventError,
+							Err:  errors.New(event.Error),
 						}
 						return
 					}
@@ -249,8 +253,8 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 		// Max iterations reached
 		events <- LoopEvent{
-			Type:  LoopEventError,
-			Err:   fmt.Errorf("reached max tool iterations (%d)", MaxToolIterations),
+			Type: LoopEventError,
+			Err:  fmt.Errorf("reached max tool iterations (%d)", MaxToolIterations),
 		}
 	}()
 
