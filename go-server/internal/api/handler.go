@@ -55,7 +55,10 @@ func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, aut
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleOpenAIChatCompletions)))
 	mux.HandleFunc("/health", h.handleHealth)
-	mux.HandleFunc("/v1/sessions/", h.handleSessions)
+	mux.Handle("GET /api/v1/sessions", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleListSessions)))
+	mux.Handle("GET /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleGetSession)))
+	mux.Handle("PATCH /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleRenameSession)))
+	mux.Handle("DELETE /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleDeleteSession)))
 
 	// Static UI for testing
 	mux.HandleFunc("/", h.handleUI)
@@ -351,32 +354,75 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/sessions/"), "/")
-	if len(parts) == 1 && parts[0] != "" {
-		sessionID := parts[0]
-		sess := h.sessionMgr.Get(sessionID)
-		if sess == nil {
-			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
+		return
+	}
+	list, err := h.sessionMgr.ListSessions(r.Context(), claims.TenantID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	sess, err := h.sessionMgr.GetPersisted(r.Context(), id, claims.TenantID)
+	if errors.Is(err, session.ErrSessionNotFound) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         sess.ID,
+		"title":      sess.Title,
+		"model":      sess.Model,
+		"messages":   sess.Messages,
+		"created_at": sess.CreatedAt,
+		"updated_at": sess.UpdatedAt,
+	})
+}
+
+func (h *Handler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "title required")
+		return
+	}
+	if err := h.sessionMgr.RenameSession(r.Context(), id, claims.TenantID, req.Title); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":         sess.GetID(),
-			"messages":   sess.GetMessages(),
-			"created_at": sess.CreatedAt,
-			"updated_at": sess.UpdatedAt,
-		})
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": req.Title})
+}
 
-	if r.Method == http.MethodDelete && len(parts) == 1 && parts[0] != "" {
-		h.sessionMgr.Delete(parts[0])
-		w.WriteHeader(http.StatusNoContent)
+func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	if err := h.sessionMgr.DeleteSession(r.Context(), id, claims.TenantID); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-
-	http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
