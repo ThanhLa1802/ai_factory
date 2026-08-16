@@ -106,3 +106,12 @@ export interface Quota {
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  model: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}

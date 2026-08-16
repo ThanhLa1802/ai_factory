@@ -1,11 +1,7 @@
-import ChatClient from "@/components/ChatClient";
+import ChatPageClient from "@/components/ChatPageClient";
 
 export const metadata = { title: "Chat · AI Factory" };
 
 export default function ChatPage() {
-  return (
-    <div className="flex h-full flex-col bg-[var(--bg)]">
-      <ChatClient />
-    </div>
-  );
+  return <ChatPageClient />;
 }

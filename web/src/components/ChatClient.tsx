@@ -24,19 +24,18 @@ interface SSEChunk {
   }>;
 }
 
-const SESSION_KEY = "aif_session";
-
 function newSessionId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-export default function ChatClient() {
+interface ChatClientProps {
+  sessionId: string;
+  onSessionChanged: () => void;
+}
+
+export default function ChatClient({ sessionId, onSessionChanged }: ChatClientProps) {
   const { token } = useAuth();
-  const [sessionId, setSessionId] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem(SESSION_KEY) || newSessionId();
-  });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -48,18 +47,13 @@ export default function ChatClient() {
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const sessionRef = useRef(sessionId);
 
-  // Keep the ref in sync so the async send() closure always reads the latest id.
-  useEffect(() => {
-    sessionRef.current = sessionId;
-  }, [sessionId]);
-
-  // Restore the server-side session history (if the browser still has an id).
   useEffect(() => {
     let cancelled = false;
-    apiFetch<{ messages: Array<{ role: string; content: string; tool_result?: string; tool_calls?: Array<{ name: string; arguments: string }>; is_error?: boolean }> }>(
-      `/v1/sessions/${sessionId}`,
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset messages when switching sessions
+    setMessages([]);
+    apiFetch<{ title: string; model: string; messages: Array<{ role: string; content: string; tool_result?: string; tool_calls?: Array<{ name: string; arguments: string }>; is_error?: boolean }> }>(
+      `/api/v1/sessions/${sessionId}`,
     )
       .then((data) => {
         if (cancelled) return;
@@ -76,14 +70,12 @@ export default function ChatClient() {
         if (mapped.length) setMessages(mapped);
       })
       .catch(() => {
-        // 404 = no persisted session yet (or server restarted) — ignore.
-      })
-      .finally(() => {});
+        // 404 = chưa có session này — giữ chat trống.
+      });
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionId]);
 
   // Load model registry for the selector (fall back to the seeded qwen-3b).
   useEffect(() => {
@@ -152,7 +144,7 @@ export default function ChatClient() {
         signal: ac.signal,
         headers: {
           "Content-Type": "application/json",
-          "x-session-id": sessionRef.current,
+          "x-session-id": sessionId,
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
@@ -245,32 +237,13 @@ export default function ChatClient() {
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
       setBusy(false);
+      onSessionChanged();
     }
-  }, [input, busy, model, systemPrompt, token]);
+  }, [input, busy, model, systemPrompt, token, sessionId, onSessionChanged]);
 
   function stop() {
     abortRef.current?.abort();
   }
-
-  async function newConversation() {
-    try {
-      await fetch(`/v1/sessions/${sessionRef.current}`, { method: "DELETE" });
-    } catch {
-      /* best effort */
-    }
-    const id = newSessionId();
-    window.localStorage.setItem(SESSION_KEY, id);
-    sessionRef.current = id;
-    setSessionId(id);
-    setMessages([]);
-    setStats(null);
-    setError(null);
-  }
-
-  // Persist the session id across reloads so history is restored.
-  useEffect(() => {
-    window.localStorage.setItem(SESSION_KEY, sessionId);
-  }, [sessionId]);
 
   return (
     <div className="flex h-full flex-col">
@@ -299,13 +272,6 @@ export default function ChatClient() {
             className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg2)] px-2 py-1 text-[13px] outline-none focus:border-[var(--accent)]"
           />
         </label>
-        <button
-          onClick={newConversation}
-          disabled={busy}
-          className="rounded-md border border-[var(--border)] px-3 py-1 text-[12px] text-[var(--text2)] hover:bg-[var(--surface2)] disabled:opacity-50"
-        >
-          + Cuộc hội thoại mới
-        </button>
         {stats && (
           <span className="text-[12px] text-[var(--text2)]">
             ⚡ {stats.tokens} tok · {stats.ms}ms
