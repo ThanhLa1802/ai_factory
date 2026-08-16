@@ -1,7 +1,10 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -16,30 +19,61 @@ const (
 
 // Manager handles multiple in-memory sessions.
 // Concurrency is now managed by BatchScheduler instead of inference queue.
+// An optional Store makes sessions durable across restarts.
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	store    Store
 }
 
-// NewManager creates a session manager.
+// NewManager creates an in-memory-only session manager.
 func NewManager() *Manager {
 	return &Manager{
 		sessions: make(map[string]*Session),
 	}
 }
 
-// GetOrCreate returns an existing session or creates a new one.
-func (m *Manager) GetOrCreate(sessionID string) *Session {
+// NewManagerWithStore creates a session manager that persists sessions through
+// the given store (lazy-load on miss, write-through on AddMessage).
+func NewManagerWithStore(store Store) *Manager {
+	return &Manager{
+		sessions: make(map[string]*Session),
+		store:    store,
+	}
+}
+
+// GetOrCreate returns an existing session (from memory or the store) or creates
+// a new one bound to the tenant. Returns ErrSessionForbidden if the session id
+// is already claimed by a different tenant. A store error degrades to a fresh
+// in-memory session (fail-open) rather than failing the request.
+func (m *Manager) GetOrCreate(ctx context.Context, sessionID, tenantID, userID string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if s, ok := m.sessions[sessionID]; ok {
-		return s
+		if s.TenantID == "" || s.TenantID == tenantID {
+			return s, nil
+		}
+		return nil, ErrSessionForbidden
+	}
+
+	// Lazy-load from the store so history survives a restart.
+	if m.store != nil {
+		if s, err := m.store.LoadSession(ctx, sessionID, tenantID); err == nil {
+			s.store = m.store
+			m.sessions[sessionID] = s
+			return s, nil
+		} else if !errors.Is(err, ErrSessionNotFound) {
+			slog.Error("load session", "session_id", sessionID, "err", err)
+		}
 	}
 
 	s := NewSession(sessionID, DefaultMaxTokens)
+	s.TenantID = tenantID
+	s.UserID = userID
+	s.store = m.store
 	m.sessions[sessionID] = s
-	return s
+	return s, nil
 }
 
 // Get returns a session by ID or nil.

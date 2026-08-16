@@ -138,7 +138,16 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 	if sessionID == "" {
 		sessionID = session.NewSessionID()
 	}
-	sess := h.sessionMgr.GetOrCreate(sessionID)
+	userID := ""
+	if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
+		userID = claims.UserID
+	}
+	sess, err := h.sessionMgr.GetOrCreate(r.Context(), sessionID, tenantID, userID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
+		return
+	}
+	sess.Model = req.Model
 
 	msgs, systemPrompt, err := OpenAIToInternal(&req)
 	if err != nil {

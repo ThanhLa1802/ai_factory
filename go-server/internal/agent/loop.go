@@ -97,7 +97,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 		defer span.End()
 
 		// Add user message to session
-		sess.AddMessage(userMessage)
+		sess.AddMessage(ctx, userMessage)
 
 		for iteration := 0; iteration < MaxToolIterations; iteration++ {
 			// Check context cancellation
@@ -207,7 +207,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			if len(toolCalls) > 0 {
 				assistantMsg.ToolCalls = toolCalls
 			}
-			sess.AddMessage(assistantMsg)
+			sess.AddMessage(ctx, assistantMsg)
 
 			// If model wants to call tools, execute them
 			if stopReason == "STOP_TOOL_USE" && len(toolCalls) > 0 {
@@ -229,7 +229,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 						ToolResult: resultText,
 						IsError:    isError,
 					}
-					sess.AddMessage(toolMsg)
+					sess.AddMessage(ctx, toolMsg)
 
 					events <- LoopEvent{
 						Type:       LoopEventToolResult,

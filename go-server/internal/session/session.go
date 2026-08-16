@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -44,6 +46,11 @@ type Session struct {
 	Messages []Message `json:"messages"`
 	Metadata map[string]string
 
+	// Ownership — set by Manager.GetOrCreate. TenantID scopes every DB read/write.
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	Model    string `json:"model,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
@@ -52,6 +59,11 @@ type Session struct {
 
 	// System prompt for this session.
 	SystemPrompt string `json:"system_prompt,omitempty"`
+
+	// Persistence (nil means in-memory only).
+	store     Store
+	seq       int  // next message sequence number
+	persisted bool // session row already exists in the store
 }
 
 // NewSession creates a new session with defaults.
@@ -67,12 +79,29 @@ func NewSession(id string, maxTokens int) *Session {
 	}
 }
 
-// AddMessage appends a message to the conversation history.
-func (s *Session) AddMessage(msg Message) {
+// AddMessage appends a message to the conversation history and, when a store is
+// attached, persists it. Persistence is best-effort: a DB error is logged and
+// must never fail the chat turn.
+func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = append(s.Messages, msg)
+	s.seq++
 	s.UpdatedAt = time.Now()
+
+	if s.store == nil {
+		return
+	}
+	if !s.persisted {
+		if err := s.store.UpsertSession(ctx, s); err != nil {
+			slog.Error("persist session", "session_id", s.ID, "err", err)
+			return
+		}
+		s.persisted = true
+	}
+	if err := s.store.AppendMessage(ctx, s.ID, s.seq, msg); err != nil {
+		slog.Error("persist message", "session_id", s.ID, "seq", s.seq, "err", err)
+	}
 }
 
 // SetSystemPrompt updates the system prompt.

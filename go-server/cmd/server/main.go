@@ -117,8 +117,9 @@ func main() {
 	// Agentic loop — uses batch scheduler instead of direct inference
 	loop := agent.NewLoop(batchScheduler, toolExecutor)
 
-	// Session manager (no longer manages inference queue — batch scheduler handles that)
-	sessionMgr := session.NewManager()
+	// Session manager (no longer manages inference queue — batch scheduler handles
+	// that). Persists chat history to Postgres via the same pool as the control plane.
+	sessionMgr := session.NewManagerWithStore(session.NewPGStore(d.Pool()))
 
 	// UI directory — standalone HTML files (không nhúng vào binary)
 	dir := *uiDir
