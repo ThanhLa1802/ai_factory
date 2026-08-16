@@ -59,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 	cp := controlplane.NewService(d.Pool())
-	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 15*time.Minute)
+	authSvc := auth.NewService(cp, []byte(cfg.JWTSecret), 8*time.Hour)
 	if err := seedAdmin(ctx, cp); err != nil {
 		slog.Error("seed", "err", err)
 		os.Exit(1)

@@ -51,8 +51,8 @@ Tool-calling currently works end-to-end only on the **llama** engine (§9.1 in [
 cd python-worker && python -m worker.server
 
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
-#   (add --llama-bin ..\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
-cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+#   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
+cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
@@ -77,7 +77,7 @@ ai_factory/
 ├── proto/            # Protobuf definitions (gRPC contract)
 ├── go-server/        # Go module — HTTP, SSE, agentic loop, batch scheduler, gRPC client
 ├── python-worker/    # Python worker — engines, hand-written tokenizer, gRPC server
-├── models/           # GGUF + llama.cpp (Qwen3.5-9B-Q4_K_M.gguf, llama-server.exe)
+├── (models → G:\models)  # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/               # Static test UI: chat.html, concepts.html
 ├── docs/             # ARCHITECTURE.md, BENCHMARK.md, TRACKING.md, specs/
 ├── scripts/          # setup.sh, setup.ps1

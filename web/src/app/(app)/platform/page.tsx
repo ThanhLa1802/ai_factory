@@ -17,6 +17,13 @@ function fmt(n: number): string {
   return n.toLocaleString("vi-VN");
 }
 
+// YYYY-MM-DD theo UTC, khớp với cách server nhóm ngày (created_at AT TIME ZONE 'UTC').
+function utcDay(daysAgo: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - daysAgo);
+  return d.toISOString().slice(0, 10);
+}
+
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
@@ -48,7 +55,16 @@ function UsageTab() {
     return <div className="py-10 text-center text-[13px] text-[var(--text2)]">{error || "Đang tải…"}</div>;
   }
 
-  const maxTokens = Math.max(1, ...data.daily.map((d) => d.prompt_tokens + d.completion_tokens));
+  // Server chỉ trả về các ngày CÓ usage; điền các ngày trống (0 token) để biểu đồ
+  // thể hiện đúng chuỗi ngày liên tục của cửa sổ đã chọn, thay vì dồn các ngày có
+  // dữ liệu lại thành vài cột bự.
+  const byDate = new Map(data.daily.map((d) => [d.date, d] as const));
+  const series = Array.from({ length: days }, (_, i) => {
+    const date = utcDay(days - 1 - i); // cũ → mới
+    const p = byDate.get(date);
+    return { date, total: p ? p.prompt_tokens + p.completion_tokens : 0 };
+  });
+  const maxTokens = Math.max(1, ...series.map((s) => s.total));
 
   const modelColumns: Column<UsageByModel>[] = [
     { key: "model", label: "Model", render: (m) => <code className="text-[12px] text-[var(--link)]">{m.model}</code> },
@@ -89,20 +105,18 @@ function UsageTab() {
         </div>
       </div>
       <div className="mb-6 flex h-40 items-end gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
-        {data.daily.length === 0 && (
+        {data.daily.length === 0 ? (
           <div className="w-full text-center text-[12px] text-[var(--text2)]">Chưa có usage trong khoảng này.</div>
-        )}
-        {data.daily.map((d) => {
-          const total = d.prompt_tokens + d.completion_tokens;
-          return (
+        ) : (
+          series.map((s) => (
             <div
-              key={d.date}
-              title={`${d.date}: ${fmt(total)} tokens`}
+              key={s.date}
+              title={`${s.date}: ${fmt(s.total)} tokens`}
               className="min-w-[6px] flex-1 rounded-t bg-[var(--accent)]"
-              style={{ height: `${Math.max(2, (total / maxTokens) * 100)}%` }}
+              style={{ height: `${Math.max(2, (s.total / maxTokens) * 100)}%` }}
             />
-          );
-        })}
+          ))
+        )}
       </div>
 
       <div className="mb-3 text-[13px] font-medium">Theo model (30 ngày)</div>

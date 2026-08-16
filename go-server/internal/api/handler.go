@@ -382,7 +382,7 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
 		return
 	}
-	list, err := h.sessionMgr.ListSessions(r.Context(), claims.TenantID)
+	list, err := h.sessionMgr.ListSessions(r.Context(), claims.TenantID, claims.UserID)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
@@ -393,7 +393,7 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	sess, err := h.sessionMgr.GetPersisted(r.Context(), id, claims.TenantID)
+	sess, err := h.sessionMgr.GetPersisted(r.Context(), id, claims.TenantID, claims.UserID)
 	if errors.Is(err, session.ErrSessionNotFound) {
 		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 		return
@@ -422,7 +422,7 @@ func (h *Handler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "title required")
 		return
 	}
-	if err := h.sessionMgr.RenameSession(r.Context(), id, claims.TenantID, req.Title); err != nil {
+	if err := h.sessionMgr.RenameSession(r.Context(), id, claims.TenantID, claims.UserID, req.Title); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
@@ -436,7 +436,7 @@ func (h *Handler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.ClaimsFromContext(r.Context())
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	if err := h.sessionMgr.DeleteSession(r.Context(), id, claims.TenantID); err != nil {
+	if err := h.sessionMgr.DeleteSession(r.Context(), id, claims.TenantID, claims.UserID); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return

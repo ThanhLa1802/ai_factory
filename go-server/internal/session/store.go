@@ -32,20 +32,21 @@ type SessionSummary struct {
 type Store interface {
 	// UpsertSession inserts or updates the session row (metadata only).
 	UpsertSession(ctx context.Context, s *Session) error
-	// LoadSession fetches a session + its messages by id, scoped to the tenant.
-	LoadSession(ctx context.Context, id, tenantID string) (*Session, error)
+	// LoadSession fetches a session + its messages by id, scoped to the tenant
+	// and user (empty userID matches sessions with a NULL user_id).
+	LoadSession(ctx context.Context, id, tenantID, userID string) (*Session, error)
 	// SessionExists reports whether a session row with the given id exists under
 	// ANY tenant (no tenant filter) — used to reject cross-tenant session-id
 	// collisions on a cold cache.
 	SessionExists(ctx context.Context, id string) (bool, error)
 	// AppendMessage inserts one message for a session at the given seq.
 	AppendMessage(ctx context.Context, sessionID string, seq int, m Message) error
-	// ListSessions returns sidebar summaries for the tenant, newest first.
-	ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error)
+	// ListSessions returns sidebar summaries for the tenant + user, newest first.
+	ListSessions(ctx context.Context, tenantID, userID string) ([]SessionSummary, error)
 	// RenameSession sets the display title.
-	RenameSession(ctx context.Context, id, tenantID, title string) error
+	RenameSession(ctx context.Context, id, tenantID, userID, title string) error
 	// DeleteSession removes a session and its messages.
-	DeleteSession(ctx context.Context, id, tenantID string) error
+	DeleteSession(ctx context.Context, id, tenantID, userID string) error
 }
 
 // PGStore is a PostgreSQL-backed Store.
@@ -98,23 +99,26 @@ func (p *PGStore) SessionExists(ctx context.Context, id string) (bool, error) {
 }
 
 // LoadSession reconstructs a Session from the sessions + messages tables.
-func (p *PGStore) LoadSession(ctx context.Context, id, tenantID string) (*Session, error) {
+// Scoped to tenant AND user so one user cannot read another user's conversation.
+func (p *PGStore) LoadSession(ctx context.Context, id, tenantID, userID string) (*Session, error) {
 	var (
-		s      Session
-		userID *string // nullable
+		s       Session
+		ownerID *string // nullable
 	)
 	err := p.pool.QueryRow(ctx, `
 		SELECT tenant_id, user_id, model, system_prompt, max_tokens, title, created_at, updated_at
-		FROM sessions WHERE id = $1 AND tenant_id = $2`, id, tenantID).
-		Scan(&s.TenantID, &userID, &s.Model, &s.SystemPrompt, &s.MaxTokens, &s.Title, &s.CreatedAt, &s.UpdatedAt)
+		FROM sessions
+		WHERE id = $1 AND tenant_id = $2 AND user_id IS NOT DISTINCT FROM NULLIF($3, '')::uuid`,
+		id, tenantID, userID).
+		Scan(&s.TenantID, &ownerID, &s.Model, &s.SystemPrompt, &s.MaxTokens, &s.Title, &s.CreatedAt, &s.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	if userID != nil {
-		s.UserID = *userID
+	if ownerID != nil {
+		s.UserID = *ownerID
 	}
 	s.ID = id
 	s.Metadata = make(map[string]string)
@@ -169,10 +173,10 @@ func (p *PGStore) AppendMessage(ctx context.Context, sessionID string, seq int, 
 	return err
 }
 
-// ListSessions returns sidebar summaries for the tenant, newest first. The title
-// falls back to the first user message so legacy rows (empty title) still show
-// something meaningful.
-func (p *PGStore) ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error) {
+// ListSessions returns sidebar summaries for the tenant + user, newest first.
+// The title falls back to the first user message so legacy rows (empty title)
+// still show something meaningful.
+func (p *PGStore) ListSessions(ctx context.Context, tenantID, userID string) ([]SessionSummary, error) {
 	rows, err := p.pool.Query(ctx, `
 		SELECT s.id,
 		       COALESCE(NULLIF(s.title, ''),
@@ -184,7 +188,8 @@ func (p *PGStore) ListSessions(ctx context.Context, tenantID string) ([]SessionS
 		       (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)::int AS message_count
 		FROM sessions s
 		WHERE s.tenant_id = $1::uuid
-		ORDER BY s.updated_at DESC`, tenantID)
+		  AND s.user_id IS NOT DISTINCT FROM NULLIF($2, '')::uuid
+		ORDER BY s.updated_at DESC`, tenantID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -200,11 +205,12 @@ func (p *PGStore) ListSessions(ctx context.Context, tenantID string) ([]SessionS
 	return out, rows.Err()
 }
 
-// RenameSession sets the display title, scoped to the tenant.
-func (p *PGStore) RenameSession(ctx context.Context, id, tenantID, title string) error {
+// RenameSession sets the display title, scoped to the tenant + user.
+func (p *PGStore) RenameSession(ctx context.Context, id, tenantID, userID, title string) error {
 	tag, err := p.pool.Exec(ctx, `
-		UPDATE sessions SET title = $3, updated_at = now()
-		WHERE id = $1 AND tenant_id = $2::uuid`, id, tenantID, title)
+		UPDATE sessions SET title = $4, updated_at = now()
+		WHERE id = $1 AND tenant_id = $2::uuid AND user_id IS NOT DISTINCT FROM NULLIF($3, '')::uuid`,
+		id, tenantID, userID, title)
 	if err != nil {
 		return err
 	}
@@ -214,9 +220,11 @@ func (p *PGStore) RenameSession(ctx context.Context, id, tenantID, title string)
 	return nil
 }
 
-// DeleteSession removes a session (messages cascade), scoped to the tenant.
-func (p *PGStore) DeleteSession(ctx context.Context, id, tenantID string) error {
-	tag, err := p.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1 AND tenant_id = $2::uuid`, id, tenantID)
+// DeleteSession removes a session (messages cascade), scoped to the tenant + user.
+func (p *PGStore) DeleteSession(ctx context.Context, id, tenantID, userID string) error {
+	tag, err := p.pool.Exec(ctx,
+		`DELETE FROM sessions WHERE id = $1 AND tenant_id = $2::uuid AND user_id IS NOT DISTINCT FROM NULLIF($3, '')::uuid`,
+		id, tenantID, userID)
 	if err != nil {
 		return err
 	}

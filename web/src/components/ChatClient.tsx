@@ -49,8 +49,8 @@ export default function ChatClient() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [models, setModels] = useState<string[]>(["qwen-3b"]);
-  const [model, setModel] = useState("qwen-3b");
+  const [models, setModels] = useState<string[]>(["qwen3.5-9b"]);
+  const [model, setModel] = useState("qwen3.5-9b");
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState<{ tokens: number; ms: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,7 +103,7 @@ export default function ChatClient() {
     };
   }, [activeId]);
 
-  // Load model registry for the selector (fall back to the seeded qwen-3b).
+  // Load model registry for the selector (fall back to the llama engine's model).
   useEffect(() => {
     let cancelled = false;
     apiFetch<Model[]>("/api/v1/models")
@@ -112,7 +112,7 @@ export default function ChatClient() {
         const names = ms.map((m) => m.name);
         if (names.length) {
           setModels(names);
-          setModel(names.find((n) => n === "qwen-3b") || names[0]);
+          setModel(names.find((n) => n === "qwen3.5-9b") || names[0]);
         }
       })
       .catch(() => {
@@ -320,7 +320,7 @@ export default function ChatClient() {
             <code className="text-[var(--link)]">x-session-id</code>.
           </div>
         )}
-        <div className="flex max-w-4xl flex-col gap-4">
+        <div className="mx-auto flex max-w-4xl flex-col gap-4">
           {messages.map((m) => (
             <div
               key={m.id}
@@ -348,14 +348,6 @@ export default function ChatClient() {
               </div>
             </div>
           ))}
-          {busy && (
-            <div className="flex items-center gap-3">
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[13px] leading-none">
-                🤖
-              </div>
-              <span className="animate-pulse text-[var(--text2)]">▍</span>
-            </div>
-          )}
         </div>
       </div>
 

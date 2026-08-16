@@ -52,14 +52,18 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionID, tenantID, userID s
 
 	if s, ok := m.sessions[sessionID]; ok {
 		if s.TenantID == "" || s.TenantID == tenantID {
-			return s, nil
+			// Same tenant: only hand back the session if the user owns it (an
+			// empty owner is a tenant-credential session any user may continue).
+			if s.UserID == "" || s.UserID == userID {
+				return s, nil
+			}
 		}
 		return nil, ErrSessionForbidden
 	}
 
 	// Lazy-load from the store so history survives a restart.
 	if m.store != nil {
-		if s, err := m.store.LoadSession(ctx, sessionID, tenantID); err == nil {
+		if s, err := m.store.LoadSession(ctx, sessionID, tenantID, userID); err == nil {
 			s.store = m.store
 			m.sessions[sessionID] = s
 			return s, nil
@@ -112,22 +116,22 @@ func (m *Manager) List() []string {
 	return ids
 }
 
-// ListSessions returns sidebar summaries for the tenant (store-backed).
-func (m *Manager) ListSessions(ctx context.Context, tenantID string) ([]SessionSummary, error) {
+// ListSessions returns sidebar summaries for the tenant + user (store-backed).
+func (m *Manager) ListSessions(ctx context.Context, tenantID, userID string) ([]SessionSummary, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("session store not configured")
 	}
-	return m.store.ListSessions(ctx, tenantID)
+	return m.store.ListSessions(ctx, tenantID, userID)
 }
 
-// GetPersisted loads a session + messages from the store, scoped to the tenant.
-// Returns ErrSessionNotFound when absent. The returned session is wired to the
-// store so a later AddMessage persists rather than re-upserting.
-func (m *Manager) GetPersisted(ctx context.Context, id, tenantID string) (*Session, error) {
+// GetPersisted loads a session + messages from the store, scoped to the tenant
+// + user. Returns ErrSessionNotFound when absent. The returned session is wired
+// to the store so a later AddMessage persists rather than re-upserting.
+func (m *Manager) GetPersisted(ctx context.Context, id, tenantID, userID string) (*Session, error) {
 	if m.store == nil {
 		return nil, fmt.Errorf("session store not configured")
 	}
-	s, err := m.store.LoadSession(ctx, id, tenantID)
+	s, err := m.store.LoadSession(ctx, id, tenantID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,20 +139,20 @@ func (m *Manager) GetPersisted(ctx context.Context, id, tenantID string) (*Sessi
 	return s, nil
 }
 
-// RenameSession renames a session by id, scoped to the tenant.
-func (m *Manager) RenameSession(ctx context.Context, id, tenantID, title string) error {
+// RenameSession renames a session by id, scoped to the tenant + user.
+func (m *Manager) RenameSession(ctx context.Context, id, tenantID, userID, title string) error {
 	if m.store == nil {
 		return fmt.Errorf("session store not configured")
 	}
-	return m.store.RenameSession(ctx, id, tenantID, title)
+	return m.store.RenameSession(ctx, id, tenantID, userID, title)
 }
 
 // DeleteSession removes a session from the store and the in-memory cache.
-func (m *Manager) DeleteSession(ctx context.Context, id, tenantID string) error {
+func (m *Manager) DeleteSession(ctx context.Context, id, tenantID, userID string) error {
 	if m.store == nil {
 		return fmt.Errorf("session store not configured")
 	}
-	if err := m.store.DeleteSession(ctx, id, tenantID); err != nil {
+	if err := m.store.DeleteSession(ctx, id, tenantID, userID); err != nil {
 		return err
 	}
 	m.mu.Lock()

@@ -121,7 +121,7 @@ ai_factory/
 │       ├── generate_proto.py    #   regenerate pb/ from proto
 │       ├── pb/                  #   generated gRPC stubs
 │       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
-├── models/                      # GGUF + llama.cpp: Qwen3.5-9B-Q4_K_M.gguf, llama.cpp/llama-server.exe
+├── (models → G:\models)         # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
 ├── web/                         # NextJS UI (App Router): /login /chat /keys /platform /admin
 ├── docs/                        # ARCHITECTURE.md, BENCHMARK.md, superpowers/specs/
@@ -186,8 +186,8 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 cd python-worker && python -m worker.server
 
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
-#   (add --llama-bin ..\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
-cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+#   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
+cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is

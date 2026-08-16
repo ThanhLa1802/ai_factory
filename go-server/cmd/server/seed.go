@@ -91,31 +91,31 @@ func seedDemo(ctx context.Context, cp *controlplane.Service) error {
 	if tenantID == "" {
 		return nil // no demo tenant yet; nothing to seed
 	}
-	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen-3b"); err == nil {
+	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen3.5-9b"); err == nil {
 		return nil // already seeded
 	} else if !errors.Is(err, controlplane.ErrNotFound) {
 		return fmt.Errorf("resolve for seed: %w", err)
 	}
 
-	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-3b", Task: "text-generation", Framework: "transformers"})
+	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen3.5-9b", Task: "text-generation", Framework: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed model: %w", err)
 	}
-	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen-3b"})
+	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen3.5-9b"})
 	if err != nil {
 		return fmt.Errorf("seed model version: %w", err)
 	}
-	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "transformers", Runtime: "transformers"})
+	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "llama-openai", Runtime: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed template: %w", err)
 	}
-	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen-3b:latest"})
+	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen3.5-9b:latest"})
 	if err != nil {
 		return fmt.Errorf("seed template version: %w", err)
 	}
 	d, err := cp.CreateDeployment(ctx, controlplane.Deployment{
 		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
-		Name: "qwen-3b-prod", Region: "local", DesiredReplicas: 1,
+		Name: "qwen3.5-9b-prod", Region: "local", DesiredReplicas: 1,
 	})
 	if err != nil {
 		return fmt.Errorf("seed deployment: %w", err)
@@ -125,6 +125,6 @@ func seedDemo(ctx context.Context, cp *controlplane.Service) error {
 			return fmt.Errorf("seed transition to %s: %w", to, err)
 		}
 	}
-	slog.Info("seeded demo model + READY deployment", "model", "qwen-3b", "deployment", d.ID, "tenant", tenantID)
+	slog.Info("seeded demo model + READY deployment", "model", "qwen3.5-9b", "deployment", d.ID, "tenant", tenantID)
 	return nil
 }

@@ -132,3 +132,21 @@ body {
   background: var(--surface2);
   font-weight: 600;
 }
+
+/* blinking cursor on the in-progress assistant bubble */
+.streaming::after {
+  content: "▍";
+  margin-left: 2px;
+  color: var(--text2);
+  animation: stream-blink 1s infinite;
+}
+@keyframes stream-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}

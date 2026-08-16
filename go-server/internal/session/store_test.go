@@ -64,7 +64,7 @@ func TestPGStoreRoundTrip(t *testing.T) {
 		t.Fatalf("append assistant msg with tool_calls: %v", err)
 	}
 
-	loaded, err := store.LoadSession(ctx, s.ID, tenantID)
+	loaded, err := store.LoadSession(ctx, s.ID, tenantID, "")
 	if err != nil {
 		t.Fatalf("load session: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestPGStoreRoundTrip(t *testing.T) {
 	}
 
 	// Scoping: a different tenant must not see the session.
-	if _, err := store.LoadSession(ctx, s.ID, "00000000-0000-0000-0000-000000000002"); err != ErrSessionNotFound {
+	if _, err := store.LoadSession(ctx, s.ID, "00000000-0000-0000-0000-000000000002", ""); err != ErrSessionNotFound {
 		t.Errorf("cross-tenant load err = %v, want ErrSessionNotFound", err)
 	}
 }
@@ -248,7 +248,7 @@ func TestStoreListRenameDeleteTitle(t *testing.T) {
 	s.AddMessage(ctx, Message{Role: RoleUser, Content: "first message that is quite long and will be truncated"})
 
 	// Auto-title: truncate to 40 runes + ellipsis.
-	loaded, err := store.LoadSession(ctx, sessionID, tenantID)
+	loaded, err := store.LoadSession(ctx, sessionID, tenantID, "")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestStoreListRenameDeleteTitle(t *testing.T) {
 	}
 
 	// List returns the session with a title + 1 message.
-	list, err := store.ListSessions(ctx, tenantID)
+	list, err := store.ListSessions(ctx, tenantID, "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -281,10 +281,10 @@ func TestStoreListRenameDeleteTitle(t *testing.T) {
 	}
 
 	// Rename.
-	if err := store.RenameSession(ctx, sessionID, tenantID, "Renamed chat"); err != nil {
+	if err := store.RenameSession(ctx, sessionID, tenantID, "", "Renamed chat"); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	loaded2, err := store.LoadSession(ctx, sessionID, tenantID)
+	loaded2, err := store.LoadSession(ctx, sessionID, tenantID, "")
 	if err != nil {
 		t.Fatalf("load after rename: %v", err)
 	}
@@ -293,15 +293,15 @@ func TestStoreListRenameDeleteTitle(t *testing.T) {
 	}
 
 	// Cross-tenant rename must NOT find the session.
-	if err := store.RenameSession(ctx, sessionID, "00000000-0000-0000-0000-000000000002", "x"); err != ErrSessionNotFound {
+	if err := store.RenameSession(ctx, sessionID, "00000000-0000-0000-0000-000000000002", "", "x"); err != ErrSessionNotFound {
 		t.Fatalf("cross-tenant rename err = %v, want ErrSessionNotFound", err)
 	}
 
 	// Delete.
-	if err := store.DeleteSession(ctx, sessionID, tenantID); err != nil {
+	if err := store.DeleteSession(ctx, sessionID, tenantID, ""); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.LoadSession(ctx, sessionID, tenantID); err != ErrSessionNotFound {
+	if _, err := store.LoadSession(ctx, sessionID, tenantID, ""); err != ErrSessionNotFound {
 		t.Fatalf("load after delete err = %v, want ErrSessionNotFound", err)
 	}
 }
