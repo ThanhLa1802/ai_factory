@@ -43,11 +43,23 @@ Trạng thái: **✅ Xong** (2026-08-16) — lớp giao diện thay/nhánh song 
 
 Go server không đổi; NextJS proxy `/api/v1/*`, `/v1/*`, `/health`, `/metrics` về Go server qua `rewrites()` (`AI_FACTORY_API_URL`, mặc định `http://localhost:8080`) nên browser chỉ gọi same-origin (SSE stream không vướng CORS).
 
-- **Routes:** `/login` (JWT), `/chat` (SSE chat, markdown, model selector — mặc định `qwen-3b`, giữ lịch sử qua `x-session-id`), `/keys` (API key CRUD), `/platform` (deployments + start/stop, models + versions, templates + versions, quotas), `/admin` (tenants — chỉ `PLATFORM_ADMIN`).
+- **Routes:** `/login` (JWT), `/chat` (SSE chat, markdown, model selector — mặc định `qwen-3b`, giữ lịch sử qua `x-session-id`), `/platform` (Usage + API Keys), `/infra` (deployments + start/stop, models + versions, templates + versions, quotas), `/admin` (tenants — chỉ `PLATFORM_ADMIN`).
 - **Auth:** JWT lưu `localStorage`; decode payload client-side để phân role (`PLATFORM_ADMIN`/`TENANT_ADMIN`/`TENANT_DEVELOPER`/`TENANT_VIEWER`); mọi API gọi kèm `Authorization: Bearer`. Dùng `useSyncExternalStore` cho auth state (không effect-hydration).
 - **Tech:** Next 16.3.1 (App Router), React 19, Tailwind v4, TypeScript, `react-markdown` + `remark-gfm`. `npm run lint` + `npm run build` sạch.
 - **Chạy:** `cd web && npm install && npm run dev` → http://localhost:3000 (cần Go server chạy ở 8080; Python worker nếu muốn infer thật).
 - **Ghi chú smoke test:** `/health`, `/api/v1/auth/login`, `/api/v1/models`, `/api/v1/deployments` proxy OK. Streaming `/v1/chat/completions` có thể trả `"streaming not supported"` nếu Go server đang chạy binary cũ — fix `statusRecorder.Flush` ở commit `094fcc0`; restart Go server để SSE chạy.
+
+---
+
+## ✅ Chat history + usage metering + platform console
+
+Trạng thái: **✅ Xong** (2026-08-16) — sidebar lịch sử chat dùng được, metering usage mỗi turn, và console platform tách rõ Usage/API Keys khỏi hạ tầng.
+
+- **Chat history (sidebar):** session giờ **bền** (lưu Postgres) — list/get/rename/delete qua `/api/v1/sessions`; tự đặt tiêu đề từ tin nhắn user đầu tiên (cắt 40 rune); sidebar kiểu ChatGPT trên `/chat` — [`web/src/components/SessionsSidebar.tsx`](../web/src/components/SessionsSidebar.tsx) + [`web/src/components/ChatPageClient.tsx`](../web/src/components/ChatPageClient.tsx).
+- **Usage metering:** token prompt/completion mỗi turn ghi vào bảng `usage_events` (best-effort, không bao giờ làm hỏng turn); xem qua `GET /api/v1/usage` + tab Usage trên `/platform`.
+- **Platform console:** `/platform` = tab Usage + API Keys; hạ tầng (deployments/models/templates/quotas) dời sang `/infra`.
+
+Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` · Plan: `docs/superpowers/plans/2026-08-16-chat-history-usage-platform.md`.
 
 ---
 
@@ -133,6 +145,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-16 | Chat history + usage metering + platform console: session bền (list/title/rename/delete qua `/api/v1/sessions`, auto-title 40-rune), token mỗi turn ghi `usage_events` (best-effort) + `GET /api/v1/usage`; `/platform` = Usage + API Keys, `/infra` = deployments/models/templates/quotas. Spec docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md. |
 | 2026-08-16 | UI — NextJS app (`web/`): platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` + `/health` + `/metrics` về Go server qua rewrites; routes `/login` `/chat` `/keys` `/platform` `/admin`; auth JWT + role gating. |
 | 2026-08-16 | A6 (Observability) — hoàn tất: toàn bộ log chuyển sang slog JSON (không còn `log.Printf`); metrics mới `serving_tokens_total` (usage metering), `serving_inflight_requests`, `serving_overloaded_total`; trace span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng JSON structured log, dependency-free (`internal/observability/trace.go`); ghi token usage ở handler khi nhận `final` event. |
 | 2026-08-15 | A5 (Reliability) — hoàn tất: circuit breaker (`internal/circuitbreaker` 3-state + gắn vào worker provisioning), idempotency deploy (`Idempotency-Key` header + bảng `idempotency_keys`), backpressure/load shedding (BatchScheduler `TrySubmit` → `ErrOverloaded` → 503). Kafka consumer idempotent sẵn qua state-machine guard trong worker. |
