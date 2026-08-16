@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "@/components/Markdown";
 import { useAuth } from "@/context/AuthContext";
+import { useChatSessions } from "@/context/ChatSessionsContext";
 import { apiFetch } from "@/lib/api";
 import type { Model } from "@/lib/types";
 
@@ -24,18 +25,27 @@ interface SSEChunk {
   }>;
 }
 
-function newSessionId() {
+function newId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-interface ChatClientProps {
-  sessionId: string;
-  onSessionChanged: () => void;
+function avatarFor(role: ChatMessage["role"]): string {
+  switch (role) {
+    case "user":
+      return "👤";
+    case "tool":
+      return "🔧";
+    case "error":
+      return "⚠️";
+    default:
+      return "🤖"; // assistant + system
+  }
 }
 
-export default function ChatClient({ sessionId, onSessionChanged }: ChatClientProps) {
+export default function ChatClient() {
   const { token } = useAuth();
+  const { activeId, refresh } = useChatSessions();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -47,25 +57,41 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const activeIdRef = useRef(activeId);
+  const liveStreamRef = useRef<string | null>(null);
+
+  // Keep activeIdRef fresh so the async stream loop can compare against the
+  // currently-selected session and drop stale writes after a mid-stream switch.
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+
+  // Abort an in-flight stream when the active session changes (or the component
+  // unmounts), so a previous turn can't keep writing into the new conversation.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, [activeId]);
 
   useEffect(() => {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset messages when switching sessions
     setMessages([]);
     apiFetch<{ title: string; model: string; messages: Array<{ role: string; content: string; tool_result?: string; tool_calls?: Array<{ name: string; arguments: string }>; is_error?: boolean }> }>(
-      `/api/v1/sessions/${sessionId}`,
+      `/api/v1/sessions/${activeId}`,
     )
       .then((data) => {
         if (cancelled) return;
         const mapped: ChatMessage[] = (data.messages || []).map((m) => {
           if (m.role === "tool") {
             return {
-              id: newSessionId(),
+              id: newId(),
               role: "tool",
               content: `🔧 Tool result: ${m.tool_result || "(empty)"}`,
             };
           }
-          return { id: newSessionId(), role: m.role as ChatMessage["role"], content: m.content };
+          return { id: newId(), role: m.role as ChatMessage["role"], content: m.content };
         });
         if (mapped.length) setMessages(mapped);
       })
@@ -75,7 +101,7 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [activeId]);
 
   // Load model registry for the selector (fall back to the seeded qwen-3b).
   useEffect(() => {
@@ -108,6 +134,8 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
   }
 
   function updateLastAssistant(patch: Partial<ChatMessage>) {
+    // Drop updates from a stream whose session is no longer active (mid-stream switch).
+    if (liveStreamRef.current !== activeIdRef.current) return;
     setMessages((prev) => {
       const next = [...prev];
       for (let i = next.length - 1; i >= 0; i--) {
@@ -127,11 +155,12 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
     setError(null);
     setStats(null);
 
-    pushMsg({ id: newSessionId(), role: "user", content: text });
-    pushMsg({ id: newSessionId(), role: "assistant", content: "" });
+    pushMsg({ id: newId(), role: "user", content: text });
+    pushMsg({ id: newId(), role: "assistant", content: "" });
 
     const ac = new AbortController();
     abortRef.current = ac;
+    liveStreamRef.current = activeId;
     setBusy(true);
 
     let fullText = "";
@@ -144,7 +173,7 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
         signal: ac.signal,
         headers: {
           "Content-Type": "application/json",
-          "x-session-id": sessionId,
+          "x-session-id": activeId,
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
@@ -235,11 +264,14 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
         updateLastAssistant({ content: fullText + `\n\n> ❌ ${message}` });
       }
     } finally {
-      if (abortRef.current === ac) abortRef.current = null;
-      setBusy(false);
-      onSessionChanged();
+      if (abortRef.current === ac) {
+        abortRef.current = null;
+        liveStreamRef.current = null;
+        setBusy(false);
+      }
+      refresh();
     }
-  }, [input, busy, model, systemPrompt, token, sessionId, onSessionChanged]);
+  }, [input, busy, model, systemPrompt, token, activeId, refresh]);
 
   function stop() {
     abortRef.current?.abort();
@@ -288,9 +320,15 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
             <code className="text-[var(--link)]">x-session-id</code>.
           </div>
         )}
-        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+        <div className="flex max-w-4xl flex-col gap-4">
           {messages.map((m) => (
-            <div key={m.id} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
+            <div
+              key={m.id}
+              className={`flex items-start gap-3 ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}
+            >
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[13px] leading-none">
+                {avatarFor(m.role)}
+              </div>
               <div
                 className={`max-w-[85%] rounded-xl px-4 py-2.5 ${
                   m.role === "user"
@@ -311,8 +349,11 @@ export default function ChatClient({ sessionId, onSessionChanged }: ChatClientPr
             </div>
           ))}
           {busy && (
-            <div className="flex items-center gap-1 pl-1 text-[var(--text2)]">
-              <span className="animate-pulse">▍</span>
+            <div className="flex items-center gap-3">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[13px] leading-none">
+                🤖
+              </div>
+              <span className="animate-pulse text-[var(--text2)]">▍</span>
             </div>
           )}
         </div>
