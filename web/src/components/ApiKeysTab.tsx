@@ -6,7 +6,7 @@ import StatusBadge from "@/components/StatusBadge";
 import { apiFetch } from "@/lib/api";
 import type { APIKey } from "@/lib/types";
 
-export default function KeysPage() {
+export default function ApiKeysTab() {
   const [keys, setKeys] = useState<APIKey[]>([]);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -15,8 +15,7 @@ export default function KeysPage() {
 
   const load = useCallback(async () => {
     try {
-      const data = await apiFetch<APIKey[]>("/api/v1/api-keys");
-      setKeys(data);
+      setKeys(await apiFetch<APIKey[]>("/api/v1/api-keys"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không tải được danh sách key");
     }
@@ -67,8 +66,7 @@ export default function KeysPage() {
   ];
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-6">
-      <h1 className="mb-1 text-lg font-semibold">API Keys</h1>
+    <div>
       <p className="mb-5 text-[13px] text-[var(--text2)]">
         Key dùng cho `/v1/chat/completions` (Authorization: Bearer sk-…).
       </p>
@@ -105,10 +103,7 @@ export default function KeysPage() {
         rows={keys}
         empty="Chưa có API key nào."
         actions={(k) => (
-          <button
-            onClick={() => revoke(k.id)}
-            className="text-[12px] text-[var(--err)] hover:underline"
-          >
+          <button onClick={() => revoke(k.id)} className="text-[12px] text-[var(--err)] hover:underline">
             Thu hồi
           </button>
         )}

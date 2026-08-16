@@ -7,8 +7,8 @@ import { isPlatformAdmin, ROLE_LABEL } from "@/lib/auth";
 
 const items = [
   { href: "/chat", label: "Chat", icon: "💬" },
-  { href: "/keys", label: "API Keys", icon: "🔑" },
-  { href: "/platform", label: "Platform", icon: "⚙️" },
+  { href: "/platform", label: "Platform", icon: "📊" },
+  { href: "/infra", label: "Infra", icon: "⚙️" },
 ];
 
 function Item({ href, label, icon }: { href: string; label: string; icon: string }) {

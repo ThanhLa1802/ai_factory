@@ -115,3 +115,32 @@ export interface SessionSummary {
   updated_at: string;
   message_count: number;
 }
+
+export interface UsageSummary {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  requests: number;
+}
+
+export interface UsageDailyPoint {
+  date: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  requests: number;
+}
+
+export interface UsageByModel {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  requests: number;
+}
+
+export interface UsageResponse {
+  today: UsageSummary;
+  month: UsageSummary;
+  daily: UsageDailyPoint[];
+  by_model: UsageByModel[];
+}
