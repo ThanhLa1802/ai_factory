@@ -1,12 +1,12 @@
 # AI Factory
 
-A learning project that simulates a **Claude Code / ChatGPT**-style server: an inference engine (Python) wired to an agentic Go API server over gRPC, speaking both Anthropic and OpenAI protocols.
+A learning project that simulates a **Claude Code / ChatGPT**-style server: an inference engine (Python) wired to an agentic Go API server over gRPC, speaking the OpenAI protocol.
 
 > 🔭 **Where is the project now?** See [Current Status](#current-status) and the detailed Vietnamese tracker [`docs/TRACKING.md`](docs/TRACKING.md).
 
 ## Features
 
-- **Dual protocol** — Anthropic `/v1/messages` + OpenAI `/v1/chat/completions`, normalized into one internal message format
+- **OpenAI protocol** — `/v1/chat/completions`, normalized into one internal message format
 - **SSE streaming** — tokens stream Python → Go → client in real time
 - **Agentic loop** — tool-use orchestration (max 10 iterations), 4 built-in tools: `read_file`, `write_file`, `run_command`, `list_files`
 - **Static batching** — requests coalesced in a 100 ms window (batch ≤ 4), routed back by `request_id`
@@ -19,7 +19,6 @@ A learning project that simulates a **Claude Code / ChatGPT**-style server: an i
 ```
 Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (inference)
                          │
-                         ├── Anthropic adapter (/v1/messages)
                          ├── OpenAI adapter (/v1/chat/completions)
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
                          ├── Session manager (in-memory, multi-user, 8K ctx)
@@ -52,16 +51,20 @@ Tool-calling currently works end-to-end only on the **llama** engine (§9.1 in [
 cd python-worker && python -m worker.server
 
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
-#   (add --llama-bin ..\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
-cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+#   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
+cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (default port 8080)
+# NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
+# unreachable. Start it first if not already running:
+#   docker compose -f deployments/docker-compose.yml up -d postgres
+# The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 
-# Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks
-curl -X POST http://localhost:8080/v1/messages \
+# Quick test (OpenAI adapter) — content is a plain STRING
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
+  -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Health
 curl http://localhost:8080/health
@@ -74,7 +77,7 @@ ai_factory/
 ├── proto/            # Protobuf definitions (gRPC contract)
 ├── go-server/        # Go module — HTTP, SSE, agentic loop, batch scheduler, gRPC client
 ├── python-worker/    # Python worker — engines, hand-written tokenizer, gRPC server
-├── models/           # GGUF + llama.cpp (Qwen3.5-9B-Q4_K_M.gguf, llama-server.exe)
+├── (models → G:\models)  # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/               # Static test UI: chat.html, concepts.html
 ├── docs/             # ARCHITECTURE.md, BENCHMARK.md, TRACKING.md, specs/
 ├── scripts/          # setup.sh, setup.ps1
@@ -95,7 +98,7 @@ ai_factory/
 
 | Phase | Content | Status |
 |---|---|---|
-| Weeks 1–2 | E2E pipeline, dual protocol, SSE, agentic loop, static batching | ✅ Done |
+| Weeks 1–2 | E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | ✅ Done |
 | Weeks 3–4 | Hand-written byte-level BPE tokenizer | ✅ Done |
 | Bonus | Llama engine (Qwen3.5-9B GGUF) + working tool-calling | ✅ Done |
 | Weeks 5–6 | Hand-written sampling loop (greedy / temperature / top-p / top-k) | 🔜 Next — currently HF `model.generate()` |

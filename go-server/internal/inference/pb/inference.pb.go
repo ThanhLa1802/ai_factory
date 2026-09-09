@@ -28,6 +28,7 @@ const (
 	GenerateEventType_EVENT_TOKEN       GenerateEventType = 1
 	GenerateEventType_EVENT_TOOL_USE    GenerateEventType = 2
 	GenerateEventType_EVENT_FINAL       GenerateEventType = 3
+	GenerateEventType_EVENT_REASONING   GenerateEventType = 4
 )
 
 // Enum value maps for GenerateEventType.
@@ -37,12 +38,14 @@ var (
 		1: "EVENT_TOKEN",
 		2: "EVENT_TOOL_USE",
 		3: "EVENT_FINAL",
+		4: "EVENT_REASONING",
 	}
 	GenerateEventType_value = map[string]int32{
 		"EVENT_UNSPECIFIED": 0,
 		"EVENT_TOKEN":       1,
 		"EVENT_TOOL_USE":    2,
 		"EVENT_FINAL":       3,
+		"EVENT_REASONING":   4,
 	}
 )
 
@@ -223,7 +226,7 @@ func (x *GenerateRequest) GetTools() []*ToolDefinition {
 	return nil
 }
 
-// Message — internal canonical format, Go đã convert từ Anthropic/OpenAI.
+// Message — internal canonical format, Go đã convert từ OpenAI.
 type Message struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Role    string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`       // "user" | "assistant" | "system"
@@ -522,9 +525,11 @@ type GenerateResponse struct {
 	StopReason   StopReason `protobuf:"varint,4,opt,name=stop_reason,json=stopReason,proto3,enum=inference.StopReason" json:"stop_reason,omitempty"`
 	FinishReason string     `protobuf:"bytes,5,opt,name=finish_reason,json=finishReason,proto3" json:"finish_reason,omitempty"` // "stop" | "length" | "tool_use" | "cancelled"
 	// Thống kê (gửi kèm final event hoặc event riêng).
-	Usage         *Usage `protobuf:"bytes,6,opt,name=usage,proto3" json:"usage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Usage *Usage `protobuf:"bytes,6,opt,name=usage,proto3" json:"usage,omitempty"`
+	// Reasoning token — một token "suy nghĩ" (display-only, không vào session context).
+	ReasoningToken string `protobuf:"bytes,7,opt,name=reasoning_token,json=reasoningToken,proto3" json:"reasoning_token,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *GenerateResponse) Reset() {
@@ -597,6 +602,13 @@ func (x *GenerateResponse) GetUsage() *Usage {
 		return x.Usage
 	}
 	return nil
+}
+
+func (x *GenerateResponse) GetReasoningToken() string {
+	if x != nil {
+		return x.ReasoningToken
+	}
+	return ""
 }
 
 // ToolUse — model yêu cầu gọi tool.
@@ -792,9 +804,11 @@ type BatchGenerateResponse struct {
 	StopReason   StopReason `protobuf:"varint,5,opt,name=stop_reason,json=stopReason,proto3,enum=inference.StopReason" json:"stop_reason,omitempty"`
 	FinishReason string     `protobuf:"bytes,6,opt,name=finish_reason,json=finishReason,proto3" json:"finish_reason,omitempty"`
 	// Usage stats (cho EVENT_FINAL).
-	Usage         *Usage `protobuf:"bytes,7,opt,name=usage,proto3" json:"usage,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Usage *Usage `protobuf:"bytes,7,opt,name=usage,proto3" json:"usage,omitempty"`
+	// Reasoning token (display-only).
+	ReasoningToken string `protobuf:"bytes,8,opt,name=reasoning_token,json=reasoningToken,proto3" json:"reasoning_token,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *BatchGenerateResponse) Reset() {
@@ -876,6 +890,13 @@ func (x *BatchGenerateResponse) GetUsage() *Usage {
 	return nil
 }
 
+func (x *BatchGenerateResponse) GetReasoningToken() string {
+	if x != nil {
+		return x.ReasoningToken
+	}
+	return ""
+}
+
 var File_inference_proto protoreflect.FileDescriptor
 
 const file_inference_proto_rawDesc = "" +
@@ -916,7 +937,7 @@ const file_inference_proto_rawDesc = "" +
 	"\vtemperature\x18\x02 \x01(\x02R\vtemperature\x12\x13\n" +
 	"\x05top_p\x18\x03 \x01(\x02R\x04topP\x12\x13\n" +
 	"\x05top_k\x18\x04 \x01(\x05R\x04topK\x12%\n" +
-	"\x0estop_sequences\x18\x05 \x03(\tR\rstopSequences\"\x99\x02\n" +
+	"\x0estop_sequences\x18\x05 \x03(\tR\rstopSequences\"\xc2\x02\n" +
 	"\x10GenerateResponse\x12;\n" +
 	"\n" +
 	"event_type\x18\x01 \x01(\x0e2\x1c.inference.GenerateEventTypeR\teventType\x12\x14\n" +
@@ -925,7 +946,8 @@ const file_inference_proto_rawDesc = "" +
 	"\vstop_reason\x18\x04 \x01(\x0e2\x15.inference.StopReasonR\n" +
 	"stopReason\x12#\n" +
 	"\rfinish_reason\x18\x05 \x01(\tR\ffinishReason\x12&\n" +
-	"\x05usage\x18\x06 \x01(\v2\x10.inference.UsageR\x05usage\"K\n" +
+	"\x05usage\x18\x06 \x01(\v2\x10.inference.UsageR\x05usage\x12'\n" +
+	"\x0freasoning_token\x18\a \x01(\tR\x0ereasoningToken\"K\n" +
 	"\aToolUse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
@@ -936,7 +958,7 @@ const file_inference_proto_rawDesc = "" +
 	"\ftotal_tokens\x18\x03 \x01(\x05R\vtotalTokens\"i\n" +
 	"\x14BatchGenerateRequest\x12\x19\n" +
 	"\bbatch_id\x18\x01 \x01(\tR\abatchId\x126\n" +
-	"\brequests\x18\x02 \x03(\v2\x1a.inference.GenerateRequestR\brequests\"\xbd\x02\n" +
+	"\brequests\x18\x02 \x03(\v2\x1a.inference.GenerateRequestR\brequests\"\xe6\x02\n" +
 	"\x15BatchGenerateResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12;\n" +
@@ -947,12 +969,14 @@ const file_inference_proto_rawDesc = "" +
 	"\vstop_reason\x18\x05 \x01(\x0e2\x15.inference.StopReasonR\n" +
 	"stopReason\x12#\n" +
 	"\rfinish_reason\x18\x06 \x01(\tR\ffinishReason\x12&\n" +
-	"\x05usage\x18\a \x01(\v2\x10.inference.UsageR\x05usage*`\n" +
+	"\x05usage\x18\a \x01(\v2\x10.inference.UsageR\x05usage\x12'\n" +
+	"\x0freasoning_token\x18\b \x01(\tR\x0ereasoningToken*u\n" +
 	"\x11GenerateEventType\x12\x15\n" +
 	"\x11EVENT_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vEVENT_TOKEN\x10\x01\x12\x12\n" +
 	"\x0eEVENT_TOOL_USE\x10\x02\x12\x0f\n" +
-	"\vEVENT_FINAL\x10\x03*\x81\x01\n" +
+	"\vEVENT_FINAL\x10\x03\x12\x13\n" +
+	"\x0fEVENT_REASONING\x10\x04*\x81\x01\n" +
 	"\n" +
 	"StopReason\x12\x14\n" +
 	"\x10STOP_UNSPECIFIED\x10\x00\x12\x11\n" +

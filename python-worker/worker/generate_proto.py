@@ -34,12 +34,12 @@ def generate():
         # Fix absolute import → relative import in _grpc.py
         grpc_file = output_dir / "inference_pb2_grpc.py"
         if grpc_file.exists():
-            content = grpc_file.read_text()
+            content = grpc_file.read_text(encoding="utf-8")
             content = content.replace(
                 "import inference_pb2 as inference__pb2",
                 "from worker.pb import inference_pb2 as inference__pb2",
             )
-            grpc_file.write_text(content)
+            grpc_file.write_text(content, encoding="utf-8")
             print(f"[proto] Fixed import in {grpc_file}")
         # Create __init__.py in pb directory
         init_file = output_dir / "__init__.py"

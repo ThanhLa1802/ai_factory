@@ -1,7 +1,10 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/google/uuid"
@@ -16,30 +19,76 @@ const (
 
 // Manager handles multiple in-memory sessions.
 // Concurrency is now managed by BatchScheduler instead of inference queue.
+// An optional Store makes sessions durable across restarts.
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	store    Store
 }
 
-// NewManager creates a session manager.
+// NewManager creates an in-memory-only session manager.
 func NewManager() *Manager {
 	return &Manager{
 		sessions: make(map[string]*Session),
 	}
 }
 
-// GetOrCreate returns an existing session or creates a new one.
-func (m *Manager) GetOrCreate(sessionID string) *Session {
+// NewManagerWithStore creates a session manager that persists sessions through
+// the given store (lazy-load on miss, write-through on AddMessage).
+func NewManagerWithStore(store Store) *Manager {
+	return &Manager{
+		sessions: make(map[string]*Session),
+		store:    store,
+	}
+}
+
+// GetOrCreate returns an existing session (from memory or the store) or creates
+// a new one bound to the tenant. Returns ErrSessionForbidden if the session id
+// is already claimed by a different tenant. A store error degrades to a fresh
+// in-memory session (fail-open) rather than failing the request.
+func (m *Manager) GetOrCreate(ctx context.Context, sessionID, tenantID, userID string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if s, ok := m.sessions[sessionID]; ok {
-		return s
+		if s.TenantID == "" || s.TenantID == tenantID {
+			// Same tenant: only hand back the session if the user owns it (an
+			// empty owner is a tenant-credential session any user may continue).
+			if s.UserID == "" || s.UserID == userID {
+				return s, nil
+			}
+		}
+		return nil, ErrSessionForbidden
+	}
+
+	// Lazy-load from the store so history survives a restart.
+	if m.store != nil {
+		if s, err := m.store.LoadSession(ctx, sessionID, tenantID, userID); err == nil {
+			s.store = m.store
+			m.sessions[sessionID] = s
+			return s, nil
+		} else if !errors.Is(err, ErrSessionNotFound) {
+			slog.Error("load session", "session_id", sessionID, "err", err)
+		} else {
+			// The id isn't visible to this tenant, but it may still exist under
+			// another tenant's ownership. Distinguish "never existed" from
+			// "claimed elsewhere" so a cold cache doesn't mint a shadow session
+			// that would let this tenant write into a foreign conversation.
+			exists, exErr := m.store.SessionExists(ctx, sessionID)
+			if exErr != nil {
+				slog.Error("session exists", "session_id", sessionID, "err", exErr)
+			} else if exists {
+				return nil, ErrSessionForbidden
+			}
+		}
 	}
 
 	s := NewSession(sessionID, DefaultMaxTokens)
+	s.TenantID = tenantID
+	s.UserID = userID
+	s.store = m.store
 	m.sessions[sessionID] = s
-	return s
+	return s, nil
 }
 
 // Get returns a session by ID or nil.
@@ -65,6 +114,51 @@ func (m *Manager) List() []string {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// ListSessions returns sidebar summaries for the tenant + user (store-backed).
+func (m *Manager) ListSessions(ctx context.Context, tenantID, userID string) ([]SessionSummary, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	return m.store.ListSessions(ctx, tenantID, userID)
+}
+
+// GetPersisted loads a session + messages from the store, scoped to the tenant
+// + user. Returns ErrSessionNotFound when absent. The returned session is wired
+// to the store so a later AddMessage persists rather than re-upserting.
+func (m *Manager) GetPersisted(ctx context.Context, id, tenantID, userID string) (*Session, error) {
+	if m.store == nil {
+		return nil, fmt.Errorf("session store not configured")
+	}
+	s, err := m.store.LoadSession(ctx, id, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	s.store = m.store
+	return s, nil
+}
+
+// RenameSession renames a session by id, scoped to the tenant + user.
+func (m *Manager) RenameSession(ctx context.Context, id, tenantID, userID, title string) error {
+	if m.store == nil {
+		return fmt.Errorf("session store not configured")
+	}
+	return m.store.RenameSession(ctx, id, tenantID, userID, title)
+}
+
+// DeleteSession removes a session from the store and the in-memory cache.
+func (m *Manager) DeleteSession(ctx context.Context, id, tenantID, userID string) error {
+	if m.store == nil {
+		return fmt.Errorf("session store not configured")
+	}
+	if err := m.store.DeleteSession(ctx, id, tenantID, userID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.sessions, id)
+	m.mu.Unlock()
+	return nil
 }
 
 // NewSessionID generates a unique session ID.

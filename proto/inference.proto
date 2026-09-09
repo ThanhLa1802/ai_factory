@@ -28,7 +28,7 @@ message GenerateRequest {
   repeated ToolDefinition tools = 6;
 }
 
-// Message — internal canonical format, Go đã convert từ Anthropic/OpenAI.
+// Message — internal canonical format, Go đã convert từ OpenAI.
 message Message {
   string role = 1;         // "user" | "assistant" | "system"
   string content = 2;      // plain text content (tool results được inline vào đây)
@@ -80,6 +80,9 @@ message GenerateResponse {
 
   // Thống kê (gửi kèm final event hoặc event riêng).
   Usage usage = 6;
+
+  // Reasoning token — một token "suy nghĩ" (display-only, không vào session context).
+  string reasoning_token = 7;
 }
 
 enum GenerateEventType {
@@ -87,6 +90,7 @@ enum GenerateEventType {
   EVENT_TOKEN = 1;
   EVENT_TOOL_USE = 2;
   EVENT_FINAL = 3;
+  EVENT_REASONING = 4;
 }
 
 // ToolUse — model yêu cầu gọi tool.
@@ -148,4 +152,7 @@ message BatchGenerateResponse {
   string finish_reason = 6;
   // Usage stats (cho EVENT_FINAL).
   Usage usage = 7;
+
+  // Reasoning token (display-only).
+  string reasoning_token = 8;
 }

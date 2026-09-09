@@ -1,0 +1,101 @@
+{
+  "latency": [
+    {
+      "name": "Short",
+      "finish": "stop",
+      "prompt_tokens": 16,
+      "completion_tokens": 345,
+      "n_text_events": 342,
+      "n_reasoning": 316,
+      "n_content": 26,
+      "ttft_ms": 686.3288999884389,
+      "ttfc_ms": 7738.264399988111,
+      "tpot_avg_ms": 22.3117002932617,
+      "tpot_p50_ms": 22.093300009146333,
+      "total_s": 8.318313400028273,
+      "throughput_tps": 41.47475376424593
+    },
+    {
+      "name": "Medium",
+      "finish": "length",
+      "prompt_tokens": 23,
+      "completion_tokens": 512,
+      "n_text_events": 512,
+      "n_reasoning": 512,
+      "n_content": 0,
+      "ttft_ms": 159.9533999687992,
+      "ttfc_ms": null,
+      "tpot_avg_ms": 20.031775342534733,
+      "tpot_p50_ms": 19.6324999560602,
+      "total_s": 10.397004699974786,
+      "throughput_tps": 49.24495225064596
+    },
+    {
+      "name": "Long",
+      "finish": "length",
+      "prompt_tokens": 24,
+      "completion_tokens": 512,
+      "n_text_events": 512,
+      "n_reasoning": 512,
+      "n_content": 0,
+      "ttft_ms": 116.05459998827428,
+      "ttfc_ms": null,
+      "tpot_avg_ms": 19.704677299423228,
+      "tpot_p50_ms": 19.573900033719838,
+      "total_s": 10.185774500016123,
+      "throughput_tps": 50.26618250769144
+    }
+  ],
+  "context": [
+    {
+      "prompt_tokens": 111,
+      "ttft_ms": 186.3273000344634
+    },
+    {
+      "prompt_tokens": 211,
+      "ttft_ms": 203.23690003715456
+    },
+    {
+      "prompt_tokens": 411,
+      "ttft_ms": 341.65989997563884
+    },
+    {
+      "prompt_tokens": 801,
+      "ttft_ms": 576.4906000113115
+    },
+    {
+      "prompt_tokens": 1591,
+      "ttft_ms": 904.4767000013962
+    },
+    {
+      "prompt_tokens": 3171,
+      "ttft_ms": 1411.0526999575086
+    }
+  ],
+  "concurrency": [
+    {
+      "n": 1,
+      "wall_s": 5.617888299981132,
+      "total_tokens": 256,
+      "agg_tps": 45.568723749964875,
+      "per_req_tps": 45.571609143775405,
+      "ttft_avg_ms": 313.25639999704435
+    },
+    {
+      "n": 2,
+      "wall_s": 7.11295910004992,
+      "total_tokens": 512,
+      "agg_tps": 71.98129397319417,
+      "per_req_tps": 36.10943470316252,
+      "ttft_avg_ms": 264.74869999219663
+    },
+    {
+      "n": 4,
+      "wall_s": 11.543936899979599,
+      "total_tokens": 1024,
+      "agg_tps": 88.70457356725588,
+      "per_req_tps": 22.247898383956823,
+      "ttft_avg_ms": 615.9620249964064
+    }
+  ]
+}

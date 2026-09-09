@@ -1,6 +1,6 @@
 import pytest
 
-from worker.server import InferenceServicer, _build_response
+from worker.server import InferenceServicer, _build_response, _build_batch_response
 
 
 @pytest.mark.asyncio
@@ -41,3 +41,14 @@ async def test_inference_servicer_streams_backend_events():
 def test_build_response_token():
     resp = _build_response({"type": "token", "token": "x"})
     assert resp.event_type == 1 and resp.token == "x"
+
+
+def test_build_response_reasoning():
+    resp = _build_response({"type": "reasoning", "token": "th"})
+    assert resp.event_type == 4 and resp.reasoning_token == "th"  # EVENT_REASONING=4
+
+
+def test_build_batch_response_reasoning():
+    resp = _build_batch_response("r1", {"type": "reasoning", "token": "th"})
+    assert resp.request_id == "r1"
+    assert resp.event_type == 4 and resp.reasoning_token == "th"

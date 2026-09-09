@@ -2,12 +2,14 @@ package inference
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
 	pb "github.com/ai-factory/go-server/internal/inference/pb"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -16,7 +18,14 @@ const (
 	DefaultBatchWindow = 100 * time.Millisecond
 	// DefaultMaxBatchSize prevents VRAM overflow.
 	DefaultMaxBatchSize = 4
+	// submitChCapacity bounds how many requests may sit in the scheduler's
+	// pending queue before TrySubmit sheds load (backpressure).
+	submitChCapacity = 100
 )
+
+// ErrOverloaded is returned by TrySubmit when the scheduler's pending queue is
+// full. Callers should shed the request (e.g. respond 503) instead of blocking.
+var ErrOverloaded = errors.New("batch scheduler overloaded")
 
 // BatchScheduler collects concurrent inference requests into batches
 // and dispatches them to the Python worker via gRPC BatchGenerate RPC.
@@ -51,14 +60,20 @@ type batchItem struct {
 	events chan<- GenerateEvent
 }
 
-// NewBatchScheduler creates a batch scheduler.
-func NewBatchScheduler(client *Client) *BatchScheduler {
-	bs := &BatchScheduler{
+// newBatchScheduler builds a scheduler without starting the collector loop,
+// so tests can exercise Submit/TrySubmit against a raw queue.
+func newBatchScheduler(client *Client) *BatchScheduler {
+	return &BatchScheduler{
 		client:       client,
-		submitCh:     make(chan *batchItem, 100),
+		submitCh:     make(chan *batchItem, submitChCapacity),
 		maxBatchSize: DefaultMaxBatchSize,
 		batchWindow:  DefaultBatchWindow,
 	}
+}
+
+// NewBatchScheduler creates a batch scheduler.
+func NewBatchScheduler(client *Client) *BatchScheduler {
+	bs := newBatchScheduler(client)
 	bs.wg.Add(1)
 	go bs.collectorLoop()
 	return bs
@@ -78,13 +93,26 @@ func (bs *BatchScheduler) SetBatchWindow(d time.Duration) {
 // Returns a channel that receives streaming events (same interface as Client.GenerateStream).
 // The channel is closed when generation completes or on fatal error.
 func (bs *BatchScheduler) Submit(ctx context.Context, req GenerateRequest) <-chan GenerateEvent {
+	events, _ := bs.TrySubmit(ctx, req)
+	return events
+}
+
+// TrySubmit is the non-blocking variant of Submit (load shedding / backpressure).
+// If the pending queue is full it returns ErrOverloaded immediately instead of
+// blocking, so the caller can reject the request (e.g. 503) rather than pile up
+// goroutines behind a saturated worker.
+func (bs *BatchScheduler) TrySubmit(ctx context.Context, req GenerateRequest) (<-chan GenerateEvent, error) {
 	events := make(chan GenerateEvent, 100)
-	bs.submitCh <- &batchItem{
+	select {
+	case bs.submitCh <- &batchItem{
 		ctx:    ctx,
 		req:    req,
 		events: events,
+	}:
+		return events, nil
+	default:
+		return nil, ErrOverloaded
 	}
-	return events
 }
 
 // Shutdown gracefully stops the collector loop.
@@ -146,8 +174,14 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 	}
 
 	batchID := uuid.New().String()[:8]
-	log.Printf("[batch_scheduler] Dispatching batch %s: %d requests (window=%v, max=%d)",
-		batchID, len(batch), bs.batchWindow, bs.maxBatchSize)
+	// A6 trace: the batch is a child of the first request's span (agent.loop).
+	bctx := context.Background()
+	if len(batch) > 0 {
+		bctx = batch[0].ctx
+	}
+	_, span := observability.StartSpan(bctx, "inference.batch", "batch_id", batchID, "batch_size", len(batch))
+	defer span.End()
+	slog.Info("dispatching batch", "batch_id", batchID, "requests", len(batch), "window", bs.batchWindow.String(), "max", bs.maxBatchSize)
 
 	// Build index: request_id → batchItem
 	index := make(map[string]*batchItem, len(batch))
@@ -166,7 +200,7 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 	ctx := context.Background()
 	stream, err := bs.client.BatchGenerate(ctx, pbBatch)
 	if err != nil {
-		log.Printf("[batch_scheduler] Batch %s: gRPC error: %v", batchID, err)
+		slog.Error("batch gRPC error", "batch_id", batchID, "err", err)
 		bs.failAll(batch, fmt.Errorf("batch generate failed: %w", err))
 		return
 	}
@@ -178,10 +212,9 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 		if err != nil {
 			// Stream ended (io.EOF) or error
 			if isEOF(err) {
-				log.Printf("[batch_scheduler] Batch %s complete: %d requests, %d tokens",
-					batchID, len(batch), totalTokens)
+				slog.Info("batch complete", "batch_id", batchID, "requests", len(batch), "tokens", totalTokens)
 			} else {
-				log.Printf("[batch_scheduler] Batch %s stream error: %v", batchID, err)
+				slog.Error("batch stream error", "batch_id", batchID, "err", err)
 				// On real error, fail only unfinished requests still in index
 				for _, item := range index {
 					select {
@@ -202,7 +235,7 @@ func (bs *BatchScheduler) dispatchBatch(batch []*batchItem) {
 		// Route event to correct request
 		item, ok := index[pbResp.RequestId]
 		if !ok {
-			log.Printf("[batch_scheduler] Unknown request_id in batch response: %s", pbResp.RequestId)
+			slog.Warn("unknown request_id in batch response", "batch_id", batchID, "request_id", pbResp.RequestId)
 			continue
 		}
 
@@ -298,6 +331,10 @@ func pbToGenerateEvent(resp *pb.BatchGenerateResponse) GenerateEvent {
 		event.Type = "token"
 		event.Token = resp.Token
 
+	case pb.GenerateEventType_EVENT_REASONING:
+		event.Type = "reasoning"
+		event.Token = resp.ReasoningToken
+
 	case pb.GenerateEventType_EVENT_TOOL_USE:
 		event.Type = "tool_use"
 		if resp.ToolUse != nil {
@@ -332,4 +369,3 @@ func isEOF(err error) bool {
 
 // To implement inference executor interface for backward compat.
 // BatchScheduler can be used wherever the inference client was used.
-

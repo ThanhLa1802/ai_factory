@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -30,6 +31,7 @@ const (
 	LoopEventToolResult                      // Tool execution result
 	LoopEventFinal                           // Generation complete
 	LoopEventError                           // Fatal error
+	LoopEventReasoning                       // Reasoning token (display-only, not in session context)
 )
 
 // LoopEvent is a single streaming event from the agentic loop.
@@ -91,9 +93,12 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 	go func() {
 		defer close(events)
+		// A6 trace: one span per generation (may run multiple iterations).
+		_, span := observability.StartSpan(ctx, "agent.loop", "session_id", sess.GetID())
+		defer span.End()
 
 		// Add user message to session
-		sess.AddMessage(userMessage)
+		sess.AddMessage(ctx, userMessage)
 
 		for iteration := 0; iteration < MaxToolIterations; iteration++ {
 			// Check context cancellation
@@ -135,8 +140,16 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 				Tools:          sessToolDefs,
 			}
 
-			// Submit to batch scheduler — may wait up to 100ms to collect a batch
-			grpcEvents := l.scheduler.Submit(ctx, req)
+			// Submit to batch scheduler — may wait up to 100ms to collect a batch.
+			// TrySubmit sheds load (ErrOverloaded → 503) when the queue is full.
+			grpcEvents, err := l.scheduler.TrySubmit(ctx, req)
+			if err != nil {
+				events <- LoopEvent{
+					Type: LoopEventError,
+					Err:  fmt.Errorf("submit inference: %w", err),
+				}
+				return
+			}
 
 			// Collect response while streaming tokens
 			var (
@@ -154,6 +167,13 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 					assistantContent += event.Token
 					events <- LoopEvent{
 						Type:  LoopEventToken,
+						Token: event.Token,
+					}
+
+				case "reasoning":
+					// Reasoning token — forward for display only, do NOT add to session context.
+					events <- LoopEvent{
+						Type:  LoopEventReasoning,
 						Token: event.Token,
 					}
 
@@ -177,10 +197,10 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 					usage = event.Usage
 
 					if event.StopReason == "STOP_ERROR" {
-						log.Printf("[loop] Inference error: %s", event.Error)
+						slog.Error("inference error", "error", event.Error)
 						events <- LoopEvent{
-							Type:  LoopEventError,
-							Err:   errors.New(event.Error),
+							Type: LoopEventError,
+							Err:  errors.New(event.Error),
 						}
 						return
 					}
@@ -195,7 +215,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			if len(toolCalls) > 0 {
 				assistantMsg.ToolCalls = toolCalls
 			}
-			sess.AddMessage(assistantMsg)
+			sess.AddMessage(ctx, assistantMsg)
 
 			// If model wants to call tools, execute them
 			if stopReason == "STOP_TOOL_USE" && len(toolCalls) > 0 {
@@ -217,7 +237,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 						ToolResult: resultText,
 						IsError:    isError,
 					}
-					sess.AddMessage(toolMsg)
+					sess.AddMessage(ctx, toolMsg)
 
 					events <- LoopEvent{
 						Type:       LoopEventToolResult,
@@ -241,8 +261,8 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 		// Max iterations reached
 		events <- LoopEvent{
-			Type:  LoopEventError,
-			Err:   fmt.Errorf("reached max tool iterations (%d)", MaxToolIterations),
+			Type: LoopEventError,
+			Err:  fmt.Errorf("reached max tool iterations (%d)", MaxToolIterations),
 		}
 	}()
 

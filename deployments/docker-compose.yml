@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ai_factory
+      POSTGRES_PASSWORD: ai_factory
+      POSTGRES_DB: ai_factory
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_factory -d ai_factory"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  kafka:
+    image: bitnamilegacy/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+    ports:
+      - "9092:9092"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  server:
+    build:
+      context: ..
+      dockerfile: go-server/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      AI_FACTORY_DATABASE_URL: postgres://ai_factory:ai_factory@postgres:5432/ai_factory?sslmode=disable
+      AI_FACTORY_JWT_SECRET: ${AI_FACTORY_JWT_SECRET:-dev-secret-change-me-0123456789}
+      AI_FACTORY_LOG_LEVEL: info
+      # NOTE: kafka advertises localhost:9092 (host-only), so the containerized
+      # server cannot reach it; it warns and runs with a memory event bus
+      # (deployments stay PENDING). Async deploy in Docker needs a dual
+      # advertised listener — out of scope for M2.
+      AI_FACTORY_KAFKA_ADDR: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # NOTE: no /app/server prefix — Dockerfile ENTRYPOINT already runs the binary;
+    # compose `command` is appended as args (pre-scan bug fix).
+    command: ["--port", "8080", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/app"]
+
+volumes:
+  pgdata:

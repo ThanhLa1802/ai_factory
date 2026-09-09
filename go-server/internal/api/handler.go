@@ -3,14 +3,20 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
+	"github.com/ai-factory/go-server/internal/auth"
+	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -19,28 +25,46 @@ import (
 // serve UI tĩnh từ thư mục ui/ (không nhúng HTML vào binary).
 // Package comment đặt ở đây vì các file UI đã tách thành file HTML độc lập.
 
+// DeploymentResolver resolves model name → READY deployment. Satisfied by *controlplane.Service.
+type DeploymentResolver interface {
+	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*controlplane.Deployment, error)
+}
+
+// UsageRecorder persists token usage per completed turn. Satisfied by *controlplane.Service.
+type UsageRecorder interface {
+	RecordUsage(ctx context.Context, tenantID, model string, promptTokens, completionTokens int) error
+}
+
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	sessionMgr *session.Manager
 	loop       *agent.Loop
-	uiDir      string // thư mục chứa UI tĩnh (chat.html, concepts.html)
+	uiDir      string // thư mục chứa UI tĩnh (index.html, chat.html, keys.html)
+	authSvc    *auth.Service
+	secret     []byte
+	resolver   DeploymentResolver
+	usage      UsageRecorder
+	limiter    ratelimit.Limiter
+	rpmLimit   int
+	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, usage UsageRecorder, limiter ratelimit.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
-		sessionMgr: sessionMgr,
-		loop:       loop,
-		uiDir:      uiDir,
+		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, authSvc: authSvc, secret: secret,
+		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
 // RegisterRoutes registers all HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/messages", h.handleAnthropicMessages)
-	mux.HandleFunc("/v1/chat/completions", h.handleOpenAIChatCompletions)
+	mux.Handle("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleOpenAIChatCompletions)))
 	mux.HandleFunc("/health", h.handleHealth)
-	mux.HandleFunc("/v1/sessions/", h.handleSessions)
+	mux.Handle("GET /api/v1/sessions", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleListSessions)))
+	mux.Handle("GET /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleGetSession)))
+	mux.Handle("PATCH /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleRenameSession)))
+	mux.Handle("DELETE /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleDeleteSession)))
 
 	// Static UI for testing
 	mux.HandleFunc("/", h.handleUI)
@@ -49,220 +73,48 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 }
 
 // ==========================================================================
-// Anthropic /v1/messages
-// ==========================================================================
-
-func (h *Handler) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req AnthropicRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	if err := ValidateAnthropicRequest(&req); err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	// Get or create session
-	sessionID := r.Header.Get("x-session-id")
-	if sessionID == "" {
-		sessionID = session.NewSessionID()
-	}
-	sess := h.sessionMgr.GetOrCreate(sessionID)
-
-	// Convert to internal format
-	msgs, systemPrompt, err := AnthropicToInternal(&req)
-	if err != nil {
-		writeAnthropicError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-
-	if systemPrompt != "" {
-		sess.SetSystemPrompt(systemPrompt)
-	}
-
-	params := inference.DefaultSamplingParams()
-	if req.MaxTokens > 0 {
-		params.MaxTokens = req.MaxTokens
-	}
-
-	// Context with cancel propagation on client disconnect
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	go func() {
-		<-r.Context().Done()
-		log.Printf("[api] Client disconnected for session %s", sessionID)
-		cancel()
-	}()
-
-	if req.Stream {
-		h.handleAnthropicStream(ctx, w, sess, msgs, params, sessionID, req.Model)
-	} else {
-		h.handleAnthropicNonStream(ctx, w, sess, msgs, params, sessionID, req.Model)
-	}
-}
-
-func (h *Handler) handleAnthropicStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, sessionID, modelID string) {
-	sse, err := NewSSEWriter(w)
-	if err != nil {
-		writeAnthropicError(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
-		return
-	}
-
-	messageID := "msg_" + uuid.New().String()[:8]
-	w.Header().Set("x-session-id", sessionID)
-
-	// Send message_start
-	fmt.Fprintf(sse.w, "data: %s\n\n", mustMarshal(map[string]interface{}{
-		"type":    "message_start",
-		"message": map[string]string{"id": messageID, "model": modelID},
-	}))
-	sse.flusher.Flush()
-
-	var (
-		totalTokens   int32
-		promptTokens  int32
-		stopReason    string
-		finishReason  string
-	)
-
-	for _, userMsg := range msgs {
-		// Use streaming loop — tokens arrive one by one (batch scheduler handles concurrency)
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
-
-		for event := range events {
-			switch event.Type {
-			case agent.LoopEventToken:
-				// Real token from gRPC → SSE immediately
-				sse.SendToken(event.Token)
-				totalTokens++
-
-			case agent.LoopEventToolUse:
-				if event.ToolCall != nil {
-					sse.SendToolUse(event.ToolCall.ID, event.ToolCall.Name, event.ToolCall.Arguments)
-				}
-
-			case agent.LoopEventToolResult:
-				// Tool results are sent to model in next iteration, not to client
-				// (they'll be part of the next assistant response)
-
-			case agent.LoopEventFinal:
-				stopReason = event.StopReason
-				finishReason = event.FinishReason
-				if event.Usage != nil {
-					promptTokens = event.Usage.PromptTokens
-				}
-
-			case agent.LoopEventError:
-				sse.SendError(event.Err.Error())
-				return
-			}
-		}
-
-	}
-
-	// Send final [DONE]
-	usageMap := map[string]int32{
-		"input_tokens":  promptTokens,
-		"output_tokens": totalTokens,
-	}
-	sse.SendDone(stopReason, finishReason, usageMap)
-}
-
-func (h *Handler) handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, sessionID, modelID string) {
-	w.Header().Set("x-session-id", sessionID)
-
-	var (
-		contentBlocks []AnthropicContent
-		stopReason    string
-		usage         *inference.Usage
-	)
-
-	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
-
-		var assistantContent string
-		var toolCalls []session.ToolCall
-
-		for event := range events {
-			switch event.Type {
-			case agent.LoopEventToken:
-				assistantContent += event.Token
-
-			case agent.LoopEventToolUse:
-				if event.ToolCall != nil {
-					toolCalls = append(toolCalls, *event.ToolCall)
-				}
-
-			case agent.LoopEventFinal:
-				stopReason = event.StopReason
-				usage = event.Usage
-
-			case agent.LoopEventError:
-				writeAnthropicError(w, http.StatusInternalServerError, "internal_error", event.Err.Error())
-				return
-			}
-		}
-
-		// Build Anthropic content blocks from collected response
-		if assistantContent != "" {
-			contentBlocks = append(contentBlocks, AnthropicContent{
-				Type: "text",
-				Text: assistantContent,
-			})
-		}
-		for _, tc := range toolCalls {
-			var input json.RawMessage
-			json.Unmarshal([]byte(tc.Arguments), &input)
-			contentBlocks = append(contentBlocks, AnthropicContent{
-				Type:  "tool_use",
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: input,
-			})
-		}
-
-	}
-
-	stopMap := map[string]string{
-		"STOP_END_TURN":  "end_turn",
-		"STOP_MAX_TOKENS": "max_tokens",
-		"STOP_TOOL_USE":  "tool_use",
-	}
-
-	resp := map[string]interface{}{
-		"id":      "msg_" + uuid.New().String()[:8],
-		"type":    "message",
-		"role":    "assistant",
-		"content": contentBlocks,
-		"stop_reason": func() string {
-			if s, ok := stopMap[stopReason]; ok {
-				return s
-			}
-			return "end_turn"
-		}(),
-		"model": modelID,
-	}
-	if usage != nil {
-		resp["usage"] = map[string]int32{
-			"input_tokens":  usage.PromptTokens,
-			"output_tokens": usage.CompletionTokens,
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-// ==========================================================================
 // OpenAI /v1/chat/completions
 // ==========================================================================
+
+// resolveForTenant resolves tenant+model → READY deployment, then applies RPM +
+// concurrency limits (fail-open on Redis error). On success returns the
+// deployment and a release func (for concurrency); on failure writes the error
+// response and returns nil, nil, false.
+func (h *Handler) resolveForTenant(ctx context.Context, w http.ResponseWriter, tenantID, model string) (*controlplane.Deployment, func(), bool) {
+	d, err := h.resolver.ResolveDeployment(ctx, tenantID, model)
+	if err != nil {
+		writeOpenAIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
+		return nil, nil, false
+	}
+	if !h.allow(ctx, "tenant:"+tenantID+":rpm", h.rpmLimit, time.Minute) {
+		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
+		return nil, nil, false
+	}
+	if !h.acquire(ctx, "deployment:"+d.ID+":concurrency", h.concLimit) {
+		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
+		return nil, nil, false
+	}
+	release := func() { _ = h.limiter.Release(context.Background(), "deployment:"+d.ID+":concurrency") }
+	return d, release, true
+}
+
+func (h *Handler) allow(ctx context.Context, key string, limit int, window time.Duration) bool {
+	ok, err := h.limiter.Allow(ctx, key, limit, window)
+	if err != nil {
+		slog.Warn("rate limit allow error (fail-open)", "err", err)
+		return true
+	}
+	return ok
+}
+
+func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
+	ok, err := h.limiter.Acquire(ctx, key, limit)
+	if err != nil {
+		slog.Warn("rate limit acquire error (fail-open)", "err", err)
+		return true
+	}
+	return ok
+}
 
 func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -281,11 +133,36 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	tenantID, _ := auth.TenantIDFromContext(r.Context())
+	d, release, ok := h.resolveForTenant(r.Context(), w, tenantID, req.Model)
+	if !ok {
+		return
+	}
+	defer release()
+	if ls, ok := w.(observability.RouteLabelSetter); ok {
+		ls.SetRouteLabels(d.TenantID, d.ID, req.Model, d.Region)
+	}
+
 	sessionID := r.Header.Get("x-session-id")
 	if sessionID == "" {
 		sessionID = session.NewSessionID()
 	}
-	sess := h.sessionMgr.GetOrCreate(sessionID)
+	userID := ""
+	if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
+		userID = claims.UserID
+	}
+	sess, err := h.sessionMgr.GetOrCreate(r.Context(), sessionID, tenantID, userID)
+	if err != nil {
+		// A cross-tenant session-id collision must be indistinguishable from a
+		// missing session — 404 never reveals that the id exists elsewhere.
+		if errors.Is(err, session.ErrSessionForbidden) {
+			writeOpenAIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		}
+		writeOpenAIError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
+		return
+	}
+	sess.Model = req.Model
 
 	msgs, systemPrompt, err := OpenAIToInternal(&req)
 	if err != nil {
@@ -310,13 +187,13 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 	}()
 
 	if req.Stream {
-		h.handleOpenAIStream(ctx, w, sess, msgs, params, req.Model)
+		h.handleOpenAIStream(ctx, w, sess, msgs, params, req.Model, tenantID)
 	} else {
-		h.handleOpenAINonStream(ctx, w, sess, msgs, params, req.Model)
+		h.handleOpenAINonStream(ctx, w, sess, msgs, params, req.Model, tenantID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
 	sse, err := NewSSEWriter(w)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
@@ -342,6 +219,23 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 						{
 							"index": 0,
 							"delta": map[string]string{"content": event.Token},
+						},
+					},
+				})
+				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
+				sse.flusher.Flush()
+
+			case agent.LoopEventReasoning:
+				// Reasoning token — display-only; emit as delta.reasoning_content.
+				data, _ := json.Marshal(map[string]interface{}{
+					"id":      completionID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   modelID,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]string{"reasoning_content": event.Token},
 						},
 					},
 				})
@@ -377,6 +271,15 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				}
 
 			case agent.LoopEventFinal:
+				// Usage metering: Prometheus counter + durable usage_events row.
+				if event.Usage != nil {
+					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+					if h.usage != nil {
+						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+							slog.Warn("record usage", "err", err)
+						}
+					}
+				}
 				// Send final chunk
 				data, _ := json.Marshal(map[string]interface{}{
 					"id":      completionID,
@@ -395,6 +298,14 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				sse.flusher.Flush()
 
 			case agent.LoopEventError:
+				// Overload is load shedding (backpressure): the worker queue is
+				// saturated, so tell the client to back off. SSE already started,
+				// so surface it as an error frame rather than an HTTP status.
+				if errors.Is(event.Err, inference.ErrOverloaded) {
+					observability.IncOverloaded(tenantID, modelID)
+					sse.SendError("OVERLOADED: " + event.Err.Error())
+					return
+				}
 				sse.SendError(event.Err.Error())
 				return
 			}
@@ -406,7 +317,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
 	var (
 		content string
 		usage   *inference.Usage
@@ -421,7 +332,21 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 				content += event.Token
 			case agent.LoopEventFinal:
 				usage = event.Usage
+				// Usage metering: Prometheus counter + durable usage_events row.
+				if event.Usage != nil {
+					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+					if h.usage != nil {
+						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+							slog.Warn("record usage", "err", err)
+						}
+					}
+				}
 			case agent.LoopEventError:
+				if errors.Is(event.Err, inference.ErrOverloaded) {
+					observability.IncOverloaded(tenantID, modelID)
+					writeOpenAIError(w, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
+					return
+				}
 				writeOpenAIError(w, http.StatusInternalServerError, "internal_error", event.Err.Error())
 				return
 			}
@@ -430,9 +355,9 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 	}
 
 	resp := map[string]interface{}{
-		"id":      "chatcmpl-" + uuid.New().String()[:8],
-		"object":  "chat.completion",
-		"model":   modelID,
+		"id":     "chatcmpl-" + uuid.New().String()[:8],
+		"object": "chat.completion",
+		"model":  modelID,
 		"choices": []map[string]interface{}{
 			{
 				"index": 0,
@@ -468,40 +393,91 @@ func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/sessions/"), "/")
-	if len(parts) == 1 && parts[0] != "" {
-		sessionID := parts[0]
-		sess := h.sessionMgr.Get(sessionID)
-		if sess == nil {
-			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
+		return
+	}
+	list, err := h.sessionMgr.ListSessions(r.Context(), claims.TenantID, claims.UserID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	sess, err := h.sessionMgr.GetPersisted(r.Context(), id, claims.TenantID, claims.UserID)
+	if errors.Is(err, session.ErrSessionNotFound) {
+		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":         sess.ID,
+		"title":      sess.Title,
+		"model":      sess.Model,
+		"messages":   sess.Messages,
+		"created_at": sess.CreatedAt,
+		"updated_at": sess.UpdatedAt,
+	})
+}
+
+func (h *Handler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "title required")
+		return
+	}
+	if err := h.sessionMgr.RenameSession(r.Context(), id, claims.TenantID, claims.UserID, req.Title); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":         sess.GetID(),
-			"messages":   sess.GetMessages(),
-			"created_at": sess.CreatedAt,
-			"updated_at": sess.UpdatedAt,
-		})
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": req.Title})
+}
 
-	if r.Method == http.MethodDelete && len(parts) == 1 && parts[0] != "" {
-		h.sessionMgr.Delete(parts[0])
-		w.WriteHeader(http.StatusNoContent)
+func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	if err := h.sessionMgr.DeleteSession(r.Context(), id, claims.TenantID, claims.UserID); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-
-	http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/ui" && r.URL.Path != "/ui/" {
+	var file string
+	switch r.URL.Path {
+	case "/":
+		file = "index.html"
+	case "/chat":
+		file = "chat.html"
+	case "/keys":
+		file = "keys.html"
+	default:
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(h.uiDir, "chat.html"))
+	http.ServeFile(w, r, filepath.Join(h.uiDir, file))
 }
 
 func (h *Handler) handleConcepts(w http.ResponseWriter, r *http.Request) {
@@ -511,15 +487,6 @@ func (h *Handler) handleConcepts(w http.ResponseWriter, r *http.Request) {
 // ==========================================================================
 // Helpers
 // ==========================================================================
-
-func writeAnthropicError(w http.ResponseWriter, status int, typ, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"type":  "error",
-		"error": map[string]string{"type": typ, "message": msg},
-	})
-}
 
 func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
@@ -531,9 +498,4 @@ func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 			"code":    status,
 		},
 	})
-}
-
-func mustMarshal(v interface{}) string {
-	data, _ := json.Marshal(v)
-	return string(data)
 }

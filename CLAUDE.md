@@ -2,7 +2,7 @@
 
 A learning project simulating a Claude Code / ChatGPT server, comprising an inference engine, an agentic loop, and an API server.
 
-> **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
+> **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), [`docs/LEARNING_ROADMAP.md`](docs/LEARNING_ROADMAP.md) (project-specific learning roadmap — 2 tracks: backend/platform + self-written inference), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
 
 ## Behavioral Guidelines
 
@@ -75,12 +75,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ```
 Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (inference)
                          │
-                         ├── Anthropic adapter (/v1/messages)
                          ├── OpenAI adapter (/v1/chat/completions)
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
                          ├── Session manager (in-memory, multi-user, 8K ctx)
+                         ├── Chat history + usage APIs (/api/v1/sessions, /api/v1/usage)
                          ├── BatchScheduler (static batching: coalesce 100ms, batch ≤ 4)
-                         └── Tool executor (LocalToolExecutor, 4 built-in tools)
+                         ├── Tool executor (LocalToolExecutor, 4 built-in tools)
+                         ├── Events bus (Kafka: serving.deployment.events)
+                         ├── Deployment worker (async PENDING→READY via ServingRuntimeAdapter)
+                         ├── Routing (model→deployment READY, tenant-scoped)
+                         └── Rate limiter (Redis)
 ```
 
 - **Go server**: HTTP handlers, SSE streaming, session management, agentic loop, tool execution, gRPC client, batch scheduler
@@ -97,7 +101,7 @@ ai_factory/
 │   ├── go.mod / go.sum
 │   ├── cmd/server/main.go       #   Entry point (flags: --port, --inference-addr, --max-concurrent)
 │   └── internal/
-│       ├── api/                 #   handler.go, adapters.go, sse.go (HTTP + dual protocol + SSE)
+│       ├── api/                 #   handler.go, adapters.go, sse.go (HTTP + OpenAI protocol + SSE)
 │       ├── agent/               #   loop.go (agentic loop), tools.go (ToolExecutor)
 │       ├── session/             #   session.go, manager.go (in-memory, truncation)
 │       └── inference/           #   client.go (gRPC), batch_scheduler.go, pb/ (codegen)
@@ -117,8 +121,9 @@ ai_factory/
 │       ├── generate_proto.py    #   regenerate pb/ from proto
 │       ├── pb/                  #   generated gRPC stubs
 │       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
-├── models/                      # GGUF + llama.cpp: Qwen3.5-9B-Q4_K_M.gguf, llama.cpp/llama-server.exe
+├── (models → G:\models)         # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
+├── web/                         # NextJS UI (App Router): /login /chat /keys /platform /admin
 ├── docs/                        # ARCHITECTURE.md, BENCHMARK.md, superpowers/specs/
 ├── scripts/                     # setup.sh, setup.ps1
 ├── CONTEXT.md                   # Domain glossary
@@ -133,12 +138,15 @@ ai_factory/
 - **Context window:** 8K tokens; truncation logic in Go when `EstimatedTokens() > 90%` of the budget.
 - **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. This is **static batching** (coalesced before a single forward pass), not dynamic/continuous batching.
 - **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), streams each token immediately.
-- **Dual protocol:** Anthropic `/v1/messages` + OpenAI `/v1/chat/completions` → converted to the internal canonical format (`session.Message`).
+- **Protocol:** OpenAI `/v1/chat/completions` only. The dual protocol was collapsed to OpenAI-only on 2026-08-15 — the Messages API dialect, its adapter, and the UI protocol dropdown were removed to keep a single contract. Requests convert to the internal canonical format (`session.Message`).
 - **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` without a sandbox). The interface allows swapping in a sandbox later.
 - **Agentic loop:** max `MaxToolIterations = 10`; tool results are not streamed back to the client; they are fed into the session for the next inference turn.
 - **Error handling:** Cancel propagation from client → Go → gRPC → Python (100ms poll); tool errors first, the rest later.
 - **Multi-user:** In-memory sessions distinguished by the `x-session-id` header (set by the client); no auth.
+- **Routing + rate limit (M3):** `/v1/chat/completions` resolves request `model` (a `Model.name` in the registry) → the tenant's newest READY deployment; 404 `RESOURCE_NOT_FOUND` if none. Rate limit: Redis-backed (`AI_FACTORY_REDIS_ADDR`, default `localhost:6379`) — tenant RPM (`AI_FACTORY_RATE_LIMIT_RPM`, default 60) + deployment concurrency (`AI_FACTORY_RATE_LIMIT_CONCURRENCY`, default 4); fail-open on Redis down.
 - **gRPC codegen:** Go uses `protoc-gen-go-grpc`, Python uses `grpcio-tools` (regenerated via `python -m worker.generate_proto`).
+- **Chat history (sidebar):** sessions are durable (list/title/rename/delete via `/api/v1/sessions`), auto-titled from the first user message (40-rune truncate). The UI sidebar is ChatGPT-style on `/chat`.
+- **Usage metering:** per-turn prompt/completion tokens are persisted to `usage_events` (best-effort, never fails a turn) and surfaced on `/platform` (Usage tab) + `/api/v1/usage`. Infra management (deployments/models/templates/quotas) moved to `/infra`.
 
 ## Engine selection
 
@@ -155,7 +163,7 @@ Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
 
 | Phase | Content | Status |
 |---|---|---|
-| Weeks 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Done |
+| Weeks 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Done |
 | Weeks 3–4 | Hand-write byte-level BPE tokenizer | ✅ Done — spec approved, integrated into pipeline |
 | Weeks 5–6 | Hand-write the sampling loop (greedy / temperature / top-p / top-k) | 🔜 Next — currently handled by HF `model.generate()` |
 | Weeks 7–8 | Hand-manage KV cache + dynamic batching | 🔜 Not yet |
@@ -168,7 +176,8 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 - **Tool-calling is dead on transformers, works on llama** (`ARCHITECTURE.md` §9.1): on the `transformers` engine (Qwen2.5-Coder-7B), the batch path does not detect `tool_use` (only emits `STOP_END_TURN`/`STOP_MAX_TOKENS`) → the tool branch dies. On the `llama` engine (Qwen3.5-9B), tool-use **works and is verified E2E** — the model calls `read_file`, the Go loop executes, the model answers with the file's contents.
 - **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
 - **Minor bug** (§9.4): the `--max-concurrent ≤ 1` flag does not override the batch size; `max_batch` is logged incorrectly when the flag = 1.
-- **Not yet:** auth/rate-limit/persistence, sandbox for `run_command`, observability (metrics/tracing/cost).
+- **Not yet:** persistence for other domains, sandbox for `run_command`, cost/quotas enforcement (usage is recorded but not yet enforced against quotas).
+- **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
 
 ## Running
 
@@ -177,17 +186,31 @@ Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 cd python-worker && python -m worker.server
 
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
-#   (add --llama-bin ..\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
-cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+#   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
+cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (default port 8080)
+# NOTE: the server requires Postgres (control plane) and fails at boot if the DB is
+# unreachable. Start it first if not already running:
+#   docker compose -f deployments/docker-compose.yml up -d postgres kafka redis
+# Kafka is optional (only the deployment worker needs it): if unreachable the server
+# warns and runs with an in-memory event bus (deployments stay PENDING).
+# Redis backs the rate limiter. On boot, seedDemo seeds model `qwen-3b` + a READY
+# deployment for the demo tenant (best-effort; skip with AI_FACTORY_SKIP_SEED=1).
+# The DB URL comes from AI_FACTORY_DATABASE_URL (default: local dev compose).
 cd go-server && go run ./cmd/server/
 
-# Quick test (Anthropic adapter) — NOTE: content must be an ARRAY of content blocks
-# (the string form "content":"Hello" is rejected by the adapter with 400):
-curl -X POST http://localhost:8080/v1/messages \
+# Terminal 3: NextJS UI (default port 3000) — proxies /api/v1 + /v1 + SSE to the Go server.
+cd web && npm install && npm run dev
+
+# Quick test (OpenAI adapter) — content is a plain STRING
+# NOTE: inference endpoints now require auth. Login first, then pass the JWT (or an API key):
+#   TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+#     -d '{"username":"admin","password":"admin1234"}' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen-3b","messages":[{"role":"user","content":[{"type":"text","text":"Hello"}]}]}'
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Health
 curl http://localhost:8080/health
@@ -204,4 +227,7 @@ cd python-worker && python -m worker.generate_proto
 
 # Go: regenerate pb/ with protoc + protoc-gen-go + protoc-gen-go-grpc
 # (current versions recorded in the generated file header: protoc v5.29.3, protoc-gen-go v1.36.11, protoc-gen-go-grpc v1.6.2)
+
+# M2 async-deploy demo (server + postgres + kafka up; requires jq)
+bash scripts/m2-demo.sh
 ```

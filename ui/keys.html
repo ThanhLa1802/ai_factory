@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Factory — API Keys</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0f1117; color: #e6e6e6; padding: 24px; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; }
+  a { color: #4f8cff; text-decoration: none; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: #4f8cff; color: #fff; cursor: pointer; }
+  button.danger { background: #c0392b; }
+  .row { display: flex; gap: 8px; margin-bottom: 16px; }
+  input { padding: 8px; border-radius: 6px; border: 1px solid #333; background: #1a1d27; color: #e6e6e6; flex: 1; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 8px; border-bottom: 1px solid #222; font-size: 14px; }
+  #raw-box { background: #1a1d27; border: 1px solid #333; border-radius: 8px; padding: 12px; margin: 12px 0; display: none; }
+  #raw-box code { word-break: break-all; color: #7ee787; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>API Keys</h1>
+    <nav><a href="/chat">Chat</a> &nbsp; <a href="#" id="logout">Đăng xuất</a></nav>
+  </header>
+  <div class="row">
+    <input id="name" placeholder="Tên key (vd: local-dev)">
+    <button id="create">Tạo key</button>
+  </div>
+  <div id="raw-box">Key mới (chỉ hiện 1 lần): <code id="raw-key"></code>
+    <button id="copy" style="margin-left:8px">Copy</button>
+  </div>
+  <table>
+    <thead><tr><th>Name</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script>
+(function () {
+  const token = localStorage.getItem('aif_token');
+  if (!token) { location.href = '/'; return; }
+  const H = { 'Authorization': 'Bearer ' + token };
+  async function api(path, opts) {
+    opts = opts || {};
+    const headers = Object.assign({}, H, opts.headers);
+    const resp = await fetch(path, Object.assign({}, opts, { headers: headers }));
+    if (resp.status === 401) { location.href = '/'; throw new Error('unauthorized'); }
+    return resp;
+  }
+  function esc(s) { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+  async function load() {
+    const resp = await api('/api/v1/api-keys');
+    const keys = await resp.json();
+    const rows = document.getElementById('rows');
+    rows.innerHTML = '';
+    for (const k of keys) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(k.name) + '</td><td>' + esc(k.status) + '</td><td>' + esc(k.created_at || '') + '</td><td>' + esc(k.expires_at || '-') + '</td>';
+      const td = document.createElement('td');
+      const del = document.createElement('button');
+      del.className = 'danger'; del.textContent = 'Revoke';
+      del.onclick = async function () { await api('/api/v1/api-keys/' + k.id, { method: 'DELETE' }); load(); };
+      td.appendChild(del); tr.appendChild(td);
+      rows.appendChild(tr);
+    }
+  }
+  document.getElementById('create').onclick = async function () {
+    const name = document.getElementById('name').value.trim();
+    if (!name) return;
+    const resp = await api('/api/v1/api-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) });
+    const data = await resp.json();
+    const box = document.getElementById('raw-box');
+    box.style.display = 'block';
+    document.getElementById('raw-key').textContent = data.key;
+  };
+  document.getElementById('copy').onclick = function () {
+    navigator.clipboard.writeText(document.getElementById('raw-key').textContent);
+  };
+  document.getElementById('logout').onclick = function () { localStorage.removeItem('aif_token'); location.href = '/'; };
+  load();
+})();
+</script>
+</body>
+</html>

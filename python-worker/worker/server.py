@@ -153,6 +153,11 @@ def _build_response(event: dict) -> inference_pb2.GenerateResponse:
             event_type=inference_pb2.EVENT_TOKEN,
             token=event["token"],
         )
+    elif event_type == "reasoning":
+        return inference_pb2.GenerateResponse(
+            event_type=inference_pb2.EVENT_REASONING,
+            reasoning_token=event["token"],
+        )
     elif event_type == "tool_use":
         return inference_pb2.GenerateResponse(
             event_type=inference_pb2.EVENT_TOOL_USE,
@@ -259,6 +264,12 @@ def _build_batch_response(request_id: str, event: dict) -> inference_pb2.BatchGe
             event_type=inference_pb2.EVENT_TOKEN,
             token=event["token"],
         )
+    elif event_type == "reasoning":
+        return inference_pb2.BatchGenerateResponse(
+            request_id=request_id,
+            event_type=inference_pb2.EVENT_REASONING,
+            reasoning_token=event["token"],
+        )
     elif event_type == "tool_use":
         return inference_pb2.BatchGenerateResponse(
             request_id=request_id,
@@ -304,7 +315,8 @@ def _build_batch_response(request_id: str, event: dict) -> inference_pb2.BatchGe
 
 async def serve(port: int = DEFAULT_PORT, model_id: str | None = None,
                 engine_name: str = "transformers", gguf: str | None = None,
-                llama_port: int = 8081, llama_bin: str = "llama-server"):
+                llama_port: int = 8081, llama_bin: str = "llama-server",
+                gpu_layers: int = -1):
     """Start the gRPC inference server."""
     print("[server] Starting AI Factory Inference Worker...")
     print(f"[server] gRPC port: {port}")
@@ -312,7 +324,8 @@ async def serve(port: int = DEFAULT_PORT, model_id: str | None = None,
     # Load model via backend registry (transformers | llama)
     from .engines import get_backend
     backend = get_backend(engine_name, model_id=model_id, gguf=gguf,
-                          llama_port=llama_port, llama_bin=llama_bin)
+                          llama_port=llama_port, llama_bin=llama_bin,
+                          gpu_layers=gpu_layers)
     backend.load()
 
     # Create gRPC server
@@ -370,10 +383,13 @@ def main():
                         help="llama-server port")
     parser.add_argument("--llama-bin", type=str, default="llama-server",
                         help="llama-server binary path (default: in PATH)")
+    parser.add_argument("--gpu-layers", type=int, default=-1,
+                        help="số layer đẩy lên GPU (llama.cpp --n-gpu-layers); -1 = tất cả. Giảm xuống để CPU-offload khi model lớn hơn VRAM")
     args = parser.parse_args()
 
     asyncio.run(serve(port=args.port, model_id=args.model, engine_name=args.engine,
-                      gguf=args.gguf, llama_port=args.llama_port, llama_bin=args.llama_bin))
+                      gguf=args.gguf, llama_port=args.llama_port, llama_bin=args.llama_bin,
+                      gpu_layers=args.gpu_layers))
 
 
 if __name__ == "__main__":

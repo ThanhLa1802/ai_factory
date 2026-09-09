@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 
 	pb "github.com/ai-factory/go-server/internal/inference/pb"
 	"github.com/ai-factory/go-server/internal/session"
@@ -58,11 +58,11 @@ type GenerateRequest struct {
 
 // SamplingParams controls token generation.
 type SamplingParams struct {
-	MaxTokens      int32
-	Temperature    float32
-	TopP           float32
-	TopK           int32
-	StopSequences  []string
+	MaxTokens     int32
+	Temperature   float32
+	TopP          float32
+	TopK          int32
+	StopSequences []string
 }
 
 // DefaultSamplingParams returns sensible defaults.
@@ -184,7 +184,7 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 					}
 					return
 				}
-				log.Printf("[inference] Stream error: %v", err)
+				slog.Error("inference stream error", "err", err)
 				events <- GenerateEvent{
 					Type:         "final",
 					StopReason:   "STOP_ERROR",
@@ -200,6 +200,10 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 			case pb.GenerateEventType_EVENT_TOKEN:
 				event.Type = "token"
 				event.Token = pbResp.Token
+
+			case pb.GenerateEventType_EVENT_REASONING:
+				event.Type = "reasoning"
+				event.Token = pbResp.ReasoningToken
 
 			case pb.GenerateEventType_EVENT_TOOL_USE:
 				event.Type = "tool_use"

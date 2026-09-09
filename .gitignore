@@ -37,3 +37,5 @@ llama-server-*.log
 
 # Tooling
 .superpowers/
+
+*.log

@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-08-15** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-08-16** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -14,7 +14,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, dual protocol, SSE, agentic loop, static batching | Tuần 5–6: sampling loop (hiện do HF `model.generate()` đảm nhiệm) | Tuần 7–8: KV cache + dynamic batching |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 5–6: sampling loop (hiện do HF `model.generate()` đảm nhiệm) | Tuần 7–8: KV cache + dynamic batching |
 | Tuần 3–4: Tokenizer byte-level BPE tự viết | | Tuần 9+: Forward pass, prefix caching, PagedAttention |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
@@ -26,16 +26,44 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 | Giai đoạn | Nội dung | Trạng thái |
 |---|---|---|
-| Tuần 1–2 | E2E: proto → gRPC → Go → model; dual protocol + SSE; agentic loop; static batching | ✅ Xong |
+| Tuần 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Xong |
 | Tuần 3–4 | Tự viết tokenizer byte-level BPE | ✅ Xong |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Xong |
+| M2 — Runtime adapter + async deploy | ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker | ✅ Done |
+| UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
 
 ---
 
-## ✅ Giai đoạn 1 — Tuần 1–2: E2E + dual protocol + agentic loop
+## ✅ UI — NextJS app (`web/`)
+
+Trạng thái: **✅ Xong** (2026-08-16) — lớp giao diện thay/nhánh song song UI tĩnh cũ (`ui/`) để **test Track A** (control plane + inference) trên browser.
+
+Go server không đổi; NextJS proxy `/api/v1/*`, `/v1/*`, `/health`, `/metrics` về Go server qua `rewrites()` (`AI_FACTORY_API_URL`, mặc định `http://localhost:8080`) nên browser chỉ gọi same-origin (SSE stream không vướng CORS).
+
+- **Routes:** `/login` (JWT), `/chat` (SSE chat, markdown, model selector — mặc định `qwen-3b`, giữ lịch sử qua `x-session-id`), `/platform` (Usage + API Keys), `/infra` (deployments + start/stop, models + versions, templates + versions, quotas), `/admin` (tenants — chỉ `PLATFORM_ADMIN`).
+- **Auth:** JWT lưu `localStorage`; decode payload client-side để phân role (`PLATFORM_ADMIN`/`TENANT_ADMIN`/`TENANT_DEVELOPER`/`TENANT_VIEWER`); mọi API gọi kèm `Authorization: Bearer`. Dùng `useSyncExternalStore` cho auth state (không effect-hydration).
+- **Tech:** Next 16.3.1 (App Router), React 19, Tailwind v4, TypeScript, `react-markdown` + `remark-gfm`. `npm run lint` + `npm run build` sạch.
+- **Chạy:** `cd web && npm install && npm run dev` → http://localhost:3000 (cần Go server chạy ở 8080; Python worker nếu muốn infer thật).
+- **Ghi chú smoke test:** `/health`, `/api/v1/auth/login`, `/api/v1/models`, `/api/v1/deployments` proxy OK. Streaming `/v1/chat/completions` có thể trả `"streaming not supported"` nếu Go server đang chạy binary cũ — fix `statusRecorder.Flush` ở commit `094fcc0`; restart Go server để SSE chạy.
+
+---
+
+## ✅ Chat history + usage metering + platform console
+
+Trạng thái: **✅ Xong** (2026-08-16) — sidebar lịch sử chat dùng được, metering usage mỗi turn, và console platform tách rõ Usage/API Keys khỏi hạ tầng.
+
+- **Chat history (sidebar):** session giờ **bền** (lưu Postgres) — list/get/rename/delete qua `/api/v1/sessions`; tự đặt tiêu đề từ tin nhắn user đầu tiên (cắt 40 rune); sidebar kiểu ChatGPT trên `/chat` — [`web/src/components/SessionsSidebar.tsx`](../web/src/components/SessionsSidebar.tsx) + [`web/src/components/ChatPageClient.tsx`](../web/src/components/ChatPageClient.tsx).
+- **Usage metering:** token prompt/completion mỗi turn ghi vào bảng `usage_events` (best-effort, không bao giờ làm hỏng turn); xem qua `GET /api/v1/usage` + tab Usage trên `/platform`.
+- **Platform console:** `/platform` = tab Usage + API Keys; hạ tầng (deployments/models/templates/quotas) dời sang `/infra`.
+
+Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` · Plan: `docs/superpowers/plans/2026-08-16-chat-history-usage-platform.md`.
+
+---
+
+## ✅ Giai đoạn 1 — Tuần 1–2: E2E + OpenAI protocol + agentic loop
 
 Trạng thái: **✅ Xong**
 
@@ -43,7 +71,7 @@ Trạng thái: **✅ Xong**
 - [x] gRPC server Python (InferenceServicer + BatchInferenceServicer) — [`python-worker/worker/server.py`](../python-worker/worker/server.py)
 - [x] gRPC client Go + route event theo `request_id` — [`go-server/internal/inference/client.go`](../go-server/internal/inference/client.go)
 - [x] BatchScheduler static batching (gom 100ms, batch ≤ 4) — [`go-server/internal/inference/batch_scheduler.go`](../go-server/internal/inference/batch_scheduler.go)
-- [x] Dual protocol (Anthropic + OpenAI → canonical format) — [`go-server/internal/api/adapters.go`](../go-server/internal/api/adapters.go)
+- [x] OpenAI protocol (`/v1/chat/completions` → canonical format) — [`go-server/internal/api/adapters.go`](../go-server/internal/api/adapters.go)
 - [x] SSE streaming — [`go-server/internal/api/sse.go`](../go-server/internal/api/sse.go)
 - [x] Session manager in-memory (8K ctx, truncation) — [`go-server/internal/session/`](../go-server/internal/session/)
 - [x] Agentic loop (max 10 iter) — [`go-server/internal/agent/loop.go`](../go-server/internal/agent/loop.go)
@@ -108,7 +136,8 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 - [ ] **Tool-calling chết trên engine transformers** (§9.1) — đường batch không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`). Hiện chỉ hoạt động trên engine llama.
 - [ ] **Tool từ client chưa nối** (§9.2) — loop luôn dùng 4 built-in tools, tool client khai báo trong request bị bỏ qua.
 - [ ] **Bug nhỏ `--max-concurrent`** (§9.4) — flag ≤ 1 không ghi đè batch size; log `max_batch` sai khi flag = 1.
-- [ ] Chưa có: auth / rate-limit / persistence, sandbox cho `run_command`, observability (metrics/tracing/cost).
+- [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
+- [ ] Chưa có: persistence, sandbox cho `run_command`, cost metering (billing theo usage).
 
 ---
 
@@ -116,4 +145,12 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-08-16 | Chat history + usage metering + platform console: session bền (list/title/rename/delete qua `/api/v1/sessions`, auto-title 40-rune), token mỗi turn ghi `usage_events` (best-effort) + `GET /api/v1/usage`; `/platform` = Usage + API Keys, `/infra` = deployments/models/templates/quotas. Spec docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md. |
+| 2026-08-16 | UI — NextJS app (`web/`): platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` + `/health` + `/metrics` về Go server qua rewrites; routes `/login` `/chat` `/keys` `/platform` `/admin`; auth JWT + role gating. |
+| 2026-08-16 | A6 (Observability) — hoàn tất: toàn bộ log chuyển sang slog JSON (không còn `log.Printf`); metrics mới `serving_tokens_total` (usage metering), `serving_inflight_requests`, `serving_overloaded_total`; trace span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng JSON structured log, dependency-free (`internal/observability/trace.go`); ghi token usage ở handler khi nhận `final` event. |
+| 2026-08-15 | A5 (Reliability) — hoàn tất: circuit breaker (`internal/circuitbreaker` 3-state + gắn vào worker provisioning), idempotency deploy (`Idempotency-Key` header + bảng `idempotency_keys`), backpressure/load shedding (BatchScheduler `TrySubmit` → `ErrOverloaded` → 503). Kafka consumer idempotent sẵn qua state-machine guard trong worker. |
+| 2026-08-15 | A5 (Reliability) — bắt đầu: retry/backoff/jitter (`internal/retry` + áp dụng vào worker provisioning: RequestCapacity, adapter.Start). Còn lại A5: idempotency, circuit breaker, backpressure, load shedding. |
+| 2026-08-15 | M3 — inference routing (model→deployment READY, tenant isolation) + rate limit (Redis: tenant RPM + concurrency). Spec docs/superpowers/specs/2026-08-15-inference-routing-rate-limit-design.md. |
+| 2026-08-15 | M2 — Runtime adapter + async deploy (ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker) ✅ Done — spec docs/superpowers/specs/2026-08-15-serving-platform-design.md. |
+| 2026-08-15 | Consumer slice: auth trên inference (JWT/API key) + UI 3 trang; hoãn M2 Task 2–6; spec `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`. |
 | 2026-08-15 | Tạo file tracking; xác nhận các giai đoạn 1–2 + engine llama đã xong; giai đoạn 3 (sampling) là kế tiếp. |
