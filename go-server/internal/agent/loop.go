@@ -31,6 +31,7 @@ const (
 	LoopEventToolResult                      // Tool execution result
 	LoopEventFinal                           // Generation complete
 	LoopEventError                           // Fatal error
+	LoopEventReasoning                       // Reasoning token (display-only, not in session context)
 )
 
 // LoopEvent is a single streaming event from the agentic loop.
@@ -166,6 +167,13 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 					assistantContent += event.Token
 					events <- LoopEvent{
 						Type:  LoopEventToken,
+						Token: event.Token,
+					}
+
+				case "reasoning":
+					// Reasoning token — forward for display only, do NOT add to session context.
+					events <- LoopEvent{
+						Type:  LoopEventReasoning,
 						Token: event.Token,
 					}
 

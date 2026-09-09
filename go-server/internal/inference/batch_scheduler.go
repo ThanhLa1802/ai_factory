@@ -331,6 +331,10 @@ func pbToGenerateEvent(resp *pb.BatchGenerateResponse) GenerateEvent {
 		event.Type = "token"
 		event.Token = resp.Token
 
+	case pb.GenerateEventType_EVENT_REASONING:
+		event.Type = "reasoning"
+		event.Token = resp.ReasoningToken
+
 	case pb.GenerateEventType_EVENT_TOOL_USE:
 		event.Type = "tool_use"
 		if resp.ToolUse != nil {

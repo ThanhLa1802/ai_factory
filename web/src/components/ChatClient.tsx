@@ -11,6 +11,8 @@ interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "error";
   content: string;
+  reasoning?: string; // ephemeral reasoning/thinking text (not persisted)
+  thinkingOpen?: boolean; // whether the thinking block is expanded
 }
 
 // Shape of a Go server SSE chunk (OpenAI-compatible stream).
@@ -20,6 +22,7 @@ interface SSEChunk {
   choices?: Array<{
     delta?: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: Array<{ function?: { name?: string; arguments?: string } }>;
     };
   }>;
@@ -148,6 +151,10 @@ export default function ChatClient() {
     });
   }
 
+  function patchMessage(id: string, patch: Partial<ChatMessage>) {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+  }
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -164,6 +171,7 @@ export default function ChatClient() {
     setBusy(true);
 
     let fullText = "";
+    let reasoningText = "";
     let tokenCount = 0;
     const start = performance.now();
 
@@ -179,7 +187,7 @@ export default function ChatClient() {
         body: JSON.stringify({
           model,
           stream: true,
-          max_tokens: 1024,
+          max_tokens: 2048,
           messages: [
             ...(systemPrompt.trim() ? [{ role: "system", content: systemPrompt.trim() }] : []),
             { role: "user", content: text },
@@ -235,10 +243,15 @@ export default function ChatClient() {
           if (!choice) continue;
 
           const delta = choice.delta || {};
+          if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+            reasoningText += delta.reasoning_content;
+            updateLastAssistant({ reasoning: reasoningText, thinkingOpen: true });
+          }
           if (typeof delta.content === "string" && delta.content) {
             fullText += delta.content;
             tokenCount++;
-            updateLastAssistant({ content: fullText });
+            // First content token → auto-collapse the thinking block.
+            updateLastAssistant({ content: fullText, thinkingOpen: false });
           }
           if (Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
@@ -341,7 +354,28 @@ export default function ChatClient() {
                 } ${busy && m.role === "assistant" && m.id === messages[messages.length - 1]?.id ? "streaming" : ""}`}
               >
                 {m.role === "assistant" ? (
-                  <Markdown content={m.content} />
+                  <>
+                    {m.reasoning ? (
+                      <div className="mb-2">
+                        <button
+                          type="button"
+                          onClick={() => patchMessage(m.id, { thinkingOpen: !m.thinkingOpen })}
+                          className="mb-1 inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[12px] font-medium text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)]"
+                        >
+                          <span className="inline-block w-3 text-center leading-none">
+                            {m.thinkingOpen ? "▾" : "▸"}
+                          </span>
+                          Suy nghĩ
+                        </button>
+                        {m.thinkingOpen ? (
+                          <div className="rounded-md border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-[13px] italic text-[var(--text2)]">
+                            <Markdown content={m.reasoning} />
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <Markdown content={m.content} />
+                  </>
                 ) : (
                   <div className="whitespace-pre-wrap text-[14px]">{m.content}</div>
                 )}

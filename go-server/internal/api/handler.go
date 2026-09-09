@@ -225,6 +225,23 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
 				sse.flusher.Flush()
 
+			case agent.LoopEventReasoning:
+				// Reasoning token — display-only; emit as delta.reasoning_content.
+				data, _ := json.Marshal(map[string]interface{}{
+					"id":      completionID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   modelID,
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"delta": map[string]string{"reasoning_content": event.Token},
+						},
+					},
+				})
+				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
+				sse.flusher.Flush()
+
 			case agent.LoopEventToolUse:
 				// OpenAI format for tool calls in stream
 				if event.ToolCall != nil {

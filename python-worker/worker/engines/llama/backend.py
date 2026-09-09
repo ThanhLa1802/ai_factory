@@ -55,8 +55,8 @@ def build_openai_request(messages, sampling_params, tools=None):
 
 
 class LlamaBackend(EngineBackend):
-    def __init__(self, gguf, port=8081, bin="llama-server"):
-        self.server = LlamaServer(gguf, port=port, bin=bin)
+    def __init__(self, gguf, port=8081, bin="llama-server", gpu_layers=-1):
+        self.server = LlamaServer(gguf, port=port, bin=bin, gpu_layers=gpu_layers)
         self.client = LlamaClient(base_url=self.server.base_url)
 
     def load(self):
@@ -77,6 +77,8 @@ class LlamaBackend(EngineBackend):
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
+            if delta.get("reasoning_content"):
+                yield {"type": "reasoning", "token": delta["reasoning_content"]}
             if delta.get("content"):
                 yield {"type": "token", "token": delta["content"]}
             for tc in delta.get("tool_calls") or []:

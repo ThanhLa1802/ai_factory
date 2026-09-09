@@ -55,6 +55,24 @@ async def test_generate_streams_tokens_and_final():
 
 
 @pytest.mark.asyncio
+async def test_generate_streams_reasoning_then_content():
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "Hmm, let me "}, "finish_reason": None}]},
+        {"choices": [{"delta": {"reasoning_content": "think..."}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "Answer"}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}],
+         "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}},
+    ]
+    backend = LlamaBackend.__new__(LlamaBackend)
+    backend.client = _FakeClient(chunks)
+    events = [ev async for ev in backend.generate([], {})]
+    assert events[0] == {"type": "reasoning", "token": "Hmm, let me "}
+    assert events[1] == {"type": "reasoning", "token": "think..."}
+    assert events[2] == {"type": "token", "token": "Answer"}
+    assert events[3]["type"] == "final"
+
+
+@pytest.mark.asyncio
 async def test_generate_tool_calls_accumulated():
     chunks = [
         {"choices": [{"delta": {"tool_calls": [

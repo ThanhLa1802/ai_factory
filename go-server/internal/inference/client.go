@@ -201,6 +201,10 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 				event.Type = "token"
 				event.Token = pbResp.Token
 
+			case pb.GenerateEventType_EVENT_REASONING:
+				event.Type = "reasoning"
+				event.Token = pbResp.ReasoningToken
+
 			case pb.GenerateEventType_EVENT_TOOL_USE:
 				event.Type = "tool_use"
 				if pbResp.ToolUse != nil {
