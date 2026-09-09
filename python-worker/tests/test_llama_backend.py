@@ -35,6 +35,7 @@ def test_build_openai_request():
     assert body["tools"] and body["tool_choice"] == "auto"
     assert body["stop"] == ["<|im_end|>"]
     assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.asyncio
@@ -52,16 +53,19 @@ async def test_generate_streams_tokens_and_final():
     assert events[1] == {"type": "token", "token": "lo"}
     assert events[2]["type"] == "final"
     assert events[2]["stop_reason"] == "STOP_END_TURN"
+    assert events[2]["usage"] == {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
 
 
 @pytest.mark.asyncio
 async def test_generate_streams_reasoning_then_content():
+    # Khớp cấu trúc chunk thực của llama.cpp: finish_reason ở 1 chunk (delta rỗng),
+    # usage nằm ở chunk cuối RIÊNG (choices rỗng) — SAU finish_reason.
     chunks = [
         {"choices": [{"delta": {"reasoning_content": "Hmm, let me "}, "finish_reason": None}]},
         {"choices": [{"delta": {"reasoning_content": "think..."}, "finish_reason": None}]},
         {"choices": [{"delta": {"content": "Answer"}, "finish_reason": None}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}],
-         "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}},
     ]
     backend = LlamaBackend.__new__(LlamaBackend)
     backend.client = _FakeClient(chunks)
@@ -70,6 +74,7 @@ async def test_generate_streams_reasoning_then_content():
     assert events[1] == {"type": "reasoning", "token": "think..."}
     assert events[2] == {"type": "token", "token": "Answer"}
     assert events[3]["type"] == "final"
+    assert events[3]["usage"] == {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
 
 
 @pytest.mark.asyncio

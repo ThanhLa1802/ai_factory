@@ -45,6 +45,9 @@ def build_openai_request(messages, sampling_params, tools=None):
         "top_p": sampling_params.get("top_p", 0.9),
         "top_k": sampling_params.get("top_k", 50),
         "stream": True,
+        # llama.cpp chỉ trả `usage` trong stream khi bật cờ này; thiếu nó thì
+        # prompt/completion tokens luôn = 0 → usage meter ghi sai.
+        "stream_options": {"include_usage": True},
     }
     if sampling_params.get("stop_sequences"):
         body["stop"] = list(sampling_params["stop_sequences"])
@@ -69,9 +72,13 @@ class LlamaBackend(EngineBackend):
         body = build_openai_request(messages, sampling_params, tools)
         tool_acc = {}
         usage = {}
+        stop_reason = None
+        finish_reason = None
         async for chunk in self.client.chat_completions(body):
             if cancel_event and cancel_event.is_set():
                 return
+            # llama.cpp trả usage ở CHUNK CUỐI (choices rỗng), SAU chunk finish_reason.
+            # Phải tích luỹ dần thay vì return ngay ở finish_reason.
             usage = chunk.get("usage") or usage
             choices = chunk.get("choices") or []
             if not choices:
@@ -92,18 +99,20 @@ class LlamaBackend(EngineBackend):
                 if fn.get("arguments"):
                     slot["arguments"] += fn["arguments"]
             finish = choices[0].get("finish_reason")
-            if finish:
+            if finish and finish_reason is None:
+                finish_reason = finish
                 stop_reason = STOP_FINISH.get(finish, "STOP_END_TURN")
                 if stop_reason == "STOP_TOOL_USE":
                     for idx in sorted(tool_acc):
                         s = tool_acc[idx]
                         yield {"type": "tool_use", "id": s["id"],
                                "name": s["name"], "arguments": s["arguments"]}
-                yield {"type": "final", "stop_reason": stop_reason,
-                       "finish_reason": finish, "usage": _usage_dict(usage)}
-                return
-        yield {"type": "final", "stop_reason": "STOP_END_TURN",
-               "finish_reason": "stop", "usage": _usage_dict(usage)}
+        if stop_reason is None:
+            stop_reason = "STOP_END_TURN"
+        if finish_reason is None:
+            finish_reason = "stop"
+        yield {"type": "final", "stop_reason": stop_reason,
+               "finish_reason": finish_reason, "usage": _usage_dict(usage)}
 
     def generate_batch(self, requests):
         async def _gen():

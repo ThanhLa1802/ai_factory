@@ -65,6 +65,9 @@ function UsageTab() {
     return { date, total: p ? p.prompt_tokens + p.completion_tokens : 0 };
   });
   const maxTokens = Math.max(1, ...series.map((s) => s.total));
+  // Cứ mỗi labelEvery cột thì hiển thị 1 nhãn ngày (MM-DD) để biểu đồ đọc được
+  // mà không bị rối khi chọn 30 ngày.
+  const labelEvery = days <= 14 ? 1 : Math.ceil(series.length / 8);
 
   const modelColumns: Column<UsageByModel>[] = [
     { key: "model", label: "Model", render: (m) => <code className="text-[12px] text-[var(--link)]">{m.model}</code> },
@@ -104,18 +107,29 @@ function UsageTab() {
           ))}
         </div>
       </div>
-      <div className="mb-6 flex h-40 items-end gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
-        {data.daily.length === 0 ? (
-          <div className="w-full text-center text-[12px] text-[var(--text2)]">Chưa có usage trong khoảng này.</div>
-        ) : (
-          series.map((s) => (
-            <div
-              key={s.date}
-              title={`${s.date}: ${fmt(s.total)} tokens`}
-              className="min-w-[6px] flex-1 rounded-t bg-[var(--accent)]"
-              style={{ height: `${Math.max(2, (s.total / maxTokens) * 100)}%` }}
-            />
-          ))
+      <div className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+        <div className="flex h-40 items-end gap-1">
+          {data.daily.length === 0 ? (
+            <div className="w-full text-center text-[12px] text-[var(--text2)]">Chưa có usage trong khoảng này.</div>
+          ) : (
+            series.map((s) => (
+              <div
+                key={s.date}
+                title={`${s.date}: ${fmt(s.total)} tokens`}
+                className="min-w-[6px] flex-1 rounded-t bg-[var(--accent)]"
+                style={{ height: `${Math.max(2, (s.total / maxTokens) * 100)}%` }}
+              />
+            ))
+          )}
+        </div>
+        {data.daily.length > 0 && (
+          <div className="mt-1 flex gap-1">
+            {series.map((s, i) => (
+              <div key={s.date} className="min-w-[6px] flex-1 text-center text-[10px] leading-none text-[var(--text2)]">
+                {i % labelEvery === 0 ? s.date.slice(5) : ""}
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
