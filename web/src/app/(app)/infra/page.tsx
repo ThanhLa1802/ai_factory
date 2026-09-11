@@ -52,7 +52,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const inputCls =
   "rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[13px] outline-none focus:border-[var(--accent)]";
 const btnCls =
-  "rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40";
+  "rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40";
 
 export default function PlatformPage() {
   const [tab, setTab] = useState<Tab>("deployments");
@@ -64,15 +64,19 @@ export default function PlatformPage() {
         Quản lý model, serving template, deployment và quota cho tenant.
       </p>
 
-      <div className="mb-6 flex gap-1 border-b border-[var(--border)]">
+      <div role="tablist" aria-label="Infrastructure sections" className="mb-6 flex gap-1 border-b border-[var(--border)]">
         {TABS.map((t) => (
           <button
             key={t.id}
+            role="tab"
+            id={`tab-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls={`panel-${t.id}`}
             onClick={() => setTab(t.id)}
             className={`rounded-t-md px-4 py-2 text-[13px] ${
               tab === t.id
-                ? "border-b-2 border-[var(--accent)] text-white"
-                : "text-[var(--text2)] hover:text-white"
+                ? "border-b-2 border-[var(--accent)] text-[var(--text)]"
+                : "text-[var(--text2)] hover:text-[var(--text)]"
             }`}
           >
             {t.label}
@@ -80,10 +84,26 @@ export default function PlatformPage() {
         ))}
       </div>
 
-      {tab === "deployments" && <DeploymentsTab />}
-      {tab === "models" && <ModelsTab />}
-      {tab === "templates" && <TemplatesTab />}
-      {tab === "quotas" && <QuotasTab />}
+      {tab === "deployments" && (
+        <div role="tabpanel" id="panel-deployments" aria-labelledby="tab-deployments">
+          <DeploymentsTab />
+        </div>
+      )}
+      {tab === "models" && (
+        <div role="tabpanel" id="panel-models" aria-labelledby="tab-models">
+          <ModelsTab />
+        </div>
+      )}
+      {tab === "templates" && (
+        <div role="tabpanel" id="panel-templates" aria-labelledby="tab-templates">
+          <TemplatesTab />
+        </div>
+      )}
+      {tab === "quotas" && (
+        <div role="tabpanel" id="panel-quotas" aria-labelledby="tab-quotas">
+          <QuotasTab />
+        </div>
+      )}
     </div>
   );
 }

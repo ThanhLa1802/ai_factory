@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import BrandMark from "@/components/BrandMark";
 import { useAuth } from "@/context/AuthContext";
 
 export default function LoginForm() {
@@ -33,10 +34,13 @@ export default function LoginForm() {
   }
 
   return (
-    <div className="w-full max-w-sm rounded-xl border border-[var(--border)] bg-[var(--surface)] p-8 shadow-2xl">
-      <div className="mb-6 text-center">
-        <div className="text-2xl font-semibold">AI Factory</div>
-        <div className="text-[13px] text-[var(--text2)]">Sign in to the inference platform</div>
+    <div className="w-full max-w-sm rounded-xl border border-[var(--border)] bg-[var(--surface)] p-8">
+      <div className="mb-6 flex flex-col items-center gap-3 text-center">
+        <BrandMark size={40} />
+        <div>
+          <div className="text-xl font-semibold tracking-tight">AI Factory</div>
+          <div className="mt-1 text-[13px] text-[var(--text2)]">Sign in to the inference platform</div>
+        </div>
       </div>
 
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
@@ -70,7 +74,7 @@ export default function LoginForm() {
         <button
           type="submit"
           disabled={busy}
-          className="rounded-md bg-[var(--accent)] px-4 py-2.5 text-[14px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="rounded-md bg-[var(--accent-strong)] px-4 py-2.5 text-[14px] font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>

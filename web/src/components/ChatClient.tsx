@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import BrandMark from "@/components/BrandMark";
 import Markdown from "@/components/Markdown";
 import { useAuth } from "@/context/AuthContext";
 import { useChatSessions } from "@/context/ChatSessionsContext";
@@ -33,17 +34,23 @@ function newId() {
   return "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-function avatarFor(role: ChatMessage["role"]): string {
-  switch (role) {
-    case "user":
-      return "👤";
-    case "tool":
-      return "🔧";
-    case "error":
-      return "⚠️";
-    default:
-      return "🤖"; // assistant + system
-  }
+function UserAvatar() {
+  return (
+    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)]">
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-4 w-4 text-[var(--text2)]"
+        aria-hidden="true"
+      >
+        <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 20a8 8 0 0 1 16 0" />
+      </svg>
+    </div>
+  );
 }
 
 export default function ChatClient() {
@@ -52,6 +59,7 @@ export default function ChatClient() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [showSystem, setShowSystem] = useState(false);
   const [models, setModels] = useState<string[]>(["qwen3.5-9b"]);
   const [model, setModel] = useState("qwen3.5-9b");
   const [busy, setBusy] = useState(false);
@@ -60,6 +68,7 @@ export default function ChatClient() {
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const activeIdRef = useRef(activeId);
   const liveStreamRef = useRef<string | null>(null);
 
@@ -131,6 +140,15 @@ export default function ChatClient() {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, busy]);
+
+  // Auto-grow the composer textarea up to a cap.
+  useEffect(() => {
+    const el = taRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  }, [input]);
 
   function pushMsg(m: ChatMessage) {
     setMessages((prev) => [...prev, m]);
@@ -292,145 +310,188 @@ export default function ChatClient() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* toolbar */}
-      <div className="flex flex-wrap items-center gap-3 border-b border-[var(--border)] px-4 py-2.5">
-        <label className="flex items-center gap-2 text-[12px] text-[var(--text2)]">
-          Model
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded-md border border-[var(--border)] bg-[var(--bg2)] px-2 py-1 text-[13px] outline-none focus:border-[var(--accent)]"
-          >
-            {models.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex min-w-0 flex-1 items-center gap-2 text-[12px] text-[var(--text2)]">
-          System prompt
-          <input
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            placeholder="(tuỳ chọn)"
-            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg2)] px-2 py-1 text-[13px] outline-none focus:border-[var(--accent)]"
-          />
-        </label>
-        {stats && (
-          <span className="text-[12px] text-[var(--text2)]">
-            ⚡ {stats.tokens} tok · {stats.ms}ms
-          </span>
-        )}
-      </div>
-
       {/* messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
-        {messages.length === 0 && (
-          <div className="mt-16 text-center text-[13px] text-[var(--text2)]">
-            <div className="mb-1 text-2xl">💬</div>
-            Chat với model qua giao diện OpenAI-compatible. Server giữ lịch sử theo{" "}
-            <code className="text-[var(--link)]">x-session-id</code>.
-          </div>
-        )}
-        <div className="mx-auto flex max-w-4xl flex-col gap-4">
-          {messages.map((m) => (
-            <div
-              key={m.id}
-              className={`flex items-start gap-3 ${m.role === "user" ? "flex-row-reverse" : "flex-row"}`}
-            >
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[13px] leading-none">
-                {avatarFor(m.role)}
-              </div>
-              <div
-                className={`max-w-[85%] rounded-xl px-4 py-2.5 ${
-                  m.role === "user"
-                    ? "bg-[var(--accent)] text-white"
-                    : m.role === "error"
-                      ? "border border-[var(--err)]/40 bg-[var(--err)]/10 text-[var(--err)]"
-                      : m.role === "tool"
-                        ? "border border-[var(--border)] bg-[var(--surface2)] text-[var(--text2)]"
-                        : "border border-[var(--border)] bg-[var(--surface)]"
-                } ${busy && m.role === "assistant" && m.id === messages[messages.length - 1]?.id ? "streaming" : ""}`}
-              >
-                {m.role === "assistant" ? (
-                  <>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[46rem] px-4 py-6">
+          {messages.length === 0 ? (
+            <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center">
+              <BrandMark size={44} />
+              <h1 className="text-2xl font-semibold tracking-tight">Bạn muốn hỏi gì hôm nay?</h1>
+              <p className="max-w-sm text-[14px] leading-relaxed text-[var(--text2)]">
+                Chat với model qua giao diện OpenAI-compatible. Server giữ lịch sử theo phiên.
+              </p>
+            </div>
+          ) : (
+            messages.map((m, idx) => {
+              const isLast = idx === messages.length - 1;
+
+              if (m.role === "tool") {
+                return (
+                  <div key={m.id} className="py-1">
+                    <div className="ml-10 border-l-2 border-[var(--border)] py-1 pl-3 text-[13px] text-[var(--text2)]">
+                      {m.content}
+                    </div>
+                  </div>
+                );
+              }
+
+              if (m.role === "error") {
+                return (
+                  <div key={m.id} className="py-2 text-[13px] text-[var(--err)]">
+                    {m.content}
+                  </div>
+                );
+              }
+
+              if (m.role === "user") {
+                return (
+                  <div key={m.id} className="flex items-start justify-end gap-3 py-4">
+                    <div className="max-w-[80%] whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</div>
+                    <UserAvatar />
+                  </div>
+                );
+              }
+
+              // assistant (and system fallback)
+              return (
+                <div key={m.id} className="flex items-start gap-3 py-4">
+                  <BrandMark size={28} />
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex items-baseline gap-2">
+                      <span className="text-[14px] font-semibold">AI Factory</span>
+                      {isLast && stats && (
+                        <span className="mono text-[11px] text-[var(--text2)]">
+                          {stats.tokens} tok · {stats.ms}ms
+                        </span>
+                      )}
+                    </div>
+
                     {m.reasoning ? (
-                      <div className="mb-2">
+                      <div className="mb-3">
                         <button
                           type="button"
                           onClick={() => patchMessage(m.id, { thinkingOpen: !m.thinkingOpen })}
-                          className="mb-1 inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[12px] font-medium text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)]"
+                          className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text2)] hover:text-[var(--text)]"
                         >
-                          <span className="inline-block w-3 text-center leading-none">
-                            {m.thinkingOpen ? "▾" : "▸"}
-                          </span>
+                          <span className="inline-block w-3 text-center leading-none">{m.thinkingOpen ? "▾" : "▸"}</span>
                           Suy nghĩ
                         </button>
                         {m.thinkingOpen ? (
-                          <div className="rounded-md border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-[13px] italic text-[var(--text2)]">
+                          <div className="mt-2 border-l-2 border-[var(--border)] pl-3 text-[13px] leading-relaxed text-[var(--text2)]">
                             <Markdown content={m.reasoning} />
                           </div>
                         ) : null}
                       </div>
                     ) : null}
-                    <Markdown content={m.content} />
-                  </>
-                ) : (
-                  <div className="whitespace-pre-wrap text-[14px]">{m.content}</div>
-                )}
-              </div>
-            </div>
-          ))}
+
+                    {m.content ? (
+                      <div className={busy && isLast ? "streaming" : ""}>
+                        <Markdown content={m.content} />
+                      </div>
+                    ) : busy && isLast ? (
+                      <div className="pulse text-[14px] text-[var(--text2)]">Đang suy nghĩ…</div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
-      {/* error banner */}
-      {error && (
-        <div className="mx-4 mb-2 rounded-md border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
-          {error}
-        </div>
-      )}
+      {/* composer */}
+      <div className="border-t border-[var(--border)] bg-[var(--bg)]">
+        <div className="mx-auto w-full max-w-[46rem] px-4 py-3">
+          <div className="mb-2 flex items-center gap-2">
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="rounded-lg border border-[var(--border)] bg-transparent px-2.5 py-1.5 text-[12px] text-[var(--text2)] outline-none focus:border-[var(--accent)]"
+            >
+              {models.map((m) => (
+                <option key={m} value={m} className="bg-[var(--bg2)]">
+                  {m}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setShowSystem((v) => !v)}
+              title="System prompt"
+              className={`flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)] ${
+                showSystem ? "text-[var(--text)]" : ""
+              }`}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" />
+              </svg>
+            </button>
+          </div>
 
-      {/* input */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-        className="flex items-end gap-2 border-t border-[var(--border)] px-4 py-3"
-      >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+          {showSystem && (
+            <input
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="System prompt (tuỳ chọn) — định nghĩa cách model trả lời"
+              className="mb-2 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--text2)] focus:border-[var(--accent)]"
+            />
+          )}
+
+          {error && (
+            <div className="mb-2 rounded-lg border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
+              {error}
+            </div>
+          )}
+
+          <form
+            onSubmit={(e) => {
               e.preventDefault();
               send();
-            }
-          }}
-          rows={1}
-          placeholder="Nhập tin nhắn… (Shift+Enter để xuống dòng)"
-          className="max-h-40 min-h-[42px] flex-1 resize-none rounded-lg border border-[var(--border)] bg-[var(--bg2)] px-3 py-2.5 text-[14px] outline-none focus:border-[var(--accent)]"
-        />
-        {busy ? (
-          <button
-            type="button"
-            onClick={stop}
-            className="h-[42px] rounded-lg border border-[var(--border)] px-4 text-[13px] text-[var(--text2)] hover:bg-[var(--surface2)]"
+            }}
+            className="flex items-end gap-2 rounded-2xl border border-[var(--border)] bg-[var(--bg2)] p-2 transition-colors focus-within:border-[var(--accent)]"
           >
-            ⏹ Stop
-          </button>
-        ) : (
-          <button
-            type="submit"
-            disabled={!input.trim()}
-            className="h-[42px] rounded-lg bg-[var(--accent)] px-4 text-[14px] font-medium text-white hover:opacity-90 disabled:opacity-40"
-          >
-            Gửi
-          </button>
-        )}
-      </form>
+            <textarea
+              ref={taRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              rows={1}
+              placeholder="Nhắn tin cho AI Factory…"
+              className="max-h-[200px] min-h-[24px] flex-1 resize-none bg-transparent px-3 py-2 text-[15px] leading-relaxed outline-none placeholder:text-[var(--text2)]"
+            />
+            {busy ? (
+              <button
+                type="button"
+                onClick={stop}
+                aria-label="Dừng"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[var(--text)] hover:bg-[var(--surface)]"
+              >
+                <span className="h-3 w-3 rounded-[2px] bg-current" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!input.trim()}
+                aria-label="Gửi"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-strong)] text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                  <path d="M12 19V5M5 12l7-7 7 7" />
+                </svg>
+              </button>
+            )}
+          </form>
+
+          <div className="mt-1.5 text-center text-[11px] text-[var(--text2)]">
+            AI Factory có thể mắc lỗi. Hãy kiểm tra các thông tin quan trọng.
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

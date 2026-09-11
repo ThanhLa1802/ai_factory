@@ -99,7 +99,7 @@ function UsageTab() {
               key={n}
               onClick={() => setDays(n)}
               className={`rounded px-2 py-1 text-[12px] ${
-                days === n ? "bg-[var(--surface2)] text-white" : "text-[var(--text2)] hover:text-white"
+                days === n ? "bg-[var(--surface2)] text-[var(--text)]" : "text-[var(--text2)] hover:text-[var(--text)]"
               }`}
             >
               {n} ngày
@@ -149,13 +149,17 @@ export default function PlatformPage() {
         Thống kê usage và quản lý API key cho tài khoản của bạn.
       </p>
 
-      <div className="mb-6 flex gap-1 border-b border-[var(--border)]">
+      <div role="tablist" aria-label="Platform sections" className="mb-6 flex gap-1 border-b border-[var(--border)]">
         {TABS.map((t) => (
           <button
             key={t.id}
+            role="tab"
+            id={`tab-${t.id}`}
+            aria-selected={tab === t.id}
+            aria-controls={`panel-${t.id}`}
             onClick={() => setTab(t.id)}
             className={`rounded-t-md px-4 py-2 text-[13px] ${
-              tab === t.id ? "border-b-2 border-[var(--accent)] text-white" : "text-[var(--text2)] hover:text-white"
+              tab === t.id ? "border-b-2 border-[var(--accent)] text-[var(--text)]" : "text-[var(--text2)] hover:text-[var(--text)]"
             }`}
           >
             {t.label}
@@ -163,8 +167,16 @@ export default function PlatformPage() {
         ))}
       </div>
 
-      {tab === "usage" && <UsageTab />}
-      {tab === "keys" && <ApiKeysTab />}
+      {tab === "usage" && (
+        <div role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
+          <UsageTab />
+        </div>
+      )}
+      {tab === "keys" && (
+        <div role="tabpanel" id="panel-keys" aria-labelledby="tab-keys">
+          <ApiKeysTab />
+        </div>
+      )}
     </div>
   );
 }

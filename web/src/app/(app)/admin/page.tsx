@@ -37,7 +37,7 @@ export default function AdminPage() {
   if (!claims || !isPlatformAdmin(claims.role)) {
     return (
       <div className="flex h-full items-center justify-center text-[13px] text-[var(--text2)]">
-        🛡️ Trang này chỉ dành cho Platform Admin.
+        Trang này chỉ dành cho Platform Admin.
       </div>
     );
   }
@@ -86,7 +86,7 @@ export default function AdminPage() {
         <button
           type="submit"
           disabled={busy || !name.trim()}
-          className="rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          className="rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
         >
           {busy ? "Đang tạo…" : "+ Tạo tenant"}
         </button>

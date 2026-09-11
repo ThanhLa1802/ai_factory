@@ -81,7 +81,7 @@ export default function ApiKeysTab() {
         <button
           type="submit"
           disabled={busy || !name.trim()}
-          className="rounded-md bg-[var(--accent)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          className="rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
         >
           {busy ? "Đang tạo…" : "+ Tạo key"}
         </button>
