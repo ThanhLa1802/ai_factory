@@ -39,7 +39,7 @@ type DeploymentResolver interface {
 	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*ResolvedDeployment, error)
 }
 
-// UsageRecorder persists token usage per completed turn. Satisfied by *controlplane.Service.
+// UsageRecorder persists token usage per completed turn. Satisfied by *usage.Service.
 type UsageRecorder interface {
 	RecordUsage(ctx context.Context, tenantID, model string, promptTokens, completionTokens int) error
 }

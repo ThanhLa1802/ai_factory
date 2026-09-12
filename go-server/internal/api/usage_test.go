@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	"github.com/ai-factory/go-server/internal/services/usage"
 	"github.com/google/uuid"
 )
 
@@ -24,10 +24,10 @@ func TestUsageEndpointE2E(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	if err := ts.cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
+	if err := ts.usage.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if err := ts.cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 20, 10); err != nil {
+	if err := ts.usage.RecordUsage(ctx, tenant.ID, "qwen-3b", 20, 10); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
@@ -45,10 +45,10 @@ func TestUsageEndpointE2E(t *testing.T) {
 	}
 
 	var resp struct {
-		Today   controlplane.UsageSummary      `json:"today"`
-		Month   controlplane.UsageSummary      `json:"month"`
-		Daily   []controlplane.UsageDailyPoint `json:"daily"`
-		ByModel []controlplane.UsageByModel    `json:"by_model"`
+		Today   usage.UsageSummary      `json:"today"`
+		Month   usage.UsageSummary      `json:"month"`
+		Daily   []usage.UsageDailyPoint `json:"daily"`
+		ByModel []usage.UsageByModel    `json:"by_model"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/services/serving"
+	"github.com/ai-factory/go-server/internal/services/usage"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ type testServices struct {
 	authSvc *iam.AuthService
 	authn   *iam.Authenticator
 	serving *serving.Service
-	cp      *controlplane.Service
+	usage   *usage.Service
 }
 
 func newTestServices(t *testing.T, d *database.DB) *testServices {
@@ -43,7 +43,7 @@ func newTestServices(t *testing.T, d *database.DB) *testServices {
 		authSvc: authSvc,
 		authn:   iam.NewAuthenticator(secret, authSvc),
 		serving: serving.NewServiceFromGorm(d.Gorm()),
-		cp:      controlplane.NewServiceFromGorm(d.Gorm()),
+		usage:   usage.NewServiceFromGorm(d.Gorm()),
 	}
 }
 
@@ -56,7 +56,7 @@ func (ts *testServices) mountServing(mux *gin.Engine, producer message.Producer)
 }
 
 func (ts *testServices) mountControlPlane(mux *gin.Engine) {
-	NewControlPlaneHandler(ts.cp, ts.authn).RegisterRoutes(mux)
+	usage.NewHandler(ts.usage, ts.authn).RegisterRoutes(mux)
 }
 
 // testResolver adapts serving.Service to the inference handler's resolver.
@@ -465,7 +465,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	te := agent.NewLocalToolExecutor(t.TempDir())
 	loop := agent.NewLoop(bs, te)
 	sess := session.NewManager()
-	h := NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.cp, nil, 60, 4)
+	h := NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)

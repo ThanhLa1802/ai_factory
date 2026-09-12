@@ -30,8 +30,8 @@ type App struct {
 // fails fast at boot rather than at first request.
 func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, error) {
 	for _, name := range []string{
-		"db", "iam", "iam.auth", "iam.authenticator", "serving", "controlplane", "bus", "session.manager",
-		"agent.loop", "http.handler", "http.iam", "http.serving", "http.controlplane",
+		"db", "iam", "iam.auth", "iam.authenticator", "serving", "usage", "bus", "session.manager",
+		"agent.loop", "http.handler", "http.iam", "http.serving", "http.usage",
 	} {
 		if _, err := c.Resolve(name); err != nil {
 			return nil, err
@@ -49,7 +49,7 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 	c.MustResolve("http.handler").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	c.MustResolve("http.iam").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	c.MustResolve("http.serving").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
-	c.MustResolve("http.controlplane").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	c.MustResolve("http.usage").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	e.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
 	return e
 }
