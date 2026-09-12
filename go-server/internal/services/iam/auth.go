@@ -1,11 +1,9 @@
-package auth
+package iam
 
 import (
 	"context"
 	"errors"
 	"time"
-
-	"github.com/ai-factory/go-server/internal/controlplane"
 )
 
 var (
@@ -14,25 +12,25 @@ var (
 	ErrKeyInactive        = errors.New("API key inactive")
 )
 
-// Store is the persistence dependency of Service; *controlplane.Service implements it.
+// Store is the persistence dependency of AuthService; *Service implements it.
 type Store interface {
-	GetUserByUsername(ctx context.Context, username string) (*controlplane.User, string, error)
-	GetAPIKeyByHash(ctx context.Context, keyHash string) (*controlplane.APIKey, error)
+	GetUserByUsername(ctx context.Context, username string) (*User, string, error)
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
 }
 
-// Service authenticates users (login) and machine clients (API keys).
-type Service struct {
+// AuthService authenticates users (login) and machine clients (API keys).
+type AuthService struct {
 	store    Store
 	secret   []byte
 	tokenTTL time.Duration
 }
 
-func NewService(store Store, secret []byte, ttl time.Duration) *Service {
-	return &Service{store: store, secret: secret, tokenTTL: ttl}
+func NewAuthService(store Store, secret []byte, ttl time.Duration) *AuthService {
+	return &AuthService{store: store, secret: secret, tokenTTL: ttl}
 }
 
 // Login verifies credentials and returns an access token, or ErrInvalidCredentials.
-func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
+func (s *AuthService) Login(ctx context.Context, username, password string) (string, error) {
 	user, hash, err := s.store.GetUserByUsername(ctx, username)
 	if err != nil {
 		return "", ErrInvalidCredentials
@@ -47,7 +45,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 }
 
 // AuthenticateAPIKey hashes the raw key, looks it up, and checks status/expiry.
-func (s *Service) AuthenticateAPIKey(ctx context.Context, rawKey string) (*controlplane.APIKey, error) {
+func (s *AuthService) AuthenticateAPIKey(ctx context.Context, rawKey string) (*APIKey, error) {
 	key, err := s.store.GetAPIKeyByHash(ctx, HashAPIKey(rawKey))
 	if err != nil {
 		return nil, ErrInvalidAPIKey

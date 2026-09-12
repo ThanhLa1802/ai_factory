@@ -1,0 +1,113 @@
+package iam
+
+import (
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
+	"github.com/ai-factory/go-server/pkg/response"
+	"github.com/gin-gonic/gin"
+)
+
+// Handler mounts the IAM routes: login, API keys, tenants.
+type Handler struct {
+	svc     *Service
+	authSvc *AuthService
+	auth    middleware.Authenticator
+}
+
+func NewHandler(svc *Service, authSvc *AuthService, auth middleware.Authenticator) *Handler {
+	return &Handler{svc: svc, authSvc: authSvc, auth: auth}
+}
+
+// --- auth ---
+
+func (h *Handler) handleLogin(c *gin.Context) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	token, err := h.authSvc.Login(c.Request.Context(), req.Username, req.Password)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, map[string]string{"access_token": token})
+}
+
+// --- api keys ---
+
+func (h *Handler) handleCreateAPIKey(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	var req struct {
+		Name      string     `json:"name"`
+		ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	raw, hash := GenerateAPIKey()
+	key, err := h.svc.CreateAPIKey(c.Request.Context(), p.TenantID, req.Name, hash, req.ExpiresAt)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, gin.H{"id": key.ID, "tenant_id": key.TenantID, "name": key.Name, "key": raw})
+}
+
+func (h *Handler) handleListAPIKeys(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	keys, err := h.svc.ListAPIKeys(c.Request.Context(), p.TenantID)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, keys)
+}
+
+func (h *Handler) handleDeleteAPIKey(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	id := c.Param("id")
+	if err := h.svc.DeleteAPIKey(c.Request.Context(), id, p.TenantID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "api key not found")
+			return
+		}
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// --- tenants ---
+
+func (h *Handler) handleCreateTenant(c *gin.Context) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "name required")
+		return
+	}
+	t, err := h.svc.CreateTenant(c.Request.Context(), req.Name)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, t)
+}
+
+func (h *Handler) handleListTenants(c *gin.Context) {
+	tenants, err := h.svc.ListTenants(c.Request.Context())
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, tenants)
+}

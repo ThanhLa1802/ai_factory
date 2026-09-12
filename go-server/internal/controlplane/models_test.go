@@ -29,10 +29,6 @@ func TestRowsSelectable(t *testing.T) {
 		name string
 		dest any
 	}{
-		{"tenants", &[]tenantRow{}},
-		{"users", &[]userRow{}},
-		{"tenant_memberships", &[]membershipRow{}},
-		{"api_keys", &[]apiKeyRow{}},
 		{"tenant_quotas", &[]quotaRow{}},
 		{"usage_events", &[]usageRow{}},
 		{"idempotency_keys", &[]idempotencyRow{}},

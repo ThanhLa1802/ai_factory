@@ -7,11 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/ai-factory/go-server/internal/auth"
-	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
@@ -20,23 +17,20 @@ import (
 func TestSessionEndpointsE2E(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	ts := newTestServices(t, d)
 
-	tenant, _ := cp.CreateTenant(ctx, "sess-"+uuid.NewString()[:8])
-	hash, _ := auth.HashPassword("admin-pass")
-	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
+	tenant, _ := ts.iam.CreateTenant(ctx, "sess-"+uuid.NewString()[:8])
+	hash, _ := iam.HashPassword("admin-pass")
+	user, _ := ts.iam.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, iam.RoleTenantAdmin, tenant.ID)
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	mgr := session.NewManagerWithStore(session.NewGormStore(d.Gorm()))
-	h := &Handler{sessionMgr: mgr, secret: secret, authSvc: authSvc, uiDir: t.TempDir()}
-	cph := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
+	h := &Handler{sessionMgr: mgr, auth: ts.authn, uiDir: t.TempDir()}
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
-	cph.RegisterRoutes(mux)
+	ts.mountIAM(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 	authH := func() string { return "Bearer " + token }
 

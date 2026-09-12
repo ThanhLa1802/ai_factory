@@ -1,4 +1,4 @@
-package auth
+package iam
 
 import (
 	"crypto/sha256"

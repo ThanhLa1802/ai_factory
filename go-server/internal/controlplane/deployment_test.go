@@ -29,9 +29,9 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	s := NewServiceFromGorm(d.Gorm())
 
 	// Use an ephemeral tenant so re-runs never collide on FK constraints.
-	tenant, err := s.CreateTenant(ctx, "wl-tenant-"+uuid.NewString()[:8])
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+	tenantID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, tenantID, "wl-tenant-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed tenant: %v", err)
 	}
 
 	// Seed FK parents: models → model_versions and serving_templates → serving_template_versions.
@@ -65,7 +65,7 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	}
 
 	deploy, err := s.CreateDeployment(ctx, Deployment{
-		TenantID: tenant.ID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
+		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
 		Name: "svc", Region: "us-east-1", DesiredReplicas: 1,
 	})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	// endpoints, then the model/template parents are free to delete (deployments
 	// reference their versions with NO ACTION, so parents must go second).
 	t.Cleanup(func() {
-		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenantID)
 		_ = d.Gorm().Exec( `DELETE FROM models WHERE id = $1`, model.ID)
 		_ = d.Gorm().Exec( `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
 	})
@@ -119,9 +119,9 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 	}
 	s := NewServiceFromGorm(d.Gorm())
 
-	tenant, err := s.CreateTenant(ctx, "rd-tenant-"+uuid.NewString()[:8])
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+	tenantID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, tenantID, "rd-tenant-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed tenant: %v", err)
 	}
 	model, err := s.CreateModel(ctx, Model{Name: "rd-model-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
 	if err != nil {
@@ -140,7 +140,7 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 		t.Fatalf("create template version: %v", err)
 	}
 	deploy, err := s.CreateDeployment(ctx, Deployment{
-		TenantID: tenant.ID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
+		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
 		Name: "svc", Region: "us-east-1", DesiredReplicas: 1,
 	})
 	if err != nil {
@@ -148,7 +148,7 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 	}
 
 	// PENDING deployment must NOT resolve.
-	if _, err := s.ResolveDeployment(ctx, tenant.ID, model.Name); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResolveDeployment(ctx, tenantID, model.Name); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("resolve PENDING = %v, want ErrNotFound", err)
 	}
 
@@ -159,7 +159,7 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 		}
 	}
 
-	got, err := s.ResolveDeployment(ctx, tenant.ID, model.Name)
+	got, err := s.ResolveDeployment(ctx, tenantID, model.Name)
 	if err != nil {
 		t.Fatalf("resolve READY: %v", err)
 	}
@@ -173,12 +173,12 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 	}
 
 	// Unknown model name → ErrNotFound.
-	if _, err := s.ResolveDeployment(ctx, tenant.ID, "no-such-model"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResolveDeployment(ctx, tenantID, "no-such-model"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("resolve unknown model = %v, want ErrNotFound", err)
 	}
 
 	t.Cleanup(func() {
-		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenantID)
 		_ = d.Gorm().Exec( `DELETE FROM models WHERE id = $1`, model.ID)
 		_ = d.Gorm().Exec( `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
 	})

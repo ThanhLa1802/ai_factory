@@ -1,22 +1,20 @@
-package auth
+package iam
 
 import (
 	"context"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/ai-factory/go-server/internal/controlplane"
 )
 
 type fakeStore struct {
-	user *controlplane.User
+	user *User
 	hash string
-	key  *controlplane.APIKey
+	key  *APIKey
 	err  error
 }
 
-func (f *fakeStore) GetUserByUsername(ctx context.Context, username string) (*controlplane.User, string, error) {
+func (f *fakeStore) GetUserByUsername(ctx context.Context, username string) (*User, string, error) {
 	if f.err != nil {
 		return nil, "", f.err
 	}
@@ -26,7 +24,7 @@ func (f *fakeStore) GetUserByUsername(ctx context.Context, username string) (*co
 	return f.user, f.hash, nil
 }
 
-func (f *fakeStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*controlplane.APIKey, error) {
+func (f *fakeStore) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -41,8 +39,8 @@ func TestLoginSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword error = %v", err)
 	}
-	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "ACTIVE"}, hash: hash}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{user: &User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "ACTIVE"}, hash: hash}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	token, err := svc.Login(context.Background(), "admin", "correct-password")
 	if err != nil {
 		t.Fatalf("Login error = %v", err)
@@ -58,8 +56,8 @@ func TestLoginSuccess(t *testing.T) {
 
 func TestLoginInactiveUser(t *testing.T) {
 	hash, _ := HashPassword("correct-password")
-	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "INACTIVE"}, hash: hash}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{user: &User{ID: "u1", TenantID: "t1", Role: RoleTenantAdmin, Status: "INACTIVE"}, hash: hash}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	if _, err := svc.Login(context.Background(), "admin", "correct-password"); err != ErrInvalidCredentials {
 		t.Fatalf("Login error = %v, want ErrInvalidCredentials", err)
 	}
@@ -67,16 +65,16 @@ func TestLoginInactiveUser(t *testing.T) {
 
 func TestLoginWrongPassword(t *testing.T) {
 	hash, _ := HashPassword("correct-password")
-	store := &fakeStore{user: &controlplane.User{ID: "u1", TenantID: "t1", Role: RoleTenantViewer, Status: "ACTIVE"}, hash: hash}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{user: &User{ID: "u1", TenantID: "t1", Role: RoleTenantViewer, Status: "ACTIVE"}, hash: hash}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	if _, err := svc.Login(context.Background(), "admin", "wrong"); err != ErrInvalidCredentials {
 		t.Fatalf("Login error = %v, want ErrInvalidCredentials", err)
 	}
 }
 
 func TestAuthenticateAPIKeyHappy(t *testing.T) {
-	store := &fakeStore{key: &controlplane.APIKey{ID: "k1", TenantID: "t1", Status: "ACTIVE"}}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{key: &APIKey{ID: "k1", TenantID: "t1", Status: "ACTIVE"}}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	key, err := svc.AuthenticateAPIKey(context.Background(), "sk-whatever")
 	if err != nil {
 		t.Fatalf("AuthenticateAPIKey error = %v", err)
@@ -87,8 +85,8 @@ func TestAuthenticateAPIKeyHappy(t *testing.T) {
 }
 
 func TestAuthenticateAPIKeyInactive(t *testing.T) {
-	store := &fakeStore{key: &controlplane.APIKey{ID: "k1", TenantID: "t1", Status: "REVOKED"}}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{key: &APIKey{ID: "k1", TenantID: "t1", Status: "REVOKED"}}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	if _, err := svc.AuthenticateAPIKey(context.Background(), "sk-whatever"); err != ErrKeyInactive {
 		t.Fatalf("error = %v, want ErrKeyInactive", err)
 	}
@@ -96,8 +94,8 @@ func TestAuthenticateAPIKeyInactive(t *testing.T) {
 
 func TestAuthenticateAPIKeyExpired(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
-	store := &fakeStore{key: &controlplane.APIKey{ID: "k1", TenantID: "t1", Status: "ACTIVE", ExpiresAt: &past}}
-	svc := NewService(store, []byte("0123456789abcdef"), time.Hour)
+	store := &fakeStore{key: &APIKey{ID: "k1", TenantID: "t1", Status: "ACTIVE", ExpiresAt: &past}}
+	svc := NewAuthService(store, []byte("0123456789abcdef"), time.Hour)
 	if _, err := svc.AuthenticateAPIKey(context.Background(), "sk-whatever"); err != ErrKeyInactive {
 		t.Fatalf("error = %v, want ErrKeyInactive", err)
 	}

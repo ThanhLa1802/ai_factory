@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
-	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
+	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
@@ -40,8 +40,7 @@ type Handler struct {
 	sessionMgr *session.Manager
 	loop       *agent.Loop
 	uiDir      string // thư mục chứa UI tĩnh (index.html, chat.html, keys.html)
-	authSvc    *auth.Service
-	secret     []byte
+	auth       middleware.Authenticator
 	resolver   DeploymentResolver
 	usage      UsageRecorder
 	limiter    cache.Limiter
@@ -50,19 +49,19 @@ type Handler struct {
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
-		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, authSvc: authSvc, secret: secret,
+		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, auth: auth,
 		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
 // RegisterRoutes registers all HTTP routes on the given Gin engine.
 func (h *Handler) RegisterRoutes(e *gin.Engine) {
-	e.POST("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc), h.handleOpenAIChatCompletions)
+	e.POST("/v1/chat/completions", middleware.InferenceAuth(h.auth), h.handleOpenAIChatCompletions)
 	e.GET("/health", h.handleHealth)
 
-	sessions := e.Group("/api/v1/sessions", auth.RequireAuth(h.secret))
+	sessions := e.Group("/api/v1/sessions", middleware.RequireAuth(h.auth))
 	sessions.GET("", h.handleListSessions)
 	sessions.GET("/:id", h.handleGetSession)
 	sessions.PATCH("/:id", h.handleRenameSession)
@@ -131,8 +130,8 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		return
 	}
 
-	tenantID, _ := auth.TenantIDFromContext(c)
-	d, release, ok := h.resolveForTenant(c.Request.Context(), c, tenantID, req.Model)
+	p, _ := middleware.PrincipalFromContext(c)
+	d, release, ok := h.resolveForTenant(c.Request.Context(), c, p.TenantID, req.Model)
 	if !ok {
 		return
 	}
@@ -145,11 +144,8 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	if sessionID == "" {
 		sessionID = session.NewSessionID()
 	}
-	userID := ""
-	if claims, ok := auth.ClaimsFromContext(c); ok {
-		userID = claims.UserID
-	}
-	sess, err := h.sessionMgr.GetOrCreate(c.Request.Context(), sessionID, tenantID, userID)
+	userID := p.UserID
+	sess, err := h.sessionMgr.GetOrCreate(c.Request.Context(), sessionID, p.TenantID, userID)
 	if err != nil {
 		// A cross-tenant session-id collision must be indistinguishable from a
 		// missing session — 404 never reveals that the id exists elsewhere.
@@ -185,9 +181,9 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	}()
 
 	if req.Stream {
-		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, tenantID)
+		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, p.TenantID)
 	} else {
-		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, tenantID)
+		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, p.TenantID)
 	}
 }
 
@@ -390,12 +386,12 @@ func (h *Handler) handleHealth(c *gin.Context) {
 }
 
 func (h *Handler) handleListSessions(c *gin.Context) {
-	claims, ok := auth.ClaimsFromContext(c)
+	p, ok := middleware.PrincipalFromContext(c)
 	if !ok {
 		writeAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
 		return
 	}
-	list, err := h.sessionMgr.ListSessions(c.Request.Context(), claims.TenantID, claims.UserID)
+	list, err := h.sessionMgr.ListSessions(c.Request.Context(), p.TenantID, p.UserID)
 	if err != nil {
 		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
@@ -404,9 +400,9 @@ func (h *Handler) handleListSessions(c *gin.Context) {
 }
 
 func (h *Handler) handleGetSession(c *gin.Context) {
-	claims, _ := auth.ClaimsFromContext(c)
+	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
-	sess, err := h.sessionMgr.GetPersisted(c.Request.Context(), id, claims.TenantID, claims.UserID)
+	sess, err := h.sessionMgr.GetPersisted(c.Request.Context(), id, p.TenantID, p.UserID)
 	if errors.Is(err, session.ErrSessionNotFound) {
 		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 		return
@@ -426,7 +422,7 @@ func (h *Handler) handleGetSession(c *gin.Context) {
 }
 
 func (h *Handler) handleRenameSession(c *gin.Context) {
-	claims, _ := auth.ClaimsFromContext(c)
+	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
 	var req struct {
 		Title string `json:"title"`
@@ -435,7 +431,7 @@ func (h *Handler) handleRenameSession(c *gin.Context) {
 		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "title required")
 		return
 	}
-	if err := h.sessionMgr.RenameSession(c.Request.Context(), id, claims.TenantID, claims.UserID, req.Title); err != nil {
+	if err := h.sessionMgr.RenameSession(c.Request.Context(), id, p.TenantID, p.UserID, req.Title); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
@@ -447,9 +443,9 @@ func (h *Handler) handleRenameSession(c *gin.Context) {
 }
 
 func (h *Handler) handleDeleteSession(c *gin.Context) {
-	claims, _ := auth.ClaimsFromContext(c)
+	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
-	if err := h.sessionMgr.DeleteSession(c.Request.Context(), id, claims.TenantID, claims.UserID); err != nil {
+	if err := h.sessionMgr.DeleteSession(c.Request.Context(), id, p.TenantID, p.UserID); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return

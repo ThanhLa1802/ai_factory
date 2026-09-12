@@ -7,7 +7,6 @@ import (
 
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/api"
-	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
@@ -15,6 +14,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/runtime"
+	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/ai-factory/go-server/pkg/di"
 	"github.com/redis/go-redis/v9"
@@ -97,14 +97,24 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}
 
 	// 2. Services
-	if err := c.RegisterSingleton("controlplane", func(cc *di.Container) (any, error) {
-		return controlplane.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
+	if err := c.RegisterSingleton("iam", func(cc *di.Container) (any, error) {
+		return iam.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("auth", func(cc *di.Container) (any, error) {
-		return auth.NewService(cc.MustResolve("controlplane").(*controlplane.Service),
+	if err := c.RegisterSingleton("iam.auth", func(cc *di.Container) (any, error) {
+		return iam.NewAuthService(cc.MustResolve("iam").(*iam.Service),
 			[]byte(cfg.JWTSecret), 8*time.Hour), nil
+	}); err != nil {
+		return err
+	}
+	if err := c.RegisterSingleton("iam.authenticator", func(cc *di.Container) (any, error) {
+		return iam.NewAuthenticator([]byte(cfg.JWTSecret), cc.MustResolve("iam.auth").(*iam.AuthService)), nil
+	}); err != nil {
+		return err
+	}
+	if err := c.RegisterSingleton("controlplane", func(cc *di.Container) (any, error) {
+		return controlplane.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
 	}); err != nil {
 		return err
 	}
@@ -136,8 +146,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			cc.MustResolve("session.manager").(*session.Manager),
 			cc.MustResolve("agent.loop").(*agent.Loop),
 			uiDir,
-			cc.MustResolve("auth").(*auth.Service),
-			[]byte(cfg.JWTSecret),
+			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
 			cc.MustResolve("controlplane").(*controlplane.Service),
 			cc.MustResolve("controlplane").(*controlplane.Service),
 			cc.MustResolve("limiter").(*cache.RedisLimiter),
@@ -146,12 +155,21 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("http.iam", func(cc *di.Container) (any, error) {
+		return iam.NewHandler(
+			cc.MustResolve("iam").(*iam.Service),
+			cc.MustResolve("iam.auth").(*iam.AuthService),
+			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
+		), nil
+	}); err != nil {
+		return err
+	}
 	if err := c.RegisterSingleton("http.controlplane", func(cc *di.Container) (any, error) {
 		b := cc.MustResolve("bus").(*busBundle)
 		return api.NewControlPlaneHandler(
 			cc.MustResolve("controlplane").(*controlplane.Service),
-			cc.MustResolve("auth").(*auth.Service),
-			[]byte(cfg.JWTSecret), b.Producer,
+			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
+			b.Producer,
 		), nil
 	}); err != nil {
 		return err

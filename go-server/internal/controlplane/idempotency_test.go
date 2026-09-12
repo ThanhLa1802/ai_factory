@@ -28,23 +28,23 @@ func TestIdempotencyKeyIntegration(t *testing.T) {
 	}
 	s := NewServiceFromGorm(d.Gorm())
 
-	tenant, err := s.CreateTenant(ctx, "idem-"+uuid.NewString()[:8])
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+	tenantID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, tenantID, "idem-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed tenant: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenantID) })
 
 	// Unknown key → ErrNotFound.
-	if _, err := s.ResolveIdempotencyKey(ctx, tenant.ID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.ResolveIdempotencyKey(ctx, tenantID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("resolve unknown = %v, want ErrNotFound", err)
 	}
 
 	// Save + resolve round trip.
 	depID := uuid.NewString()
-	if err := s.SaveIdempotencyKey(ctx, tenant.ID, "k1", "deployment", depID); err != nil {
+	if err := s.SaveIdempotencyKey(ctx, tenantID, "k1", "deployment", depID); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, err := s.ResolveIdempotencyKey(ctx, tenant.ID, "k1", "deployment")
+	got, err := s.ResolveIdempotencyKey(ctx, tenantID, "k1", "deployment")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -53,12 +53,12 @@ func TestIdempotencyKeyIntegration(t *testing.T) {
 	}
 
 	// Keys are tenant-scoped: another tenant sees ErrNotFound.
-	other, err := s.CreateTenant(ctx, "idem-other-"+uuid.NewString()[:8])
-	if err != nil {
-		t.Fatalf("create other tenant: %v", err)
+	otherID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, otherID, "idem-other-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed other tenant: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
-	if _, err := s.ResolveIdempotencyKey(ctx, other.ID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, otherID) })
+	if _, err := s.ResolveIdempotencyKey(ctx, otherID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("resolve cross-tenant = %v, want ErrNotFound", err)
 	}
 }

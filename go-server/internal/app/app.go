@@ -14,6 +14,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/runtime"
+	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/pkg/di"
 	"github.com/gin-gonic/gin"
 )
@@ -30,8 +31,8 @@ type App struct {
 // fails fast at boot rather than at first request.
 func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, error) {
 	for _, name := range []string{
-		"db", "controlplane", "auth", "bus", "session.manager",
-		"agent.loop", "http.handler", "http.controlplane",
+		"db", "iam", "iam.auth", "iam.authenticator", "controlplane", "bus", "session.manager",
+		"agent.loop", "http.handler", "http.iam", "http.controlplane",
 	} {
 		if _, err := c.Resolve(name); err != nil {
 			return nil, err
@@ -47,6 +48,7 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 	e.HandleMethodNotAllowed = true
 	e.Use(middleware.Recovery, middleware.CORS, middleware.Trace, middleware.Logging, middleware.Metrics)
 	c.MustResolve("http.handler").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	c.MustResolve("http.iam").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	c.MustResolve("http.controlplane").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	e.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
 	return e
@@ -56,11 +58,12 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 // SIGINT/SIGTERM, then shuts the container down.
 func (a *App) Run() error {
 	ctx := context.Background()
+	iamSvc := a.container.MustResolve("iam").(*iam.Service)
 	cp := a.container.MustResolve("controlplane").(*controlplane.Service)
-	if err := seedAdmin(ctx, cp); err != nil {
+	if err := seedAdmin(ctx, iamSvc); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
-	if err := seedDemo(ctx, cp); err != nil {
+	if err := seedDemo(ctx, iamSvc, cp); err != nil {
 		a.log.Warn("seed demo deployment", "err", err)
 	}
 

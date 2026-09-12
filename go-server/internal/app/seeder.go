@@ -7,14 +7,14 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/ai-factory/go-server/internal/services/iam"
 )
 
 // seedAdmin creates the default platform admin + a demo tenant if the admin is
 // missing. Idempotency is keyed on admin existence (not "any tenant exists") so
 // a reused DB that has tenants but no seeded admin still gets one.
-func seedAdmin(ctx context.Context, cp *controlplane.Service) error {
+func seedAdmin(ctx context.Context, iamSvc *iam.Service) error {
 	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
 		return nil
 	}
@@ -22,22 +22,22 @@ func seedAdmin(ctx context.Context, cp *controlplane.Service) error {
 	password := envOr("AI_FACTORY_ADMIN_PASSWORD", "admin1234")
 	tenantName := envOr("AI_FACTORY_DEMO_TENANT", "acme")
 
-	_, _, err := cp.GetUserByUsername(ctx, username)
+	_, _, err := iamSvc.GetUserByUsername(ctx, username)
 	switch {
 	case err == nil:
 		return nil // admin already seeded — idempotent
-	case errors.Is(err, controlplane.ErrNotFound):
+	case errors.Is(err, iam.ErrNotFound):
 		// admin missing — fall through and seed below
 	default:
 		return fmt.Errorf("look up admin for seed: %w", err)
 	}
 
 	// Reuse an existing demo tenant if present; otherwise create it.
-	tenants, err := cp.ListTenants(ctx)
+	tenants, err := iamSvc.ListTenants(ctx)
 	if err != nil {
 		return fmt.Errorf("list tenants for seed: %w", err)
 	}
-	var tenant *controlplane.Tenant
+	var tenant *iam.Tenant
 	for i := range tenants {
 		if tenants[i].Name == tenantName {
 			tenant = &tenants[i]
@@ -45,17 +45,17 @@ func seedAdmin(ctx context.Context, cp *controlplane.Service) error {
 		}
 	}
 	if tenant == nil {
-		t, err := cp.CreateTenant(ctx, tenantName)
+		t, err := iamSvc.CreateTenant(ctx, tenantName)
 		if err != nil {
 			return fmt.Errorf("seed tenant: %w", err)
 		}
 		tenant = t
 	}
-	hash, err := auth.HashPassword(password)
+	hash, err := iam.HashPassword(password)
 	if err != nil {
 		return fmt.Errorf("seed hash: %w", err)
 	}
-	if _, err := cp.CreateUser(ctx, username, username+"@localhost", hash, auth.RolePlatformAdmin, tenant.ID); err != nil {
+	if _, err := iamSvc.CreateUser(ctx, username, username+"@localhost", hash, iam.RolePlatformAdmin, tenant.ID); err != nil {
 		return fmt.Errorf("seed admin: %w", err)
 	}
 	slog.Info("seeded admin", "tenant", tenantName, "admin", username)
@@ -71,12 +71,12 @@ func envOr(key, def string) string {
 
 // seedDemo seeds a demo model + READY deployment for the demo tenant so routing
 // works without Kafka. Idempotent: skips if a READY deployment already resolves.
-func seedDemo(ctx context.Context, cp *controlplane.Service) error {
+func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *controlplane.Service) error {
 	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
 		return nil
 	}
 	tenantName := envOr("AI_FACTORY_DEMO_TENANT", "acme")
-	tenants, err := cp.ListTenants(ctx)
+	tenants, err := iamSvc.ListTenants(ctx)
 	if err != nil {
 		return err
 	}

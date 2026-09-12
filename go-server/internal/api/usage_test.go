@@ -6,11 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
-	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/google/uuid"
 )
 
@@ -18,26 +17,24 @@ import (
 func TestUsageEndpointE2E(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	ts := newTestServices(t, d)
 
-	tenant, _ := cp.CreateTenant(ctx, "usage-e2e-"+uuid.NewString()[:8])
-	hash, _ := auth.HashPassword("admin-pass")
-	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
+	tenant, _ := ts.iam.CreateTenant(ctx, "usage-e2e-"+uuid.NewString()[:8])
+	hash, _ := iam.HashPassword("admin-pass")
+	user, _ := ts.iam.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, iam.RoleTenantAdmin, tenant.ID)
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	if err := cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
+	if err := ts.cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if err := cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 20, 10); err != nil {
+	if err := ts.cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 20, 10); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
-	cph := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
-	cph.RegisterRoutes(mux)
+	ts.mountIAM(mux)
+	ts.mountControlPlane(mux, message.NewMemoryEventBus())
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	rec := httptest.NewRecorder()

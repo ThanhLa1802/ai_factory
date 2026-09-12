@@ -28,27 +28,27 @@ func TestRecordAndQueryUsage(t *testing.T) {
 	}
 
 	svc := NewServiceFromGorm(d.Gorm())
-	tenant, err := svc.CreateTenant(ctx, "usage-"+uuid.NewString()[:8])
-	if err != nil {
-		t.Fatalf("create tenant: %v", err)
+	tenantID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, tenantID, "usage-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed tenant: %v", err)
 	}
-	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenantID) })
 
 	now := time.Now().UTC()
-	if err := svc.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
+	if err := svc.RecordUsage(ctx, tenantID, "qwen-3b", 10, 5); err != nil {
 		t.Fatalf("record #1: %v", err)
 	}
-	if err := svc.RecordUsage(ctx, tenant.ID, "qwen-3b", 0, 0); err != nil {
+	if err := svc.RecordUsage(ctx, tenantID, "qwen-3b", 0, 0); err != nil {
 		t.Fatalf("record #2: %v", err)
 	}
-	if err := svc.RecordUsage(ctx, tenant.ID, "qwen3.5-9b", 100, 50); err != nil {
+	if err := svc.RecordUsage(ctx, tenantID, "qwen3.5-9b", 100, 50); err != nil {
 		t.Fatalf("record #3: %v", err)
 	}
 
 	from := now.Add(-time.Hour)
 	to := now.Add(time.Hour)
 
-	summary, err := svc.UsageSummary(ctx, tenant.ID, from, to)
+	summary, err := svc.UsageSummary(ctx, tenantID, from, to)
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestRecordAndQueryUsage(t *testing.T) {
 		t.Fatalf("summary = %+v, want prompt=110 completion=55 total=165 requests=3", summary)
 	}
 
-	daily, err := svc.UsageDaily(ctx, tenant.ID, from, to)
+	daily, err := svc.UsageDaily(ctx, tenantID, from, to)
 	if err != nil {
 		t.Fatalf("daily: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRecordAndQueryUsage(t *testing.T) {
 		t.Fatalf("daily[0] = %+v, want prompt=110 requests=3", daily[0])
 	}
 
-	byModel, err := svc.UsageByModel(ctx, tenant.ID, from, to)
+	byModel, err := svc.UsageByModel(ctx, tenantID, from, to)
 	if err != nil {
 		t.Fatalf("by model: %v", err)
 	}
@@ -80,9 +80,12 @@ func TestRecordAndQueryUsage(t *testing.T) {
 	}
 
 	// Cross-tenant isolation: a different tenant sees nothing.
-	other, _ := svc.CreateTenant(ctx, "usage-other-"+uuid.NewString()[:8])
-	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
-	empty, err := svc.UsageSummary(ctx, other.ID, from, to)
+	otherID := uuid.NewString()
+	if err := d.Gorm().Exec(`INSERT INTO tenants (id, name, status) VALUES (?, ?, 'ACTIVE')`, otherID, "usage-other-"+uuid.NewString()[:8]).Error; err != nil {
+		t.Fatalf("seed other tenant: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, otherID) })
+	empty, err := svc.UsageSummary(ctx, otherID, from, to)
 	if err != nil {
 		t.Fatalf("empty summary: %v", err)
 	}

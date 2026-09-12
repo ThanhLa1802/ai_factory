@@ -1,4 +1,4 @@
-package controlplane
+package iam
 
 import "time"
 

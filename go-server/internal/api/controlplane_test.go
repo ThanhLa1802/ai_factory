@@ -13,38 +13,52 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
-	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/runtime"
+	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
+// testServices bundles the split IAM + control-plane services for E2E tests.
+type testServices struct {
+	iam     *iam.Service
+	authSvc *iam.AuthService
+	authn   *iam.Authenticator
+	cp      *controlplane.Service
+}
+
+func newTestServices(t *testing.T, d *database.DB) *testServices {
+	t.Helper()
+	secret := []byte("0123456789abcdef")
+	iamSvc := iam.NewServiceFromGorm(d.Gorm())
+	authSvc := iam.NewAuthService(iamSvc, secret, time.Hour)
+	return &testServices{
+		iam:     iamSvc,
+		authSvc: authSvc,
+		authn:   iam.NewAuthenticator(secret, authSvc),
+		cp:      controlplane.NewServiceFromGorm(d.Gorm()),
+	}
+}
+
+func (ts *testServices) mountIAM(mux *gin.Engine) {
+	iam.NewHandler(ts.iam, ts.authSvc, ts.authn).RegisterRoutes(mux)
+}
+
+func (ts *testServices) mountControlPlane(mux *gin.Engine, producer message.Producer) {
+	NewControlPlaneHandler(ts.cp, ts.authn, producer).RegisterRoutes(mux)
+}
+
 // TestLoginE2E runs the full M1 control plane path against a real Postgres.
 func TestLoginE2E(t *testing.T) {
-	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
-	}
 	ctx := context.Background()
-	d, err := database.Open(dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	// Register the pool close FIRST: t.Cleanup runs LIFO, so the delete
-	// cleanups below execute before the pool is closed.
-	t.Cleanup(func() { d.Close() })
-	if err := database.Migrate(d.Gorm()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	d := dbConnOrSkip(t)
 
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	ts := newTestServices(t, d)
 
 	// bootstrap: tenant + admin user (randomized so the DB stays clean for the
 	// seed/demo flow and re-runs never collide with UNIQUE(name/username/email))
@@ -53,15 +67,15 @@ func TestLoginE2E(t *testing.T) {
 	username := "admin-" + suffix
 	email := "admin@acme-" + suffix + ".io"
 
-	tenant, err := cp.CreateTenant(ctx, tenantName)
+	tenant, err := ts.iam.CreateTenant(ctx, tenantName)
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
 	})
-	hash, _ := auth.HashPassword("admin-pass")
-	user, err := cp.CreateUser(ctx, username, email, hash, auth.RoleTenantAdmin, tenant.ID)
+	hash, _ := iam.HashPassword("admin-pass")
+	user, err := ts.iam.CreateUser(ctx, username, email, hash, iam.RoleTenantAdmin, tenant.ID)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -69,42 +83,21 @@ func TestLoginE2E(t *testing.T) {
 		_ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID)
 	})
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
-	h.RegisterRoutes(mux)
-
-	// login
-	loginBody, _ := json.Marshal(map[string]string{"username": username, "password": "admin-pass"})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(loginBody))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login code = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal login: %v", err)
-	}
-	if resp.AccessToken == "" {
-		t.Fatal("empty access_token")
-	}
+	ts.mountIAM(mux)
+	loginHelper(t, mux, user.Username, "admin-pass")
 }
 
 // TestCreateDeploymentPublishesEvent asserts POST /deployments returns 202 and
 // publishes deployment_created on the bus.
 func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	ctx := context.Background()
-	d := dbConnOrSkip(t) // helper below
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	d := dbConnOrSkip(t)
+	ts := newTestServices(t, d)
 
-	tenant, _ := cp.CreateTenant(ctx, "pub-ev-"+uuid.NewString()[:8])
-	hash, _ := auth.HashPassword("admin-pass")
-	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
+	tenant, _ := ts.iam.CreateTenant(ctx, "pub-ev-"+uuid.NewString()[:8])
+	hash, _ := iam.HashPassword("admin-pass")
+	user, _ := ts.iam.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, iam.RoleTenantAdmin, tenant.ID)
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
@@ -115,26 +108,26 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
 	mux := newTestEngine()
-	h.RegisterRoutes(mux)
+	ts.mountIAM(mux)
+	ts.mountControlPlane(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	// deployments has FKs to model_versions / serving_template_versions, so
 	// create real catalog rows first.
-	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	model, err := ts.cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
 	if err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	mv, err := ts.cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
 	if err != nil {
 		t.Fatalf("create model version: %v", err)
 	}
-	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	tpl, err := ts.cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
 	if err != nil {
 		t.Fatalf("create template: %v", err)
 	}
-	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	tv, err := ts.cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
 	if err != nil {
 		t.Fatalf("create template version: %v", err)
 	}
@@ -161,35 +154,33 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	ts := newTestServices(t, d)
 
-	tenant, _ := cp.CreateTenant(ctx, "idem-api-"+uuid.NewString()[:8])
-	hash, _ := auth.HashPassword("admin-pass")
-	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RolePlatformAdmin, tenant.ID)
+	tenant, _ := ts.iam.CreateTenant(ctx, "idem-api-"+uuid.NewString()[:8])
+	hash, _ := iam.HashPassword("admin-pass")
+	user, _ := ts.iam.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, iam.RolePlatformAdmin, tenant.ID)
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := message.NewMemoryEventBus()
-	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
 	mux := newTestEngine()
-	h.RegisterRoutes(mux)
+	ts.mountIAM(mux)
+	ts.mountControlPlane(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
-	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	model, err := ts.cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
 	if err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	mv, err := ts.cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
 	if err != nil {
 		t.Fatalf("create model version: %v", err)
 	}
-	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	tpl, err := ts.cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
 	if err != nil {
 		t.Fatalf("create template: %v", err)
 	}
-	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	tv, err := ts.cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
 	if err != nil {
 		t.Fatalf("create template version: %v", err)
 	}
@@ -267,36 +258,34 @@ func loginHelper(t *testing.T, mux *gin.Engine, user, pass string) string {
 func TestAsyncDeployE2E(t *testing.T) {
 	d := dbConnOrSkip(t)
 	ctx := context.Background()
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	ts := newTestServices(t, d)
 
 	suffix := uuid.NewString()[:8]
-	tenant, err := cp.CreateTenant(ctx, "async-"+suffix)
+	tenant, err := ts.iam.CreateTenant(ctx, "async-"+suffix)
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
-	hash, _ := auth.HashPassword("admin-pass")
+	hash, _ := iam.HashPassword("admin-pass")
 	// NOTE: catalog writes (models/templates) are platform-admin only in the M1
 	// RBAC, so this E2E boots a PLATFORM_ADMIN (deviation from brief, which used
 	// TENANT_ADMIN — that role cannot POST /api/v1/models|/templates → 403).
-	user, err := cp.CreateUser(ctx, "admin-"+suffix, "admin-"+suffix+"@io", hash, auth.RolePlatformAdmin, tenant.ID)
+	user, err := ts.iam.CreateUser(ctx, "admin-"+suffix, "admin-"+suffix+"@io", hash, iam.RolePlatformAdmin, tenant.ID)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := message.NewMemoryEventBus()
-	worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
+	worker := runtime.NewWorker(ts.cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := worker.Run(ctx); err != nil { // Subscribe is non-blocking
 		t.Fatalf("worker run: %v", err)
 	}
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
 	mux := newTestEngine()
-	h.RegisterRoutes(mux)
+	ts.mountIAM(mux)
+	ts.mountControlPlane(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	post := func(path string, body any, want int) map[string]any {
@@ -340,9 +329,9 @@ func TestAsyncDeployE2E(t *testing.T) {
 		map[string]any{"version": "1.0", "image": "ai-factory:latest"}, http.StatusCreated)
 
 	dep := post("/api/v1/deployments", map[string]any{
-		"model_version_id": mv["id"].(string),
+		"model_version_id":    mv["id"].(string),
 		"template_version_id": tv["id"].(string),
-		"name": "svc-" + suffix, "region": "us-east-1", "desired_replicas": 1,
+		"name":                "svc-" + suffix, "region": "us-east-1", "desired_replicas": 1,
 	}, http.StatusAccepted)
 	depID := dep["id"].(string)
 
@@ -359,39 +348,25 @@ func TestAsyncDeployE2E(t *testing.T) {
 // TestAPIKeyLifecycleE2E: tạo tenant/user/login (pattern giống TestLoginE2E), rồi
 // tạo key → list → delete → list rỗng.
 func TestAPIKeyLifecycleE2E(t *testing.T) {
-	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
-	}
 	ctx := context.Background()
-	d, err := database.Open(dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-	if err := database.Migrate(d.Gorm()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	d := dbConnOrSkip(t)
+	ts := newTestServices(t, d)
 
 	suffix := uuid.NewString()[:8]
-	tenant, err := cp.CreateTenant(ctx, "keys-e2e-"+suffix)
+	tenant, err := ts.iam.CreateTenant(ctx, "keys-e2e-"+suffix)
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
-	hash, _ := auth.HashPassword("admin-pass")
-	user, err := cp.CreateUser(ctx, "kuser-"+suffix, "k@e2e-"+suffix+".io", hash, auth.RoleTenantAdmin, tenant.ID)
+	hash, _ := iam.HashPassword("admin-pass")
+	user, err := ts.iam.CreateUser(ctx, "kuser-"+suffix, "k@e2e-"+suffix+".io", hash, iam.RoleTenantAdmin, tenant.ID)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
-	h.RegisterRoutes(mux)
+	ts.mountIAM(mux)
 
 	// login
 	lb, _ := json.Marshal(map[string]string{"username": "kuser-" + suffix, "password": "admin-pass"})
@@ -458,23 +433,10 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 }
 
 // TestInferenceAuthRequiredE2E: /v1/chat/completions không auth phải 401 (không cần worker,
-// middleware chặn trước khi vào handler). Dựng api.Handler với authSvc + secret thật.
+// middleware chặn trước khi vào handler). Dựng api.Handler với authenticator thật.
 func TestInferenceAuthRequiredE2E(t *testing.T) {
-	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
-	}
-	d, err := database.Open(dsn)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-	if err := database.Migrate(d.Gorm()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	cp := controlplane.NewServiceFromGorm(d.Gorm())
-	secret := []byte("0123456789abcdef")
-	authSvc := auth.NewService(cp, secret, time.Hour)
+	d := dbConnOrSkip(t)
+	ts := newTestServices(t, d)
 
 	// worker addr chỉ dùng khi gọi thật; grpc.NewClient là lazy nên không cần worker chạy
 	ic, err := inference.NewClient("localhost:59999")
@@ -486,7 +448,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	te := agent.NewLocalToolExecutor(t.TempDir())
 	loop := agent.NewLoop(bs, te)
 	sess := session.NewManager()
-	h := NewHandler(sess, loop, t.TempDir(), authSvc, secret, cp, cp, nil, 60, 4)
+	h := NewHandler(sess, loop, t.TempDir(), ts.authn, ts.cp, ts.cp, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
