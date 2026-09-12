@@ -63,6 +63,17 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
+## 🏗️ Kiến trúc lại theo production blueprint
+
+Trạng thái: **Phase 1 chưa triển khai** — mới có spec + plan, chờ thi hành.
+
+- Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
+- Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
+- Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
+- Lộ trình: P1 nền tảng (composition root + DI) → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.
+
+---
+
 ## ✅ Giai đoạn 1 — Tuần 1–2: E2E + OpenAI protocol + agentic loop
 
 Trạng thái: **✅ Xong**
@@ -145,6 +156,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-11 | Thêm spec + plan Phase 1 kiến trúc lại theo production blueprint (modular monolith + DI + composition root; GORM/Gin/viper/zap về sau); tạm hoãn sampling loop. Spec docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md. |
 | 2026-08-16 | Chat history + usage metering + platform console: session bền (list/title/rename/delete qua `/api/v1/sessions`, auto-title 40-rune), token mỗi turn ghi `usage_events` (best-effort) + `GET /api/v1/usage`; `/platform` = Usage + API Keys, `/infra` = deployments/models/templates/quotas. Spec docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md. |
 | 2026-08-16 | UI — NextJS app (`web/`): platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` + `/health` + `/metrics` về Go server qua rewrites; routes `/login` `/chat` `/keys` `/platform` `/admin`; auth JWT + role gating. |
 | 2026-08-16 | A6 (Observability) — hoàn tất: toàn bộ log chuyển sang slog JSON (không còn `log.Printf`); metrics mới `serving_tokens_total` (usage metering), `serving_inflight_requests`, `serving_overloaded_total`; trace span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng JSON structured log, dependency-free (`internal/observability/trace.go`); ghi token usage ở handler khi nhận `final` event. |

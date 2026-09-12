@@ -2,66 +2,65 @@
 
 > Tài liệu này mô tả kiến trúc **thực tế** của dự án dựa trên mã nguồn hiện tại, bổ sung cho `CONTEXT.md` (glossary ngắn) và `CLAUDE.md` (tổng quan + lộ trình). Nó đi sâu vào từng thành phần, luồng dữ liệu và các giới hạn tích hợp.
 
-**Trạng thái doc:** khớp với code tại commit hiện tại (2026-08-10, sau khi thêm engine llama). Nếu có thay đổi kiến trúc, hãy cập nhật lại.
+**Trạng thái doc:** cập nhật 2026-09-12 — khớp code sau M1–M3 (control plane + runtime adapter + routing/rate limit), A5 (reliability), A6 (observability), chat history + usage, và NextJS UI (`web/`). Nếu có thay đổi kiến trúc, cập nhật lại.
+
+> **Đang tái kiến trúc:** Go server sẽ chuyển sang layout production (modular monolith + DI + composition root + multi-binary; Gin + GORM + gormigrate + viper + zap). Thiết kế: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md). Tài liệu dưới đây mô tả **cấu trúc hiện tại** (trước tái kiến trúc).
 
 ---
 
 ## 1. Tổng quan
 
-AI Factory là dự án học tập mô phỏng backend của Claude Code / ChatGPT, gồm **ba tầng**:
+AI Factory là dự án học tập mô phỏng backend của Claude Code / ChatGPT, gồm **ba tầng + một control plane**:
 
 | Tầng | Ngôn ngữ | Vai trò |
 |---|---|---|
-| **API Server** | Go | HTTP/SSE, OpenAI Chat Completions (`/v1/chat/completions`), session, agentic loop, tool executor |
-| **Inference Worker** | Python | Load model (HuggingFace), tokenize, forward pass, sampling, batch inference |
+| **API Server + Control Plane** | Go | HTTP/SSE, OpenAI Chat Completions, session, agentic loop, tool executor, và control plane (tenant/model/template/deployment/API key/quota/usage) |
+| **Inference Worker** | Python | Load model (HuggingFace / llama.cpp), tokenize, forward pass, sampling, batch inference |
 | **Contract** | Protobuf | gRPC server-streaming giữa Go và Python |
+| **Web UI** | NextJS | UI quản trị + chat (`web/`) |
 
-Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sidecar worker**, giao tiếp qua gRPC trên localhost. Kiến trúc này tương đồng với production (API gateway + vLLM/TensorRT-LLM backend) ở dạng thu nhỏ.
+Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sidecar worker**, giao tiếp qua gRPC trên localhost. Go server vừa là **inference gateway** vừa là **control plane**; PostgreSQL là system of record, Redis cho rate limit, Kafka (tùy chọn) cho event deployment. Kiến trúc này tương đồng với production (API gateway + control plane + vLLM backend) ở dạng thu nhỏ.
 
 ### 1.1 Sơ đồ tổng thể
 
 ```
-                        ┌─────────────────────────────────────────────────┐
-                        │                  GO SERVER                       │
-                        │  (localhost:8080)                                │
- Client                │                                                 │
-(SSE / HTTP)  ───────► │  ┌─────────────────────────────────────────────┐ │
-                        │  │ api.Handler (internal/api)                  │ │
-                        │  │  ├─ /v1/chat/completions  (OpenAI)          │ │
-                        │  │  ├─ /health  /v1/sessions/{id}  /  /concepts│ │
-                        │  │  └─ adapters.go  ──► internal canonical     │ │
-                        │  └───────────────┬─────────────────────────────┘ │
-                        │                  │ LoopEvent stream (chan)       │
-                        │  ┌───────────────▼─────────────────────────────┐ │
-                        │  │ agent.Loop (agentic loop, max 10 iter)     │ │
-                        │  │  ├── session.Manager (in-memory, 8K ctx)    │ │
-                        │  │  └── ToolExecutor → LocalToolExecutor       │ │
-                        │  └───────────────┬─────────────────────────────┘ │
-                        │                  │ inference.GenerateRequest     │
-                        │  ┌───────────────▼─────────────────────────────┐ │
-                        │  │ inference.BatchScheduler (100ms window)     │ │
-                        │  │  collectorLoop → gRPC BatchGenerate          │ │
-                        │  │  route event theo request_id                  │ │
-                        │  └───────────────┬─────────────────────────────┘ │
-                        │                  │ gRPC (localhost:50051)         │
-                        └──────────────────┼──────────────────────────────┘
-                                           ▼
-                        ┌─────────────────────────────────────────────────┐
-                        │              PYTHON WORKER                       │
-                        │  InferenceServicer + BatchInferenceServicer     │
-                        │  └── EngineBackend (chọn bằng --engine)          │
-                        │      ├── TransformersBackend                     │
-                        │      │    ├─ InferenceEngine (single, streaming) │
-                        │      │    └─ BatchEngine (batched generate)      │
-                        │      │    Model: Qwen2.5-Coder-7B (4-bit NF4)    │
-                        │      └── LlamaBackend (Qwen3.5-9B GGUF)          │
-                        │           spawn llama-server → /v1/chat/...      │
-                        └─────────────────────────────────────────────────┘
+                    Client (SSE/HTTP) / NextJS UI (web/)
+                              │
+                              ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │                      GO SERVER (localhost:8080)               │
+        │                                                              │
+        │  Middleware: CORS → trace → logging → metrics                 │
+        │                                                              │
+        │  ┌── Inference gateway ─────────────────────────────────────┐ │
+        │  │ /v1/chat/completions  (auth JWT/API key → routing →      │ │
+        │  │   rate limit → agent.Loop → BatchScheduler)              │ │
+        │  └──────────────────────────────┬───────────────────────────┘ │
+        │                                 │ gRPC (localhost:50051)       │
+        │  ┌── Control plane /api/v1/* ───┴───────────────────────────┐ │
+        │  │ auth · tenants · models · templates · deployments ·      │ │
+        │  │ api-keys · quotas · usage · sessions                      │ │
+        │  └──┬───────────────┬──────────────────┬────────────────────┘ │
+        │     │               │                  │                      │
+        │     ▼               ▼                  ▼                      │
+        │  PostgreSQL      Redis            Kafka (optional)            │
+        │  (pgx+goose)   (rate limit)   serving.deployment.events       │
+        │     ▲                                │                       │
+        │     └──── runtime.Worker ◄───────────┘ (async deploy)         │
+        └──────────────────────────────────────┼───────────────────────┘
+                                               ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │                      PYTHON WORKER                            │
+        │  InferenceServicer + BatchInferenceServicer                    │
+        │  └── EngineBackend (chọn bằng --engine)                       │
+        │      ├── TransformersBackend  → Qwen2.5-Coder-7B (4-bit NF4)  │
+        │      └── LlamaBackend         → Qwen3.5-9B GGUF (llama-server)│
+        └──────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 Hình dạng request trong hệ thống
 
-Một request trải qua **3 lần "đổi format"**:
+Một request inference trải qua **3 lần "đổi format"**:
 
 1. **Protocol gốc** (`OpenAIRequest`) → `adapters.go` chuyển về **internal canonical format** (`session.Message`).
 2. Internal → **proto** (`inference.pb.go`) tại `internal/inference/client.go` / `batch_scheduler.go`.
@@ -91,58 +90,136 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `--port` | `8080` | Cổng HTTP |
 | `--inference-addr` | `localhost:50051` | Địa chỉ gRPC Python worker |
 | `--workdir` | `.` | Thư mục làm việc cho tool execution |
-| `--max-concurrent` | `1` | Batch size (chỉ override nếu `>1`) |
+| `--max-concurrent` | `1` | Batch size (chỉ override khi `>1`) |
+| `--ui-dir` | auto (`ui/` hoặc `../ui`) | Thư mục UI tĩnh |
 
-**Dependency wiring** (`main.go:32-59`): gRPC client → BatchScheduler → Loop → SessionManager → HTTP handler. Lưu ý: SessionManager **không còn quản lý queue inference** — việc đó do BatchScheduler đảm nhiệm (bình luận trong code).
+**Cấu hình (env, `internal/config/config.go`):**
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `AI_FACTORY_DATABASE_URL` | compose dev DSN | Postgres (bắt buộc; server fail boot nếu không kết nối) |
+| `AI_FACTORY_JWT_SECRET` | `dev-secret-change-me` | Ký/verify JWT (≥16 ký tự) |
+| `AI_FACTORY_LOG_LEVEL` | `info` | debug/info/warn/error |
+| `AI_FACTORY_KAFKA_ADDR` | `localhost:9092` | Kafka broker (tùy chọn) |
+| `AI_FACTORY_REDIS_ADDR` | `localhost:6379` | Redis cho rate limit |
+| `AI_FACTORY_RATE_LIMIT_RPM` | `60` | RPM mỗi tenant |
+| `AI_FACTORY_RATE_LIMIT_CONCURRENCY` | `4` | Concurrency mỗi deployment |
+| `AI_FACTORY_SKIP_SEED` | — | `1` để bỏ qua seeding |
+| `AI_FACTORY_ADMIN_USER/PASSWORD` | `admin` / `admin1234` | Tài khoản admin seed |
+| `AI_FACTORY_DEMO_TENANT` | `acme` | Tenant demo seed |
+
+**Thứ tự khởi động** (`main.go`):
+
+```
+config.Load → SetupLogger(slog JSON) → db.Connect(pgx) + Migrate(goose)
+  → controlplane.NewService → auth.NewService → seedAdmin → seedDemo
+  → redis limiter → Kafka event bus (nếu down: MemoryEventBus + warn, worker tắt)
+  → ControlPlaneHandler → gRPC inference client
+  → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (PG store)
+  → api.Handler → ServeMux (routes + /metrics) → middleware chain → ListenAndServe
+  → SIGINT/SIGTERM → server.Close()
+```
+
+**Dependency wiring** tập trung ở `main.go` (chưa có DI container — đây là điểm Phase 1 tái kiến trúc sẽ dời sang `internal/app`).
 
 ### 2.1 HTTP / API layer — `internal/api/`
 
-Routes đăng ký ở `handler.go:32-42`:
+**Inference + session + UI** (`handler.go:61-73`, `Handler.RegisterRoutes`):
 
-| Route | Method | Chức năng |
+| Route | Method | Auth | Chức năng |
+|---|---|---|---|
+| `/v1/chat/completions` | POST | `auth.InferenceAuth` (JWT hoặc API key) | OpenAI Chat Completions (stream/non-stream) |
+| `/health` | GET | — | Health JSON |
+| `/api/v1/sessions` | GET | `RequireAuth` | Liệt kê session của tenant/user |
+| `/api/v1/sessions/{id}` | GET/DELETE | `RequireAuth` | Đọc / xoá session |
+| `/api/v1/sessions/{id}` | PATCH | `RequireAuth` | Đổi tiêu đề session |
+| `/` , `/chat` , `/keys` | GET | — | UI tĩnh (HTML trong `ui/`) |
+| `/concepts` | GET | — | Tài liệu technical concepts (HTML) |
+
+**Control plane** (`controlplane.go:30-59`, `ControlPlaneHandler.RegisterRoutes`):
+
+| Nhóm | Routes | Quyền |
 |---|---|---|
-| `/v1/chat/completions` | POST | OpenAI Chat Completions (stream/non-stream) |
-| `/health` | GET | Health check JSON |
-| `/v1/sessions/{id}` | GET/DELETE | Đọc / xoá session |
-| `/` , `/ui` | GET | UI test tĩnh (HTML nhúng) |
-| `/concepts` | GET | Tài liệu technical concepts (HTML nhúng) |
+| Auth | `POST /api/v1/auth/login` | — |
+| API keys | `GET/POST /api/v1/api-keys`, `DELETE /api/v1/api-keys/{id}` | `key.manage` |
+| Tenants | `GET/POST /api/v1/tenants` | `tenant.read` / `tenant.manage` |
+| Models | `GET/POST /api/v1/models`, `GET /api/v1/models/{id}`, `POST /api/v1/models/{id}/versions` | `model.read` / `model.write` |
+| Templates | `GET/POST /api/v1/templates`, `GET /api/v1/templates/{id}`, `POST /api/v1/templates/{id}/versions` | `template.read` / `template.write` |
+| Deployments | `GET/POST /api/v1/deployments`, `GET /api/v1/deployments/{id}[/revisions]`, `POST /api/v1/deployments/{id}/{start\|stop}` | `deployment.read` / `deployment.write` |
+| Quotas | `POST /api/v1/quotas`, `GET /api/v1/quotas` | `quota.manage` / `usage.read` |
+| Usage | `GET /api/v1/usage?days=N` | `usage.read` |
 
 **Xử lý request chung** (`handler.go`, OpenAI `/v1/chat/completions`):
 
-1. Decode + validate body.
-2. Lấy session ID từ header `x-session-id`, nếu rỗng sinh UUID mới. Đây là cách **multi-user** được phân biệt — không có auth, session hoàn toàn dựa trên header client tự đặt.
-3. `OpenAIToInternal` → internal messages + system prompt. System prompt được lưu vào session (`sess.SetSystemPrompt`), **không** đưa vào message history.
-4. Cài `context.WithCancel(r.Context())` + goroutine chờ `r.Context().Done()` → đây là khâu đầu của **cancel propagation** (xem §6).
-5. Nhánh `Stream=true` → SSE; ngược lại gom events thành JSON response.
+1. Decode + validate body (`ValidateOpenAIRequest`).
+2. Resolve tenant từ auth context (`auth.TenantIDFromContext` — **không tin body**).
+3. `resolveForTenant`: `ResolveDeployment(tenant, model)` → READY deployment; áp RPM + concurrency limit (fail-open khi Redis lỗi); gắn serving labels cho metrics.
+4. Lấy session ID từ header `x-session-id` (rỗng → UUID mới); `GetOrCreate(sessionID, tenantID, userID)`; session cross-tenant trả 404 để không lộ tồn tại.
+5. `OpenAIToInternal` → internal messages + system prompt; system prompt lưu vào session, không nằm trong history.
+6. `context.WithCancel(r.Context())` + goroutine chờ `r.Context().Done()` → khâu đầu của **cancel propagation** (§6).
+7. Nhánh `Stream=true` → SSE; ngược lại gom events thành JSON response.
 
 **Adapters** (`adapters.go`):
 
 - `OpenAIToInternal`: system message → system prompt; `tool_calls`/`tool_call_id` map trực tiếp.
-- `ToolsToInternal` / `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên. ⚠️ **Hai hàm này hiện không được handler gọi** — xem §9.2.
+- `ToolsToInternal` / `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên. ⚠️ **Hiện không được handler gọi** — xem §10.2.
 
-**SSE writer** (`sse.go`): headers `text/event-stream`, `no-cache`, `keep-alive`, `X-Accel-Buffering: no` (chống buffer của nginx). Gửi token ngay mỗi lần + `Flush()`.
+**SSE writer** (`sse.go`): headers `text/event-stream`, `no-cache`, `keep-alive`, `X-Accel-Buffering: no`. Gửi token ngay mỗi lần + `Flush()`. Định dạng OpenAI stream: `chat.completion.chunk` với `delta.content` / `delta.reasoning_content` / `delta.tool_calls`, rồi chunk `finish_reason`, rồi `[DONE]`. Overloaded (backpressure) gửi frame lỗi `OVERLOADED`.
 
-- Định dạng OpenAI stream: `chat.completion.chunk` với `delta.content` / `delta.tool_calls`, rồi chunk `finish_reason`, rồi `[DONE]`.
+### 2.2 Auth — `internal/auth/`
 
-### 2.2 Session Manager — `internal/session/`
+- **Human accounts:** login `POST /api/v1/auth/login` trả **JWT** (HS256, TTL 8h) chứa user/tenant/role. Middleware `RequireAuth` verify token; `RequirePermission(action)` check RBAC.
+- **API keys (data plane):** `InferenceAuth` chấp nhận JWT **hoặc** `Authorization: Bearer sk-...` → hash → lookup `api_keys` → resolve tenant. Secret chỉ trả 1 lần lúc tạo.
+- **RBAC** (`rbac.go`): 4 role — `PLATFORM_ADMIN`, `TENANT_ADMIN`, `TENANT_DEVELOPER`, `TENANT_VIEWER` — map tới 11 action (`tenant.*`, `model.*`, `template.*`, `deployment.*`, `key.manage`, `quota.manage`, `usage.read`).
+- Password hash: `internal/auth/password.go` (argon2/bcrypt). API key: `apikey.go` (generate + hash). JWT: `jwt.go`.
 
-- `Manager` = `map[string]*Session` + RWMutex (`manager.go:19-23`). `GetOrCreate`, `Get`, `Delete`, `List`.
-- `Session` lưu: message history, `MaxTokens` (mặc định **8192**), `SystemPrompt`, timestamps (`session.go:41-55`).
-- `EstimatedTokens()` (`session.go:99-113`): heuristic **chars/4** — chỉ là ước lượng nhanh phía Go; con số chính xác do Python worker cung cấp qua `Usage`.
+### 2.3 Control plane — `internal/controlplane/`
 
-**Context truncation** — `manager.go:77-137` `TruncateMessages`:
+Service duy nhất (`Service`) truy cập Postgres bằng `pgx`, gộp nhiều aggregate:
 
-- Được trigger trong `loop.go:112-114` khi `EstimatedTokens() > 90% * MaxTokens` (`DangerZoneBeforeTruncate = 0.90`).
-- Quét từ cuối về đầu, giữ những message gần nhất vừa token budget.
-- **Bảo toàn cặp tool**: nếu message giữ đầu tiên là `tool_result`, lùi thêm để giữ luôn `tool_use` tương ứng. Nếu message cuối là `tool_use` không có kết quả (orphaned), bỏ nó đi — vì model không xử lý được.
+| Nhóm | File | Nội dung |
+|---|---|---|
+| Users/tenants | `users.go` | CreateUser/GetUserByUsername/CreateTenant/ListTenants/membership |
+| Catalog | `catalog.go` | Model, ModelVersion, ServingTemplate, TemplateVersion |
+| Deployment | `deployment.go`, `state.go` | CreateDeployment/TransitionDeployment/revisions/endpoints, state machine |
+| Routing | `deployment.go` | `ResolveDeployment(tenantID, modelName)` → newest READY deployment |
+| Quota | `quota.go` | UpsertQuota/ListQuotas |
+| Usage | `usage.go` | RecordUsage + UsageSummary/UsageDaily/UsageByModel |
+| Idempotency | `idempotency.go` | Resolve/Save `Idempotency-Key` |
+| API keys | `types.go` (models) | Create/List/Delete API key |
 
-### 2.3 Agentic Loop — `internal/agent/loop.go`
+**Deployment state machine** (`state.go`):
 
-`Loop` giữ 2 dependency: `BatchScheduler` (inference) + `ToolExecutor` (tools). API chính: `RunStreaming(ctx, sess, userMessage, params) <-chan LoopEvent` — trả channel events (buffer 64), đóng khi xong.
+```
+PENDING → PROVISIONING → STARTING → READY ⇄ DEGRADED
+   │          │             │          │
+   └──── FAILED ←─── lỗi từ bất kỳ trạng thái nào (terminal)
+READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
+```
 
-`LoopEvent` có 5 loại (`loop.go:26-32`): `Token`, `ToolUse`, `ToolResult`, `Final`, `Error`.
+- Mọi chuyển trạng thái đi qua `validTransitions` — chuyển không hợp lệ bị từ chối.
+- Mọi thay đổi config tạo **deployment revision** (rollback/audit).
 
-**Vòng lặp chính** (`loop.go:97-239`), tối đa `MaxToolIterations = 10`:
+### 2.4 Session Manager — `internal/session/`
+
+- Session **bền trong Postgres** (`sessions`, `messages` qua `store.go`/`PGStore`), không còn chỉ in-memory. `Manager` cache in-memory + ghi DB.
+- `GetOrCreate(sessionID, tenantID, userID)`, `ListSessions`, `GetPersisted`, `RenameSession`, `DeleteSession`; tự đặt tiêu đề từ tin nhắn user đầu tiên (cắt 40 rune).
+- `Session` lưu message history, `MaxTokens` (mặc định **8192**), `SystemPrompt`, title, model, timestamps.
+- `EstimatedTokens()`: heuristic **chars/4**; con số chính xác do Python cung cấp qua `Usage`.
+
+**Context truncation** — `TruncateMessages`:
+
+- Trigger trong `loop.go` khi `EstimatedTokens() > 90% * MaxTokens` (`DangerZoneBeforeTruncate = 0.90`).
+- Quét từ cuối về đầu, giữ message gần nhất vừa token budget.
+- **Bảo toàn cặp tool**: nếu message giữ đầu tiên là `tool_result`, lùi thêm để giữ `tool_use` tương ứng; bỏ `tool_use` orphaned ở cuối.
+
+### 2.5 Agentic Loop — `internal/agent/loop.go`
+
+`Loop` giữ `BatchScheduler` + `ToolExecutor`. API: `RunStreaming(ctx, sess, userMessage, params) <-chan LoopEvent`.
+
+`LoopEvent` có **6 loại** (`loop.go`): `Token`, `ToolUse`, `ToolResult`, `Final`, `Error`, `Reasoning` (reasoning token — display-only, không vào session context).
+
+**Vòng lặp chính**, tối đa `MaxToolIterations = 10`:
 
 ```
 1. Check ctx.Done() → nếu cancel, emit Final(STOP_CANCELLED)
@@ -150,25 +227,26 @@ Routes đăng ký ở `handler.go:32-42`:
 3. Lấy tool definitions từ executor.ListTools()
 4. Build GenerateRequest → scheduler.Submit(ctx, req)
 5. Tiêu thụ events từ gRPC:
-     token     → forward ngay (LoopEventToken)
-     tool_use  → lưu + emit (LoopEventToolUse)
-     final     → đọc stop_reason; STOP_ERROR → emit LoopEventError, return
+     token      → forward ngay (LoopEventToken)
+     reasoning  → forward display-only (LoopEventReasoning)
+     tool_use   → lưu + emit (LoopEventToolUse)
+     final      → đọc stop_reason; STOP_ERROR → emit LoopEventError, return
 6. Lưu assistant message vào session (kèm tool_calls nếu có)
 7. Nếu stop_reason == STOP_TOOL_USE và có toolCalls:
      → với mỗi tool: executor.Execute(ctx, name, args)
      → lưu tool message (Role=tool, ToolResult, IsError) vào session
      → emit LoopEventToolResult
-     → continue (vòng mới — model nhìn thấy tool results)
+     → continue (model nhìn thấy tool results)
 8. Ngược lại: emit LoopEventFinal(stop_reason, usage), return
 ```
 
-Tool results **không** stream về client — chúng được đưa vào session và đi vào lượt inference tiếp theo (handler có comment ghi rõ điều này, `handler.go:144-146`).
+Tool results **không** stream về client — đưa vào session và dùng cho lượt inference tiếp theo.
 
-### 2.4 Tool Executor — `internal/agent/tools.go`
+### 2.6 Tool Executor — `internal/agent/tools.go`
 
-- Interface `ToolExecutor` (`tools.go:14-20`): `Execute(ctx, name, params)` + `ListTools()`.
-- `LocalToolExecutor` — implementation đầu tiên, chạy tool **trực tiếp trên host**, timeout `30s` mỗi tool (`tools.go:51`, `106`). Interface cho phép swap sang sandbox (Docker) sau.
-- **4 built-in tools** (`tools.go:57-97`):
+- Interface `ToolExecutor`: `Execute(ctx, name, params)` + `ListTools()`.
+- `LocalToolExecutor` chạy tool **trực tiếp trên host**, timeout `30s` mỗi tool. Interface cho phép swap sang sandbox (Docker) sau.
+- **4 built-in tools**:
 
 | Tool | Mô tả | Chạy bằng |
 |---|---|---|
@@ -177,11 +255,11 @@ Tool results **không** stream về client — chúng được đưa vào sessio
 | `run_command` | Chạy lệnh shell | `exec.CommandContext(ctx, "sh", "-c", ...)` |
 | `list_files` | Liệt kê thư mục | `os.ReadDir` |
 
-Kết quả trả về JSON: `{"result": "..."}` hoặc `{"error": "..."}`. ⚠️ **Bảo mật**: `run_command` không sandbox, dùng được `workdir` tuỳ ý — đúng cho học tập, không phù hợp production.
+Kết quả JSON: `{"result": "..."}` hoặc `{"error": "..."}`. ⚠️ **`run_command` không sandbox** — đúng cho học tập, không phù hợp production.
 
-### 2.5 Batch Scheduler — `internal/inference/batch_scheduler.go`
+### 2.7 Batch Scheduler — `internal/inference/batch_scheduler.go`
 
-Lõi của "continuous batching" (hiện là **static batch**). Thay vì request nối đuôi nhau (1 GPU = 1 request/lúc), gom request đến gần nhau vào 1 forward pass.
+Lõi của "continuous batching" (hiện là **static batch**). Gom request đến gần nhau vào 1 forward pass.
 
 ```
 Handler 1 ──┐
@@ -192,101 +270,110 @@ Handler 3 ──┘        │                        │
                  events channels ◄─────────────┘  route theo request_id
 ```
 
-**`collectorLoop`** (`batch_scheduler.go:104-138`):
+**`collectorLoop`:** block chờ request đầu; gom thêm trong `batchWindow` (**100ms**) hoặc đến `maxBatchSize` (**4**); dispatch batch trong goroutine mới.
 
-1. Block chờ request đầu tiên.
-2. Trong `batchWindow` (**100ms**) hoặc đến `maxBatchSize` (**4**), gom thêm request (dừng khi đủ batch hoặc hết window).
-3. Dispatch batch trong goroutine mới, quay lại block chờ batch kế tiếp.
+**`dispatchBatch`:** build `BatchGenerateRequest` + index `request_id → batchItem`; mở gRPC stream; route event về đúng channel; `final` → đóng channel; lỗi stream → `STOP_ERROR` cho request dở dang.
 
-**`dispatchBatch`** (`batch_scheduler.go:141-226`):
+**Backpressure (A5):** `TrySubmit` trả `ErrOverloaded` khi queue đầy → handler trả 503 (non-stream) hoặc frame `OVERLOADED` (SSE), tăng metric `serving_overloaded_total`.
 
-1. Build `BatchGenerateRequest` proto + index `request_id → batchItem`.
-2. Mở gRPC `BatchGenerate` stream.
-3. Vòng đọc response, route từng event về đúng channel theo `request_id` (token/tool_use/final).
-4. Khi nhận `final` → đóng channel của request đó, xoá khỏi index.
-5. Lỗi stream → gửi `STOP_ERROR` cho các request còn dang dở. `failAll` dùng khi không mở được stream.
+Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 
-Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4` (`batch_scheduler.go:15-19`).
+### 2.8 gRPC Client — `internal/inference/client.go`
 
-### 2.6 gRPC Client — `internal/inference/client.go`
+- Giữ cả 2 stubs: `InferenceServiceClient` + `BatchInferenceServiceClient`.
+- Config: `insecure` credentials (local), `MaxCallRecvMsgSize = 100MB`, `MaxCallSendMsgSize = 10MB`.
+- `GenerateStream`: internal → proto, mở server-streaming `Generate`, đọc trong goroutine. `io.EOF` = hết; `ctx.Err() != nil` → `STOP_CANCELLED`; lỗi khác → `STOP_ERROR`.
+- `BatchGenerate`: gọi thẳng RPC batch.
 
-- `Client` giữ cả 2 service stubs: `InferenceServiceClient` + `BatchInferenceServiceClient` (`client.go:20-21`).
-- Config gRPC: `insecure` credentials (local), `MaxCallRecvMsgSize = 100MB`, `MaxCallSendMsgSize = 10MB` (`client.go:25-31`).
-- `GenerateStream` (`client.go:112-237`): chuyển internal → proto, mở server-streaming `Generate`, đọc events trong goroutine, đóng channel khi hết. Có xử lý phân biệt: `io.EOF` = hết bình thường; nếu `ctx.Err() != nil` → `STOP_CANCELLED`; lỗi khác → `STOP_ERROR`.
-- `BatchGenerate` (`client.go:105-107`): gọi thẳng RPC batch, trả về `pb.BatchInferenceService_BatchGenerateClient`.
+> ⚠️ Runtime hiện chỉ dùng **đường batch** (loop gọi `scheduler.Submit`). Đường single `Generate` tồn tại nhưng chưa dùng ở runtime — xem §10.1.
 
-> ⚠️ Hiện tại **chỉ đường batch được sử dụng** bởi agentic loop (`loop.go` gọi `scheduler.Submit`, không gọi `client.GenerateStream`). Đường single `Generate` tồn tại trong code nhưng là nhánh chết khi runtime — xem §9.1.
+### 2.9 Events — `internal/events/`
+
+- Envelope (§6.2): `{event_id, event_type, event_version, timestamp, tenant_id, resource_id, trace_id, payload}`, `event_version = 1`, timestamp UTC.
+- Topics: `serving.deployment.events`, `serving.inference.events`, `serving.audit.events`. Hiện dùng deployment topic.
+- Deployment event types: `deployment_created`, `deployment_ready`, `deployment_failed`, `deployment_stop_requested`, `deployment_stopped`.
+- Hai implementation: `KafkaEventBus` (segmentio/kafka-go, partition key `resource_id`) và `MemoryEventBus` (in-process, dùng cho test + fallback khi Kafka down).
+- **Kafka tùy chọn khi boot**: nếu không kết nối được → warn + MemoryEventBus → deployment worker tắt, deployment kẹt `PENDING`; chat/inference vẫn chạy.
+
+### 2.10 Runtime adapter + Deployment worker — `internal/runtime/`
+
+- **`ServingRuntimeAdapter`** (§3.3 spec): `Create/Start/Stop/Restart/Delete/GetStatus/HealthCheck`. Adapter đầu tiên: `WorkerAdapter` (wrap Python worker gRPC; lifecycle validate spec + TCP health check).
+- **`ComputeProvider`**: `RequestCapacity/ReleaseCapacity/GetWorkloadStatus/UpdateWorkload`. Dev dùng `MockComputeProvider` (in-memory workload ref).
+- **`Worker`**: consumer của `serving.deployment.events`. `deployment_created` → chạy state machine `PENDING→PROVISIONING→STARTING→READY` (hoặc `FAILED`), set workload_ref, tạo endpoint, tạo revision, publish `deployment_ready`/`deployment_failed`. `deployment_stop_requested` → `STOPPING→STOPPED`. Idempotent nhờ state guard (event replay an toàn).
+- API `POST /api/v1/deployments` trả **202 Accepted**; worker chạy async.
+
+### 2.11 Rate limit — `internal/ratelimit/`
+
+- Interface `Limiter`: `Allow(key, limit, window)` (fixed-window counter) + `Acquire/Release(key, limit)` (concurrency).
+- `RedisLimiter`: dùng Redis (`redis/go-redis/v9`).
+- Áp ở inference gateway: `tenant:{id}:rpm` + `deployment:{id}:concurrency`. **Fail-open** khi Redis down.
+
+### 2.12 Observability — `internal/observability/`
+
+- **Logging:** `slog` JSON structured.
+- **Metrics (Prometheus, `/metrics`)**:
+  - `serving_requests_total{tenant,deployment,model,region,status}`
+  - `serving_request_duration_seconds{...}`
+  - `serving_tokens_total{tenant,model,type}` (prompt/completion)
+  - `serving_inflight_requests`, `serving_overloaded_total{tenant,model}`
+- **Tracing:** span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng structured log, dependency-free (`trace.go`). Tiền thân của OTel.
+- Route labels (tenant/deployment/model/region) được handler set sau khi routing qua `RouteLabelSetter` (statusRecorder).
+
+### 2.13 Reliability (A5) — `internal/retry/`, `internal/circuitbreaker/`
+
+- **Retry/backoff/jitter** (`retry`): áp dụng cho worker provisioning (RequestCapacity, adapter.Start).
+- **Circuit breaker** (`circuitbreaker`): 3-state, gắn vào provisioning.
+- **Idempotency**: header `Idempotency-Key` trên create deployment + bảng `idempotency_keys`.
+- **Backpressure/load shedding**: BatchScheduler `TrySubmit` → `ErrOverloaded` → 503.
+
+### 2.14 DB + migrations — `internal/db/`
+
+- `db.Connect` mở `pgxpool` + `Ping`; `db.Migrate` chạy goose migrations nhúng (`goose` + `pgx` stdlib).
+- Migrations: `internal/db/migrations/NNNN_*.sql`.
+- **Bảng:** `tenants`, `users`, `tenant_memberships`, `api_keys`, `tenant_quotas`, `models`, `model_versions`, `serving_templates`, `serving_template_versions`, `deployments`, `deployment_revisions`, `endpoints`, `idempotency_keys`, `sessions`, `messages`, `usage_events`.
 
 ---
 
 ## 3. Thành phần Python Worker
 
-Entry point: `python-worker/worker/server.py` (chạy `python -m worker.server`, có thể chạy trực tiếp `python -m worker`). gRPC `asyncio` server, mặc định port **50051**.
+Entry point: `python-worker/worker/server.py` (`python -m worker.server`). gRPC `asyncio` server, mặc định port **50051**.
 
 ### 3.1 gRPC Server — `server.py`
 
-- **`InferenceServicer.Generate`** (`server.py:39-108`):
-  - Chuyển proto → dict (`_messages_from_proto`, `_tools_from_proto`).
-  - Ghép system prompt thành message đầu nếu có.
-  - Tạo `cancel_event` + task `watch_cancel` poll `context.cancelled()` mỗi **100ms** → set event khi Go cancel.
-  - Stream events từ `engine.generate(...)` → `_build_response` → `context.write`.
-  - Lỗi → gửi final `STOP_ERROR` rồi thoát.
-- **`BatchInferenceServicer.BatchGenerate`** (`server.py:200-260`):
-  - Lazy tạo `BatchEngine` (cần model + tokenizer từ engine đã load).
-  - Chuyển toàn bộ batch → dict, gọi `batch_engine.generate_batch(...)`.
-  - Stream từng `(request_id, event)` về → `_build_batch_response` → `context.write`.
-  - Lỗi → gửi `STOP_ERROR` cho **từng** request trong batch.
-- Server bootstrap (`server.py:316-362`): load engine, register 2 servicer, giới hạn message 100MB/10MB, keepalive 30s/10s, graceful shutdown trên SIGINT/SIGTERM (đợi `stop_event`, `server.stop(5)`, `engine.unload()`).
+- **`InferenceServicer.Generate`**: proto → dict; ghép system prompt; `cancel_event` + task `watch_cancel` poll `context.cancelled()` mỗi **100ms**; stream events từ engine; lỗi → final `STOP_ERROR`.
+- **`BatchInferenceServicer.BatchGenerate`**: lazy tạo `BatchEngine`; chuyển batch → dict; stream từng `(request_id, event)`; lỗi → `STOP_ERROR` cho từng request.
+- Bootstrap: load engine, register 2 servicer, giới hạn message 100MB/10MB, keepalive 30s/10s, graceful shutdown (SIGINT/SIGTERM → `server.stop(5)` + `engine.unload()`).
 
 ### 3.2 InferenceEngine (single) — `engine.py`
 
-- `MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"` (`engine.py:29`) — **ungated**, không cần HF login. Docs cũ ghi 3B (docstring trong `engine.py` vẫn ghi "Llama 3.2 3B" — xem §9.3).
-- Config 4-bit (`engine.py:35-40`): `BitsAndBytesConfig(load_in_4bit=True, bf16 compute, double_quant, nf4)` — đủ khít 12GB VRAM của RTX 3060. `device_map="auto"`.
-- `generate()` (`engine.py:148-277`):
-  1. `_build_prompt` dùng `tokenizer.apply_chat_template(messages, tools=...)` (format OpenAI-style cho template, kèm tool calling nếu có).
-  2. `model.generate(..., streamer=TextIteratorStreamer)` chạy trong **daemon thread** (để vòng lặp chính có thể kiểm tra cancel).
-  3. Đọc streamer từng token → yield `{"type": "token"}`; giữa các token kiểm tra `cancel_event` → nếu set, yield `STOP_CANCELLED`.
-  4. Hết → xác định `stop_reason`: `completion_tokens >= max_new` → `STOP_MAX_TOKENS`; ngược lại heuristic tool-call → `STOP_TOOL_USE`; không → `STOP_END_TURN`. Kèm `usage`.
-- Phát hiện tool call là **heuristic** (`engine.py:279-292`): tìm marker trong text sinh ra — `<|python_tag|>`, `<function=`, `<tool_call>`, `{"tool_call`. Bình luận trong code ghi rõ sẽ thay bằng parse đúng khi tự viết tokenizer (Tuần 3-4).
-- Singleton `get_engine()` (`engine.py:302-307`).
+- `MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"` — **ungated**, không cần HF login.
+- Config 4-bit NF4 (bitsandbytes), `device_map="auto"` — khít 12GB VRAM RTX 3060.
+- `generate()`: build prompt bằng `apply_chat_template(messages, tools=...)`; `model.generate(..., streamer=TextIteratorStreamer)` trong daemon thread; đọc token → yield; kiểm tra `cancel_event` giữa các token; xác định `stop_reason` + `usage`.
+- Phát hiện tool call là **heuristic** (marker trong text) — sẽ thay bằng parse đúng khi tự viết sampling/tokenizer.
 
 ### 3.3 BatchEngine — `batch_engine.py`
 
-`generate_batch(requests)` (`batch_engine.py:78-192`):
+`generate_batch(requests)`: build prompt từng request; tokenize `padding=True, truncation=True, max_length=8192`; `model.generate(..., streamer=BatchTokenStreamer)` trong `torch.no_grad()`; **stream token theo thời gian thực** (TTFT ~0.8s), request gặp EOS/max cắt sớm độc lập; split output theo `attention_mask`; cuối mỗi request → `STOP_MAX_TOKENS`/`STOP_END_TURN` + `usage`.
 
-1. Build prompt từng request (system prompt được prepend thành message đầu).
-2. `tokenizer(prompts, padding=True, truncation=True, max_length=8192)` — pad về dài nhất trong batch.
-3. `model.generate(**inputs, max_new_tokens=max(các max_tokens), temperature=avg(...))` trong `torch.no_grad()`.
-4. **Split output theo từng request** (dùng `attention_mask` để lấy prompt_len), decode từng token, `yield (req_id, {"type": "token"})`.
-5. Cuối mỗi request: `STOP_MAX_TOKENS` nếu đạt giới hạn, ngược lại `STOP_END_TURN` + `usage`.
-
-> ⚠️ **BatchEngine (engine transformers) không phát hiện tool call** — chỉ sinh `STOP_END_TURN` / `STOP_MAX_TOKENS`. Hệ quả: trên transformers, đường batch (đường duy nhất mà agentic loop dùng) **không bao giờ tạo ra `tool_use`** (xem §9.1). Trên engine **llama**, `LlamaBackend` xử lý tool call native (xem §3.4).
+> ⚠️ **BatchEngine (transformers) không phát hiện tool call** — chỉ `STOP_END_TURN`/`STOP_MAX_TOKENS`. Trên engine llama, `LlamaBackend` xử lý tool call native (§10.1).
 
 ### 3.4 LlamaBackend — `engines/llama/`
 
-Engine llama chạy model GGUF qua **llama-server** (llama.cpp) thay vì transformers: worker spawn subprocess và proxy gRPC → OpenAI-compatible HTTP. Entry `worker/server.py` gọi `get_backend(engine_name, model_id, gguf, llama_port, llama_bin)` (`server.py:315-316`) để chọn engine lúc khởi động.
+Engine llama chạy GGUF qua **llama-server** (llama.cpp): worker spawn subprocess và proxy gRPC → OpenAI-compatible HTTP. Chọn engine qua `get_backend(engine_name, ...)`.
 
-- **`EngineBackend`** (`engines/base.py`): interface chung — `generate(...)`, `generate_batch(...)` → yield event dict (token / tool_use / final). `get_backend()` là registry chọn implementation.
-- **`TransformersBackend`** (`engines/transformers.py`): wrap `InferenceEngine` + `BatchEngine` hiện có (Qwen2.5-Coder-7B) — giữ nguyên hành vi cũ.
-- **`LlamaServer`** (`engines/llama/server.py`): spawn `llama-server` subprocess với flags `--host 127.0.0.1 --port 8081 --n-gpu-layers -1 --ctx-size 8192 --threads 8`; chờ `/health` (timeout), log ra `llama-server-8081.log`, stop khi worker tắt.
-- **`LlamaClient`** (`engines/llama/client.py`): proxy request → `POST {base_url}/v1/chat/completions` (OpenAI-style, SSE stream); httpx transport.
-- **`LlamaBackend`** (`engines/llama/backend.py`): map gRPC request ↔ OpenAI body (`"model": "qwen3.5-9b"`, `messages`, `tools`, `tool_choice:"auto"`), map response events (token delta, `tool_calls`, `finish_reason`) → event dict giống TransformersBackend. **Tool calling native** của llama-server → sinh `STOP_TOOL_USE` + `tool_calls` thật — nhánh tool-use của agentic loop hoạt động trên engine này (xem §9.1).
+- **`EngineBackend`** (`engines/base.py`): interface chung — `generate`/`generate_batch` yield event dict (token/tool_use/final). `get_backend()` là registry.
+- **`TransformersBackend`** (`engines/transformers.py`): wrap `InferenceEngine` + `BatchEngine`.
+- **`LlamaServer`** (`engines/llama/server.py`): spawn `llama-server` (`--host 127.0.0.1 --port 8081 --n-gpu-layers -1 --ctx-size 8192 --threads 8`), chờ `/health`, log file riêng, stop khi worker tắt.
+- **`LlamaClient`** (`client.py`): proxy → `POST {base_url}/v1/chat/completions` (SSE), httpx.
+- **`LlamaBackend`** (`backend.py`): map gRPC ↔ OpenAI body (`"model": "qwen3.5-9b"`, `tools`, `tool_choice:"auto"`); **tool calling native** → `STOP_TOOL_USE` + `tool_calls` thật.
 
-**GGUF / binary:** `models/Qwen3.5-9B-Q4_K_M.gguf` + `models/llama.cpp/llama-server.exe` (CUDA 12.4). Flags worker: `--engine llama --gguf <path> --llama-port 8081 --llama-bin <bin>`.
-
-Proxy flow:
-```
-gRPC Generate / BatchGenerate
-  → LlamaBackend (LlamaClient) → POST /v1/chat/completions (SSE stream)
-  → llama-server (token / tool_calls)
-  → LlamaBackend map → event dict (token / tool_use / final) → gRPC response
-```
+**GGUF / binary:** `models/Qwen3.5-9B-Q4_K_M.gguf` + `models/llama.cpp/llama-server.exe`. Flags: `--engine llama --gguf <path> --llama-port 8081 --llama-bin <bin>`.
 
 ---
 
 ## 4. Proto Contract — `proto/inference.proto`
 
-Hai service, cả hai đều **server-streaming** (Python gửi nhiều response cho 1 request):
+Hai service, cả hai **server-streaming**:
 
 ```proto
 service InferenceService {
@@ -297,13 +384,13 @@ service BatchInferenceService {
 }
 ```
 
-- `GenerateRequest` (`inference.proto:15-29`): `request_id`, `session_id`, `messages` (internal canonical), `system_prompt`, `sampling_params`, `tools` (JSON Schema string).
-- `GenerateResponse` (`inference.proto:66-83`): đa dạng theo `event_type` (`EVENT_TOKEN`/`EVENT_TOOL_USE`/`EVENT_FINAL`) — mỗi event chỉ populate field tương ứng (`token`, `tool_use`, hoặc `stop_reason`+`finish_reason`+`usage`).
-- `StopReason` enum (`inference.proto:99-106`): `STOP_END_TURN`, `STOP_MAX_TOKENS`, `STOP_TOOL_USE`, `STOP_CANCELLED`, `STOP_ERROR`.
-- `SamplingParams` (`inference.proto:58-64`): `max_tokens` (1024), `temperature` (0.7), `top_p` (0.9), `top_k` (50), `stop_sequences`.
-- `BatchGenerateResponse` (`inference.proto:137-151`): giống `GenerateResponse` + thêm `request_id` để Go route về đúng channel.
+- `GenerateRequest`: `request_id`, `session_id`, `messages` (internal canonical), `system_prompt`, `sampling_params`, `tools` (JSON Schema string).
+- `GenerateResponse`: đa dạng theo `event_type` (`EVENT_TOKEN`/`EVENT_TOOL_USE`/`EVENT_FINAL`) — mỗi event populate field tương ứng.
+- `StopReason`: `STOP_END_TURN`, `STOP_MAX_TOKENS`, `STOP_TOOL_USE`, `STOP_CANCELLED`, `STOP_ERROR`.
+- `SamplingParams`: `max_tokens` (1024), `temperature` (0.7), `top_p` (0.9), `top_k` (50), `stop_sequences`.
+- `BatchGenerateResponse`: như `GenerateResponse` + `request_id`.
 
-**Codegen:** Go dùng `protoc-gen-go-grpc` → `go-server/internal/inference/pb/`; Python dùng `grpcio-tools` → `python-worker/worker/pb/` (sinh lại bằng `python -m worker.generate_proto`).
+**Codegen:** Go `protoc-gen-go-grpc` → `go-server/internal/inference/pb/`; Python `grpcio-tools` → `python-worker/worker/pb/` (`python -m worker.generate_proto`).
 
 ---
 
@@ -311,26 +398,25 @@ service BatchInferenceService {
 
 ### 5.1 Request OpenAI non-stream
 
-Trước đây API server expose 2 dialect — Messages API + OpenAI `/v1/chat/completions` — normalize về cùng internal format. Ngày 2026-08-15 repo **collapse về chỉ còn OpenAI `/v1/chat/completions`** để có một contract duy nhất: bỏ adapter Messages API, hàm non-stream của dialect cũ, JSON response kiểu Messages API, và dropdown protocol trong UI. Luồng non-stream giờ chạy như sau:
-
 ```
-POST /v1/chat/completions
+POST /v1/chat/completions  (Authorization: Bearer JWT/API key)
+  → InferenceAuth → tenant_id
   → decode OpenAIRequest → validate
-  → session (x-session-id hoặc uuid mới)
+  → ResolveDeployment(tenant, model) → READY deployment (404 nếu không có)
+  → rate limit (RPM tenant + concurrency deployment)
+  → session (x-session-id hoặc uuid mới, persisted)
   → OpenAIToInternal → []session.Message + systemPrompt
-  → set systemPrompt vào session
   → handleOpenAINonStream
-      → cho từng user message: loop.RunStreaming(...)
-          → scheduler.Submit → collectorLoop → gRPC BatchGenerate (batch có thể 1)
-          → Python BatchEngine: model.generate → stream (req_id, token)
-          → Go route về đúng channel → loop phát LoopEvent...
+      → loop.RunStreaming(...) → scheduler.Submit → collectorLoop
+        → gRPC BatchGenerate → Python BatchEngine
+        → route event về channel → LoopEvent...
       → gom content: text + tool_calls
   → JSON response {choices[0].message, finish_reason, usage}
 ```
 
 ### 5.2 Request streaming (SSE)
 
-Giống 5.1 nhưng mỗi `LoopEventToken` được viết ngay vào SSE + `Flush()` (`handler.go:135-137`). Tốc độ token phụ thuộc trực tiếp vào TPOT của model (~75–80ms/token theo `docs/BENCHMARK.md`).
+Giống 5.1 nhưng mỗi `LoopEventToken`/`LoopEventReasoning` được viết ngay vào SSE + `Flush()`. Tốc độ token phụ thuộc TPOT của model (~75–80ms/token theo `docs/BENCHMARK.md`).
 
 ### 5.3 Agentic loop có tool call
 
@@ -342,39 +428,55 @@ user msg → model → model trả STOP_TOOL_USE + toolCalls
   → ... đến khi STOP_END_TURN hoặc đủ 10 iterations
 ```
 
-Lưu ý: trên engine **transformers**, `tool_use` **không bao giờ** được sinh ra ở đường batch (§9.1) — nhánh này chưa kích hoạt ở runtime. Trên engine **llama**, nhánh này **chạy thật**: model gọi tool, Go executor execute, verified E2E (xem §9.1).
+Trên engine **transformers**, `tool_use` không bao giờ được sinh ở đường batch (§10.1). Trên engine **llama**, nhánh này **chạy thật** — verified E2E.
 
-### 5.4 Concurrent requests (continuous batching)
+### 5.4 Concurrent requests (static batching)
 
 ```
 Handler A, B, C đến gần nhau
   → cả 3 Submit vào submitCh
   → collectorLoop gom trong 100ms (hoặc tới batch=4)
   → 1 gRPC BatchGenerate với [A,B,C]
-  → Python: 1 model.generate(batch=3) — GPU xử lý 3 sequence trong forward pass
+  → Python: 1 model.generate(batch=3)
   → stream (req_id, token) → Go route về 3 channel riêng → 3 SSE riêng biệt
 ```
 
-Lợi ích định lượng từ `docs/BENCHMARK.md`: throughput single ~13 tok/s → batch 4 đạt **~54 tok/s (3.8×)** nhờ GPU tận dụng tốt hơn.
+Lợi ích (`docs/BENCHMARK.md`): throughput single ~13 tok/s → batch 4 đạt **~54 tok/s (3.8×)**.
+
+### 5.5 Async deployment (control plane)
+
+```
+POST /api/v1/deployments (Idempotency-Key tùy chọn)
+  → auth (deployment.write) → tenant từ claims
+  → CreateDeployment (PENDING) → publish deployment_created
+  → 202 Accepted
+       │
+       ▼ (Kafka / Memory bus)
+  runtime.Worker consume
+  → ComputeProvider.RequestCapacity → ServingRuntimeAdapter.Start
+  → transition PENDING→PROVISIONING→STARTING→READY
+  → set workload_ref, create revision + endpoint
+  → publish deployment_ready
+```
 
 ---
 
 ## 6. Cancel propagation
 
-Chain cancel trải suốt từ client đến GPU (`CONTEXT.md` ghi "cancel từng request riêng không ảnh hưởng request khác trong batch"):
+Chain cancel từ client đến GPU:
 
 ```
 Client disconnect
   → r.Context().Done()
-  → handler: goroutine gọi cancel() (handler.go:91-95)
+  → handler: goroutine gọi cancel()
   → ctx truyền vào loop.RunStreaming
-  → loop: check ctx.Done() mỗi iteration; batch scheduler: select ctx.Done() khi route event
-  → gRPC stream context bị cancel → Python watch_cancel (poll 100ms) set cancel_event
+  → loop check ctx.Done(); scheduler select ctx.Done() khi route event
+  → gRPC stream context cancel → Python watch_cancel (poll 100ms) set cancel_event
   → engine.generate: kiểm tra cancel_event giữa các token → yield STOP_CANCELLED
-  → stream kết thúc, VRAM được giải phóng (model.generate thoát sớm)
+  → stream kết thúc, VRAM giải phóng
 ```
 
-Giới hạn hiện tại: cancel phía Python là **poll 100ms** (không phải event-driven), và trong batch mode model vẫn phải chạy hết forward pass của batch (chỉ bỏ qua việc gửi kết quả của request bị cancel).
+Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model vẫn chạy hết forward pass của batch (chỉ bỏ gửi kết quả request bị cancel).
 
 ---
 
@@ -385,108 +487,154 @@ Giới hạn hiện tại: cancel phía Python là **poll 100ms** (không phải
 | Đơn vị dispatch | Batch tĩnh: gom trong 100ms hoặc đủ 4 request |
 | GPU thực thi | `model.generate()` với batched inputs (padding + attention mask) |
 | Routing | Go giữ `request_id → channel` map, route từng event |
-| Backpressure | `submitCh` cap 100 — nếu đầy, `Submit` block (backpressure tự nhiên) |
-| Dynamic batching | **Chưa** — không chèn/xoá sequence giữa các decode step (đánh dấu cho Tuần 7-8) |
-| Multi-user | Session in-memory, phân biệt bằng `x-session-id`; không auth |
+| Backpressure | `submitCh` cap 100; `TrySubmit` → `ErrOverloaded` → 503/OVERLOADED |
+| Dynamic batching | **Chưa** — không chèn/xoá sequence giữa các decode step (Tuần 7-8) |
+| Multi-user | Session bền theo tenant/user + auth |
 | Channel buffer | Loop events: 64; gRPC events: 100 |
 
-**Điểm đáng lưu ý về batching hiện tại:** do `BatchEngine` chạy `model.generate()` đồng bộ cho cả batch và **chỉ stream kết quả sau khi batch hoàn tất**, các request trong batch thực chất xếp hàng ngay tại Python (sau 1 forward pass chung). Đây là static batching, không phải true continuous batching — đúng như nhận định trong `CONTEXT.md`.
+> **Lưu ý:** `BatchEngine` chạy `model.generate()` cho cả batch và stream kết quả sau khi forward pass hoàn tất; các request trong batch xếp hàng tại Python. Đây là static batching, không phải true continuous batching.
 
 ---
 
 ## 8. Model & inference
 
-- **Model (transformers, default):** Qwen2.5-Coder-7B-Instruct, quant 4-bit NF4 (bitsandbytes), `device_map="auto"` (RTX 3060 12GB). Docs cũ ghi "Qwen 2.5 3B" — code chạy 7B từ trước.
-- **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4 build) thay vì bitsandbytes — GPU layers do llama-server quản lý (`--n-gpu-layers -1`), không dùng `device_map`. Chi tiết §3.4.
-- **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` có sẵn của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả streaming `StreamingDecoder`), batch pad/truncate (`build_inputs`). Đảm nhận encode/decode trong cả `engine.py` lẫn `batch_engine.py`. Có bộ test đối chiếu ID == HF (`python-worker/tests/test_tokenizer.py`, 40 test).
-- **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho phần Jinja template (build prompt *string*), không dùng để token hoá (quyết định D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`). Hỗ trợ tool calling qua tham số `tools`.
-- **Streaming:** `TextIteratorStreamer` + daemon thread. Streamer chỉ cần `tokenizer.decode(ids, **kwargs)` — BPETokenizer duck-type vừa khớp (xác minh transformers 4.50.3).
-- **Sinh token hiện tại do HuggingFace đảm nhiệm** (sampling loop + KV cache của HF). Theo roadmap, còn lại: Tuần 5-6 tự viết sampling (greedy/temperature/top-p/top-k), Tuần 7-8 tự quản lý KV cache + dynamic batching.
-- **Token counting:** Go dùng heuristic `chars/4`; Python đếm chính xác qua tokenizer (`token_count` = `len(encode(text))`) khi trả `usage`.
+- **Model (transformers, default):** Qwen2.5-Coder-7B-Instruct, quant 4-bit NF4, `device_map="auto"` (RTX 3060 12GB).
+- **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4), `--n-gpu-layers -1`.
+- **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả `StreamingDecoder`), batch pad/truncate. Đảm nhận encode/decode trong `engine.py` lẫn `batch_engine.py`. Test đối chiếu ID == HF (`tests/test_tokenizer.py`).
+- **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho Jinja template (build prompt string), không token hoá. Hỗ trợ tool calling.
+- **Streaming:** `TextIteratorStreamer` + daemon thread; `BPETokenizer` duck-type khớp decode interface.
+- **Sinh token hiện do HuggingFace đảm nhiệm** (sampling + KV cache của HF). Còn lại: Tuần 5-6 tự viết sampling, Tuần 7-8 tự quản lý KV cache + dynamic batching.
+- **Token counting:** Go heuristic `chars/4`; Python đếm chính xác qua tokenizer khi trả `usage`.
 
-Số liệu benchmark tham khảo (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.
+Benchmark (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.
 
 ---
 
-## 9. Hạn chế & lỗ hổng tích hợp hiện tại
+## 9. Web UI — `web/`
 
-Phần này ghi lại những khác biệt giữa **kiến trúc lý tưởng** (trong comment/`CONTEXT.md`) và **hành vi thực tế** của code — quan trọng khi debug hoặc tiếp tục phát triển.
+NextJS (App Router, React 19, Tailwind v4, TypeScript). Proxy `/api/v1/*`, `/v1/*`, `/health`, `/metrics` về Go server qua `rewrites()` (`AI_FACTORY_API_URL`, mặc định `http://localhost:8080`) → browser gọi same-origin, SSE không vướng CORS.
 
-### 9.1 Tool-calling: hoạt động trên engine llama, chết trên engine transformers
+| Route | Nội dung |
+|---|---|
+| `/login` | Đăng nhập JWT |
+| `/chat` | Chat SSE, markdown, model selector; sidebar lịch sử session |
+| `/platform` | Usage + API Keys |
+| `/infra` | Deployments (start/stop), models + versions, templates + versions, quotas |
+| `/admin` | Tenants (chỉ `PLATFORM_ADMIN`) |
 
-> ✅ **Engine llama (Qwen3.5-9B): tool-use ĐÃ HOẠT ĐỘNG và verified E2E (2026-08-10).** llama-server hỗ trợ tool calling native (structured output) → `LlamaBackend` parse `tool_calls` từ response → sinh event `STOP_TOOL_USE` + `tool_calls` thật → nhánh tool-use của `loop.go` (step 7) kích hoạt ở runtime. E2E đã xác nhận: model gọi `read_file("test.txt")`, Go executor chạy tool, model trả lời với nội dung file. Không còn là nhánh chết trên engine này.
+Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ (`ui/`) vẫn được Go server phục vụ cho test nhanh.
+
+---
+
+## 10. Hạn chế & lỗ hổng tích hợp hiện tại
+
+### 10.1 Tool-calling: hoạt động trên engine llama, chết trên engine transformers
+
+> ✅ **Engine llama (Qwen3.5-9B): tool-use ĐÃ HOẠT ĐỘNG và verified E2E (2026-08-10).** llama-server hỗ trợ tool calling native → `LlamaBackend` parse `tool_calls` → `STOP_TOOL_USE` + `tool_calls` thật → nhánh tool-use của `loop.go` kích hoạt. E2E đã xác nhận model gọi `read_file`, Go executor chạy, model trả lời với nội dung file.
 >
-> ⚠️ **Engine transformers (Qwen2.5-Coder-7B): vẫn chết.** Các giới hạn dưới đây áp dụng cho đường transformers.
+> ⚠️ **Engine transformers (Qwen2.5-Coder-7B): vẫn chết.** Giới hạn dưới đây áp dụng cho đường transformers.
 
-- Agentic loop chỉ gọi `scheduler.Submit` → đi qua `BatchGenerate` → `TransformersBackend` → `BatchEngine.generate_batch`.
-- `BatchEngine` **đã stream token theo thời gian thực** (TTFT ~0.8s): `model.generate(streamer=BatchTokenStreamer)` chạy trong thread, streamer decode token mới của từng request (skip lần `put(prompt)` đầu, `unsqueeze(-1)` vì `_sample` squeeze thành [batch]) → push vào `queue.Queue` → async generator yield về client; request gặp EOS/max token được cắt sớm độc lập, batch vẫn chạy cho request khác (`batch_engine.py`).
-- Nhưng `BatchEngine` vẫn **không bao giờ yield `tool_use`** — chỉ `token`/`final` với `STOP_END_TURN`/`STOP_MAX_TOKENS` (heuristic tool-call của `InferenceEngine` cũng không được dùng ở đường batch).
-- Hệ quả: trên transformers, nhánh tool-calling của `loop.go` (step 7) không kích hoạt ở runtime. Model vẫn nhận `tools` trong prompt (qua chat template), nhưng tool call model tự sinh ra bị coi là text thường và stop reason là `STOP_END_TURN`.
-- Cần sửa nếu muốn tool calling chạy trên transformers: hoặc cho `BatchEngine`/`TransformersBackend` parse tool call từ output batch, hoặc loop dùng đường `GenerateStream` (single) cho các request cần tool.
+- Agentic loop chỉ gọi `scheduler.Submit` → `BatchGenerate` → `TransformersBackend` → `BatchEngine.generate_batch`.
+- `BatchEngine` đã stream token theo thời gian thực nhưng **không bao giờ yield `tool_use`** — chỉ `token`/`final` với `STOP_END_TURN`/`STOP_MAX_TOKENS`.
+- Hệ quả: trên transformers, nhánh tool-calling của `loop.go` (step 7) không kích hoạt. Model nhận `tools` trong prompt nhưng tool call bị coi là text thường.
+- Cần sửa: cho `BatchEngine`/`TransformersBackend` parse tool call từ output, hoặc loop dùng `GenerateStream` (single) cho request cần tool.
 
-### 9.2 Tool definitions từ client chưa được nối
+### 10.2 Tool definitions từ client chưa được nối
 
-- `adapters.go` có `ToolsToInternal` / `OpenAIToolsToInternal` và handler parse `req.Tools` vào struct, nhưng **không truyền xuống loop**.
-- Loop luôn dùng `l.tools.ListTools()` — tức **4 built-in tools** của `LocalToolExecutor`, không phải tool client khai báo trong request.
+- `adapters.go` có `ToolsToInternal` / `OpenAIToolsToInternal`, handler parse `req.Tools`, nhưng **không truyền xuống loop**.
+- Loop luôn dùng `l.tools.ListTools()` — **4 built-in tools** của `LocalToolExecutor`, không phải tool client khai báo.
 
-### 9.3 Inconsistency về model trong comment
+### 10.3 Flag `--max-concurrent` không tác dụng khi ≤ 1
 
-- `server.py` help string cho flag `--model` vẫn ghi "Llama 3.2 3B" (`server.py:365`) và `engine.py` docstring nói "Llama 3.2 3B", nhưng `MODEL_ID` thực tế là **Qwen/Qwen2.5-Coder-7B-Instruct** (`engine.py:29`). Các comment heuristic tool-call cũng nói format Llama (`<|python_tag|>`) — với Qwen chat template, tool call có format khác, nên heuristic có thể không khớp.
+- `main.go`: `SetMaxBatchSize` chỉ gọi khi `maxConcurrent > 1`; mặc định flag `1`. Batch size thực tế luôn là `DefaultMaxBatchSize = 4` cho tới khi override. Log cũng in `max_batch` sai khi flag = 1.
 
-### 9.4 Flag `--max-concurrent` không tác dụng khi ≤ 1
+### 10.4 Inconsistency trong comment (model)
 
-- `main.go:42-44`: `SetMaxBatchSize` chỉ gọi khi `maxConcurrent > 1`; mặc định flag = `1`. Batch size thực tế luôn là `DefaultMaxBatchSize = 4` cho tới khi override. Log ở `main.go:45-46` cũng in `max_batch = *maxConcurrent` (sai khi flag = 1).
+- Một số docstring/help string còn ghi "Llama 3.2 3B" trong khi `MODEL_ID` thực tế là Qwen2.5-Coder-7B. Comment heuristic tool-call cũ nói format Llama.
 
-### 9.5 Khác
+### 10.5 Khác
 
-- **No auth/rate-limit/persistence** — session in-memory, mất khi restart; `x-session-id` do client tự đặt.
 - **`run_command` không sandbox** — chạy trực tiếp trên host với `sh -c`.
-- **Không observability** — chỉ log stdout; chưa có metrics/tracing/cost metering (xem spec `docs/superpowers/specs/2026-08-06-llm-inference-scale-design.md`).
+- **Cost/quota enforcement chưa đủ**: usage được ghi (`usage_events`, Prometheus) nhưng **chưa trừ vào quota** khi vượt.
+- **Persistence cho domain khác**: session/control plane đã bền; một số state worker (workload ref…) vẫn dev-only.
 - Cancel Python là poll 100ms.
 
 ---
 
-## 10. Ngăn xếp công nghệ
+## 11. Ngăn xếp công nghệ
 
 | Layer | Tech |
 |---|---|
-| Go server | Go 1.25.6, `net/http` + `http.ServeMux`, `google.golang.org/grpc`, `google/uuid` |
+| Go server | Go 1.25.7, `net/http` + `http.ServeMux`, `google.golang.org/grpc`, `google/uuid` |
+| Persistence | PostgreSQL qua `jackc/pgx/v5` + `pressly/goose/v3` |
+| Rate limit | Redis (`redis/go-redis/v9`) |
+| Events | Kafka (`segmentio/kafka-go`) hoặc in-memory fallback |
+| Auth | `golang-jwt/jwt/v5`, argon2/bcrypt, API key hash |
+| Observability | `prometheus/client_golang`, `log/slog` JSON, W3C trace tự viết |
+| Reliability | `internal/retry`, `internal/circuitbreaker` (tự viết) |
 | Python worker | Python ≥3.11, `grpcio` (aio), `torch`, `transformers`, `bitsandbytes`, `accelerate` (+ `httpx` cho llama proxy) |
 | Model | Transformers: Qwen/Qwen2.5-Coder-7B-Instruct (4-bit NF4) · Llama: Qwen3.5-9B GGUF Q4_K_M (llama-server) |
 | Contract | Protobuf 3, server-streaming gRPC |
 | Streaming | gRPC (Python→Go), SSE (Go→Client) |
+| Web UI | Next 16 (App Router), React 19, Tailwind v4, TypeScript |
 
-## 11. Cách chạy
+---
+
+## 12. Cách chạy
 
 ```bash
-# Terminal 1: Python worker (mặc định port 50051) — engine transformers (default, Qwen2.5-Coder-7B)
+# Hạ tầng (Postgres bắt buộc; Kafka/Redis tùy chọn cho full flow)
+docker compose -f deployments/docker-compose.yml up -d postgres kafka redis
+
+# Terminal 1: Python worker (mặc định port 50051) — engine transformers (default)
 cd python-worker && python -m worker.server
 
-#   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081.
-#   (thêm --llama-bin ..\models\llama.cpp\llama-server.exe nếu llama-server chưa có trên PATH)
-cd python-worker && .\.venv\Scripts\python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+#   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081
+cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
 
 # Terminal 2: Go server (mặc định port 8080)
+#   Bắt buộc có Postgres; server fail boot nếu không kết nối được.
 cd go-server && go run ./cmd/server/
 
-# Test nhanh (OpenAI adapter) — content là STRING thường:
+# Terminal 3: NextJS UI (mặc định port 3000)
+cd web && npm install && npm run dev
+
+# Test nhanh — inference endpoint yêu cầu auth
+TOKEN=$(curl -s -X POST http://localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin1234"}' | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"model":"qwen-3b","messages":[{"role":"user","content":"Hello"}]}'
 
 # Health
 curl http://localhost:8080/health
 ```
 
-## 12. Map với learning roadmap
+---
+
+## 13. Map với learning roadmap
 
 | Giai đoạn | Nội dung | Trạng thái trong code |
 |---|---|---|
 | Tuần 1-2 | End-to-end: proto → gRPC → Go → model | ✅ Đã xong |
-| Tuần 1-2 | OpenAI protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §9.1) |
+| Tuần 1-2 | OpenAI protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §10.1) |
 | Tuần 1-2 | Continuous batching (static) | ✅ Đã xong (static batch) |
-| Tuần 3-4 | Tự viết tokenizer (BPE) | ✅ Đã xong — `worker/model/tokenizer/`, 40 test đối chiếu == HF (§8) |
-| Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) — ngoài roadmap gốc | ✅ Đã xong — tool calling hoạt động & verified E2E trên engine này (§3.4, §9.1) |
-| Tuần 5-6 | Tự viết sampling | 🔜 Thay `model.generate` param |
-| Tuần 7-8 | Tự quản lý KV cache + dynamic batching | 🔜 Thay phần lõi `BatchEngine` |
-| Tuần 9+ | Forward pass, prefix caching, PagedAttention | 🔜 Tương lai |
+| Tuần 3-4 | Tự viết tokenizer (BPE) | ✅ Đã xong — `worker/model/tokenizer/` |
+| Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Đã xong — tool calling E2E |
+| M1–M3 | Control plane + auth + async deploy + routing/rate limit | ✅ Đã xong |
+| A5 | Reliability: retry, circuit breaker, idempotency, backpressure | ✅ Đã xong |
+| A6 | Observability: metrics, trace, structured log, usage metering | ✅ Đã xong |
+| UI | NextJS app (`web/`) + chat history + platform console | ✅ Đã xong |
+| Tuần 5-6 | Tự viết sampling | ⏸️ Tạm hoãn — ưu tiên tái kiến trúc (xem spec 2026-09-11) |
+| Tuần 7-8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
+| Tuần 9+ | Forward pass, prefix caching, PagedAttention | 🔜 Chưa |
+
+---
+
+## 14. Kế hoạch tái kiến trúc (modular monolith)
+
+Go server sẽ được cấu trúc lại theo production blueprint (`00-overview.md`): **modular monolith + DI container + composition root + multi-binary**, đổi stack sang **Gin + GORM + gormigrate + viper + zap**. Python worker vẫn là data plane (không đụng tới).
+
+- Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
+- Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
+- Lộ trình: P1 nền tảng (DI + composition root) → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.

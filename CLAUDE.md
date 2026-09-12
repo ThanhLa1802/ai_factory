@@ -3,6 +3,8 @@
 A learning project simulating a Claude Code / ChatGPT server, comprising an inference engine, an agentic loop, and an API server.
 
 > **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), [`docs/LEARNING_ROADMAP.md`](docs/LEARNING_ROADMAP.md) (project-specific learning roadmap — 2 tracks: backend/platform + self-written inference), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
+>
+> **Planned rearchitecture (modular monolith):** the Go server is scheduled to move to a prod-style layout (modular monolith + DI + composition root + multi-binary) with stack swapped to Gin + GORM + gormigrate + viper + zap, keeping the Python worker as the data plane. Design: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Phase 1 plan: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md).
 
 ## Behavioral Guidelines
 
