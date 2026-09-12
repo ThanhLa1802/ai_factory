@@ -58,6 +58,15 @@ func (c *Container) register(name string, provider ProviderFunc, singleton bool)
 	return nil
 }
 
+// Has reports whether a provider is registered under name. It does not build
+// the component (useful for role/wiring assertions in tests).
+func (c *Container) Has(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.entries[name]
+	return ok
+}
+
 // Resolve builds (or returns the cached instance of) the named component.
 func (c *Container) Resolve(name string) (any, error) {
 	c.mu.Lock()

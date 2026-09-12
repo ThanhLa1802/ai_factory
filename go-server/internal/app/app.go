@@ -29,10 +29,20 @@ type App struct {
 // NewAppFromContainer force-resolves the critical singletons so a bad config
 // fails fast at boot rather than at first request.
 func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, error) {
-	for _, name := range []string{
-		"db", "iam", "iam.auth", "iam.authenticator", "serving", "usage", "bus", "inference.manager",
-		"inference.loop", "http.handler", "http.iam", "http.serving", "http.usage",
-	} {
+	// Force-resolve only the singletons the enabled roles need, so a worker
+	// process fails fast on DB/bus/worker and never builds the HTTP stack.
+	names := []string{"db", "bus", "serving"}
+	if cfg.Services.API {
+		names = append(names,
+			"iam", "iam.auth", "iam.authenticator", "usage",
+			"inference.manager", "inference.loop",
+			"http.handler", "http.iam", "http.serving", "http.usage",
+		)
+	}
+	if cfg.Services.Worker {
+		names = append(names, "deployment.worker")
+	}
+	for _, name := range names {
 		if _, err := c.Resolve(name); err != nil {
 			return nil, err
 		}
@@ -54,10 +64,56 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 	return e
 }
 
-// Run seeds, starts the worker (if Kafka is up), serves HTTP, and blocks until
-// SIGINT/SIGTERM, then shuts the container down.
+// Run starts the roles enabled in config, blocks until SIGINT/SIGTERM, then
+// shuts the container down. API nodes seed + serve HTTP; worker nodes consume
+// deployment events headlessly (no HTTP).
 func (a *App) Run() error {
 	ctx := context.Background()
+	if a.cfg.Services.API {
+		if err := a.seed(ctx); err != nil {
+			return err
+		}
+	}
+	if a.cfg.Services.Worker {
+		if err := a.startWorker(ctx); err != nil {
+			return err
+		}
+	}
+
+	var server *http.Server
+	if a.cfg.Services.API {
+		server = &http.Server{Addr: fmt.Sprintf(":%d", a.port), Handler: NewHTTPHandler(a.container)}
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		a.log.Info("shutting down")
+		if server != nil {
+			server.Close()
+		}
+		_ = a.container.Shutdown(context.Background())
+		_ = a.container.Close()
+		close(shutdownDone)
+	}()
+
+	if server == nil {
+		a.log.Info("worker running; waiting for shutdown signal")
+		<-shutdownDone
+		return nil
+	}
+	a.log.Info("server listening", "addr", fmt.Sprintf(":%d", a.port))
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	<-shutdownDone
+	return nil
+}
+
+// seed creates the platform admin + demo tenant/deployment (best-effort demo).
+func (a *App) seed(ctx context.Context) error {
 	iamSvc := a.container.MustResolve("iam").(*iam.Service)
 	servingSvc := a.container.MustResolve("serving").(*serving.Service)
 	if err := seedAdmin(ctx, iamSvc); err != nil {
@@ -66,34 +122,21 @@ func (a *App) Run() error {
 	if err := seedDemo(ctx, iamSvc, servingSvc); err != nil {
 		a.log.Warn("seed demo deployment", "err", err)
 	}
+	return nil
+}
 
-	if b := a.container.MustResolve("bus").(*busBundle); b.Kafka {
-		w := a.container.MustResolve("deployment.worker").(*serving.Worker)
-		if err := w.Run(ctx); err != nil {
-			return fmt.Errorf("deployment worker: %w", err)
-		}
-		a.log.Info("deployment worker started (async deploy)")
+// startWorker subscribes the deployment worker when Kafka is reachable; an
+// unreachable Kafka degrades to a warning (deployments stay PENDING).
+func (a *App) startWorker(ctx context.Context) error {
+	b := a.container.MustResolve("bus").(*busBundle)
+	if !b.Kafka {
+		a.log.Warn("kafka unreachable; deployment worker disabled")
+		return nil
 	}
-
-	engine := NewHTTPHandler(a.container)
-	server := &http.Server{Addr: fmt.Sprintf(":%d", a.port), Handler: engine}
-
-	shutdownDone := make(chan struct{})
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		a.log.Info("shutting down")
-		server.Close()
-		_ = a.container.Shutdown(context.Background())
-		_ = a.container.Close()
-		close(shutdownDone)
-	}()
-
-	a.log.Info("server listening", "addr", fmt.Sprintf(":%d", a.port))
-	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		return err
+	w := a.container.MustResolve("deployment.worker").(*serving.Worker)
+	if err := w.Run(ctx); err != nil {
+		return fmt.Errorf("deployment worker: %w", err)
 	}
-	<-shutdownDone
+	a.log.Info("deployment worker started (async deploy)")
 	return nil
 }

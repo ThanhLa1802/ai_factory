@@ -140,6 +140,50 @@ func TestLoadEnvOverridesFile(t *testing.T) {
 	}
 }
 
+func TestServicesDefaults(t *testing.T) {
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_SERVICES_API", "")
+	t.Setenv("AI_FACTORY_SERVICES_WORKER", "")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Services.API || !cfg.Services.Worker {
+		t.Fatalf("Services = %+v, want both true by default", cfg.Services)
+	}
+}
+
+func TestServicesEnvOverride(t *testing.T) {
+	t.Setenv("AI_FACTORY_JWT_SECRET", "0123456789abcdef")
+	t.Setenv("AI_FACTORY_SERVICES_API", "false")
+	t.Setenv("AI_FACTORY_SERVICES_WORKER", "true")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Services.API || !cfg.Services.Worker {
+		t.Fatalf("Services = %+v, want api=false worker=true", cfg.Services)
+	}
+}
+
+func TestServicesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("services:\n  api: false\n  worker: true\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_SERVICES_API", "")
+	t.Setenv("AI_FACTORY_SERVICES_WORKER", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Services.API || !cfg.Services.Worker {
+		t.Fatalf("Services = %+v, want api=false worker=true from file", cfg.Services)
+	}
+}
+
 func TestLoadMissingFileFails(t *testing.T) {
 	if _, err := Load("does-not-exist.yaml"); err == nil {
 		t.Fatal("Load(missing file) = nil, want error")

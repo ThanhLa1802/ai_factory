@@ -67,34 +67,38 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
-		return infrainf.NewClient(opts.InferenceAddr)
-	}); err != nil {
-		return err
-	}
-	if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
-		ic := cc.MustResolve("inference.client").(*infrainf.Client)
-		s := infrainf.NewBatchScheduler(ic)
-		if opts.MaxConcurrent > 1 {
-			s.SetMaxBatchSize(opts.MaxConcurrent)
+	// API-only: the data-plane client + agentic loop. A worker process never
+	// builds these.
+	if cfg.Services.API {
+		if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
+			return infrainf.NewClient(opts.InferenceAddr)
+		}); err != nil {
+			return err
 		}
-		return s, nil
-	}); err != nil {
-		return err
-	}
-	if err := c.RegisterSingleton("tool.executor", func(*di.Container) (any, error) {
-		return inferencesvc.NewLocalToolExecutor(opts.WorkDir), nil
-	}); err != nil {
-		return err
-	}
-	if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
-		return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
-			cc.MustResolve("tool.executor").(*inferencesvc.LocalToolExecutor)), nil
-	}); err != nil {
-		return err
+		if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
+			ic := cc.MustResolve("inference.client").(*infrainf.Client)
+			s := infrainf.NewBatchScheduler(ic)
+			if opts.MaxConcurrent > 1 {
+				s.SetMaxBatchSize(opts.MaxConcurrent)
+			}
+			return s, nil
+		}); err != nil {
+			return err
+		}
+		if err := c.RegisterSingleton("tool.executor", func(*di.Container) (any, error) {
+			return inferencesvc.NewLocalToolExecutor(opts.WorkDir), nil
+		}); err != nil {
+			return err
+		}
+		if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
+			return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
+				cc.MustResolve("tool.executor").(*inferencesvc.LocalToolExecutor)), nil
+		}); err != nil {
+			return err
+		}
 	}
 
-	// 2. Services
+	// 2. Services (always registered; lazy, so a disabled role never builds them)
 	if err := c.RegisterSingleton("iam", func(cc *di.Container) (any, error) {
 		return iam.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
 	}); err != nil {
@@ -121,27 +125,34 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("inference.manager", func(cc *di.Container) (any, error) {
-		g := cc.MustResolve("db").(*database.DB).Gorm()
-		return inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(g)), nil
-	}); err != nil {
-		return err
+	if cfg.Services.API {
+		if err := c.RegisterSingleton("inference.manager", func(cc *di.Container) (any, error) {
+			g := cc.MustResolve("db").(*database.DB).Gorm()
+			return inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(g)), nil
+		}); err != nil {
+			return err
+		}
 	}
 
 	// 3. Workers (started conditionally by App.Run)
-	if err := c.RegisterSingleton("deployment.worker", func(cc *di.Container) (any, error) {
-		b := cc.MustResolve("bus").(*busBundle)
-		return serving.NewWorker(
-			cc.MustResolve("serving").(*serving.Service),
-			serving.NewWorkerAdapter(opts.InferenceAddr),
-			serving.NewMockComputeProvider(),
-			b.Producer, b.Consumer, slog.Default(),
-		), nil
-	}); err != nil {
-		return err
+	if cfg.Services.Worker {
+		if err := c.RegisterSingleton("deployment.worker", func(cc *di.Container) (any, error) {
+			b := cc.MustResolve("bus").(*busBundle)
+			return serving.NewWorker(
+				cc.MustResolve("serving").(*serving.Service),
+				serving.NewWorkerAdapter(opts.InferenceAddr),
+				serving.NewMockComputeProvider(),
+				b.Producer, b.Consumer, slog.Default(),
+			), nil
+		}); err != nil {
+			return err
+		}
 	}
 
-	// 4. HTTP handlers + routes
+	// 4. HTTP handlers + routes (API nodes only)
+	if !cfg.Services.API {
+		return nil
+	}
 	if err := c.RegisterSingleton("http.handler", func(cc *di.Container) (any, error) {
 		uiDir := resolveUIDir(opts.UIDir)
 		slog.Info("ui directory", "dir", uiDir)

@@ -63,5 +63,26 @@ services:
     # compose `command` is appended as args (pre-scan bug fix).
     command: ["--port", "8080", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/app"]
 
+  # Deployment worker node (Phase 5): same image, headless, runs only when
+  # explicitly requested — it is behind a profile, so `docker compose up` does
+  # NOT start it. Start it with:  docker compose --profile worker up -d worker
+  worker:
+    profiles: ["worker"]
+    build:
+      context: ..
+      dockerfile: go-server/Dockerfile
+    entrypoint: ["/app/worker"]
+    environment:
+      AI_FACTORY_DATABASE_URL: postgres://ai_factory:ai_factory@postgres:5432/ai_factory?sslmode=disable
+      AI_FACTORY_JWT_SECRET: ${AI_FACTORY_JWT_SECRET:-dev-secret-change-me-0123456789}
+      AI_FACTORY_LOG_LEVEL: info
+      AI_FACTORY_KAFKA_ADDR: kafka:9092
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["--inference-addr", "host.docker.internal:50051"]
+
 volumes:
   pgdata:

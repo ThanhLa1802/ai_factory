@@ -19,6 +19,14 @@ type Config struct {
 	RedisAddr            string
 	RateLimitRPM         int
 	RateLimitConcurrency int
+	Services             ServicesConfig
+}
+
+// ServicesConfig selects which roles a process runs. Both default to true, so
+// cmd/server keeps running API + in-process deployment worker.
+type ServicesConfig struct {
+	API    bool
+	Worker bool
 }
 
 // Load reads configuration from an optional YAML file plus AI_FACTORY_* env
@@ -32,6 +40,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("redis_addr", "localhost:6379")
 	v.SetDefault("rate_limit_rpm", 60)
 	v.SetDefault("rate_limit_concurrency", 4)
+	v.SetDefault("services.api", true)
+	v.SetDefault("services.worker", true)
 
 	v.SetEnvPrefix("AI_FACTORY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -65,5 +75,9 @@ func Load(path string) (*Config, error) {
 		RedisAddr:            v.GetString("redis_addr"),
 		RateLimitRPM:         v.GetInt("rate_limit_rpm"),
 		RateLimitConcurrency: v.GetInt("rate_limit_concurrency"),
+		Services: ServicesConfig{
+			API:    v.GetBool("services.api"),
+			Worker: v.GetBool("services.worker"),
+		},
 	}, nil
 }

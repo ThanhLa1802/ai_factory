@@ -6,3 +6,8 @@ kafka_addr: "localhost:9092"
 redis_addr: "localhost:6379"
 rate_limit_rpm: 60
 rate_limit_concurrency: 4
+# Roles this process runs. cmd/server defaults to both; cmd/worker forces
+# api=false. Override with AI_FACTORY_SERVICES_API / AI_FACTORY_SERVICES_WORKER.
+services:
+  api: true
+  worker: true
