@@ -1,17 +1,21 @@
 package api
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/ai-factory/go-server/pkg/response"
+	"github.com/gin-gonic/gin"
+)
 
 // JSON response helpers shared by the inference and control-plane handlers.
+// The envelopes live in internal/infrastructure/response.
 
 func writeJSON(c *gin.Context, status int, v any) {
-	c.JSON(status, v)
+	response.WriteJSON(c, status, v)
 }
 
 func writeAPIError(c *gin.Context, status int, code, msg string) {
-	c.JSON(status, gin.H{"error": gin.H{"code": code, "message": msg}})
+	response.WriteAPIError(c, status, code, msg)
 }
 
 func writeOpenAIError(c *gin.Context, status int, typ, msg string) {
-	c.JSON(status, gin.H{"error": gin.H{"type": typ, "message": msg, "code": status}})
+	response.WriteOpenAIError(c, status, typ, msg)
 }

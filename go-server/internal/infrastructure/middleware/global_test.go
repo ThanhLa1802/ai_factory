@@ -1,4 +1,4 @@
-package app
+package middleware
 
 import (
 	"net/http"
@@ -10,12 +10,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// TestMetricsMiddlewareGin verifies the Gin middleware increments the request
-// counter with the real HTTP status code and passes the response through.
-func TestMetricsMiddlewareGin(t *testing.T) {
+// TestMetricsGin verifies the Gin middleware increments the request counter with
+// the real HTTP status code and passes the response through.
+func TestMetricsGin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
-	e.Use(metricsMiddleware)
+	e.Use(Metrics)
 	e.GET("/some-path", func(c *gin.Context) { c.Status(http.StatusTeapot) })
 
 	rec := httptest.NewRecorder()
@@ -40,7 +40,7 @@ func TestMetricWriterImplementsFlusher(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	e := gin.New()
-	e.Use(metricsMiddleware)
+	e.Use(Metrics)
 	var isFlusher bool
 	e.GET("/sse", func(c *gin.Context) {
 		_, isFlusher = c.Writer.(http.Flusher)
