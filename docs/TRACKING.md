@@ -63,17 +63,19 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
-## 🏗️ Kiến trúc lại theo production blueprint (Phase 2 ✅)
+## 🏗️ Kiến trúc lại theo production blueprint (Phase 3 ✅)
 
-Trạng thái: **Phase 2 xong** (2026-09-12) — data layer GORM + gormigrate + repository. (Phase 1 ✅: composition root + DI + config + logging.)
+Trạng thái: **Phase 3 xong** (2026-09-12) — HTTP layer Gin. (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository.)
 
 - Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
 - Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
 - Plan Phase 2: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](superpowers/plans/2026-09-12-phase2-data-layer.md)
-- Phase 1 đã thêm: `pkg/di` (lazy DI + lifecycle), viper config (`configs/config.yaml`), zap logger bridge slog, composition root `internal/app`; `cmd/server/main.go` teo lại.
-- Phase 2 đã thêm: `internal/infrastructure/database` (GORM + gormigrate + goose-adoption), `internal/migrations` (6 migration Go, giữ nguyên tên bảng/cột), 10 repository interface + impl GORM trong `controlplane`/`session` (Service không còn thấy `*gorm.DB`), `session.NewGormStore`; **xoá `internal/db`** (pgx + goose). Test repo chạy trên Postgres thật (`AI_FACTORY_DATABASE_URL`).
+- Plan Phase 3: [`docs/superpowers/plans/2026-09-12-phase3-http-gin.md`](superpowers/plans/2026-09-12-phase3-http-gin.md)
+- Phase 1 đã thêm: `pkg/di`, viper config, zap logger bridge slog, composition root `internal/app`.
+- Phase 2 đã thêm: `internal/infrastructure/database` (GORM + gormigrate + goose-adoption), `internal/migrations`, 10 repository interface + impl GORM, `session.NewGormStore`; xoá `internal/db` (pgx + goose).
+- Phase 3 đã thêm: Gin v1.11 thay `net/http` + `ServeMux` — handler nhận `*gin.Context`, auth middleware thành `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` chạy trên `c.Writer`/`gin.ResponseWriter`.
 - Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
-- Lộ trình: P1 nền tảng (composition root + DI) → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.
+- Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.
 
 ---
 
@@ -159,6 +161,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-12 | Phase 3 kiến trúc lại ✅ — HTTP layer: Gin v1.11 thay `net/http` + `ServeMux`. Handler `*gin.Context`, auth middleware `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` trên `gin.ResponseWriter` (vẫn `http.Flusher`). Xoá `http.ServeMux` khỏi production code. Plan `docs/superpowers/plans/2026-09-12-phase3-http-gin.md`. |
 | 2026-09-12 | Phase 2 kiến trúc lại ✅ — data layer: GORM v1.31 + gormigrate v2 thay pgx + goose. Thêm `internal/infrastructure/database` (Open/Migrate + goose-adoption), `internal/migrations` (6 migration Go), 10 repository interface + impl GORM (`controlplane`/`session`), `session.NewGormStore`; xoá `internal/db`. `controlplane.Service` giờ chỉ thấy repository interface. Test repo dùng Postgres thật. Plan `docs/superpowers/plans/2026-09-12-phase2-data-layer.md`. |
 | 2026-09-12 | Phase 1 kiến trúc lại ✅ — composition root + DI + config + logging: thêm `pkg/di` (lazy DI, lifecycle, circular detection), viper (`configs/config.yaml` + env override), zap logger bridge slog, `internal/app` (registry providers + app lifecycle + seeder); `cmd/server/main.go` còn ~55 dòng. Không đổi hành vi endpoint. Plan `docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`. |
 | 2026-09-11 | Thêm spec + plan Phase 1 kiến trúc lại theo production blueprint (modular monolith + DI + composition root; GORM/Gin/viper/zap về sau); tạm hoãn sampling loop. Spec docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md. |

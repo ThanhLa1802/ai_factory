@@ -117,15 +117,17 @@ config.Load(path) → SetupLogger(zap JSON bridge slog)
   → app.Run: database.Open(GORM) + Migrate(gormigrate) → controlplane (repos) → auth
     → seedAdmin → seedDemo → Kafka event bus (nếu down: MemoryEventBus + warn, worker tắt)
     → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (GORM store)
-    → api.Handler → ServeMux (routes + /metrics) → middleware chain → ListenAndServe
+    → api.Handler → gin.Engine (routes + /metrics) → middleware chain → ListenAndServe
     → SIGINT/SIGTERM → server.Close() → container.Shutdown/Close (reverse order)
 ```
 
 **Dependency wiring** tập trung ở composition root `internal/app` (`registry.go` đăng ký provider, `app.go` sở hữu lifecycle); dependency được build lazy bởi `pkg/di` (Phase 1 ✅).
 
-### 2.1 HTTP / API layer — `internal/api/`
+### 2.1 HTTP / API layer — `internal/api/` (Gin v1.11)
 
-**Inference + session + UI** (`handler.go:61-73`, `Handler.RegisterRoutes`):
+Handler nhận `*gin.Context`; route + auth middleware `gin.HandlerFunc`; global chain recovery → CORS → trace → logging → metrics (`internal/app`). SSE dùng `gin.ResponseWriter` (vẫn `http.Flusher`).
+
+**Inference + session + UI** (`handler.go`, `Handler.RegisterRoutes`):
 
 | Route | Method | Auth | Chức năng |
 |---|---|---|---|
@@ -568,7 +570,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 
 | Layer | Tech |
 |---|---|
-| Go server | Go 1.25.7, `net/http` + `http.ServeMux`, `google.golang.org/grpc`, `google/uuid` |
+| Go server | Go 1.25.7, `gin-gonic/gin` v1.11, `google.golang.org/grpc`, `google/uuid` |
 | Persistence | PostgreSQL qua `gorm.io/gorm` + `gorm.io/driver/postgres`, migrate bằng `go-gormigrate/gormigrate/v2` |
 | Rate limit | Redis (`redis/go-redis/v9`) |
 | Events | Kafka (`segmentio/kafka-go`) hoặc in-memory fallback |
