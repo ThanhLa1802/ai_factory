@@ -7,15 +7,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 )
 
 // SQL generation is validated through the integration test below (gated by env)
 // and the E2E in Task 9. TestNewService is the fail-first gate for the stub.
 func TestNewService(t *testing.T) {
-	svc := NewService(nil)
+	svc := NewService(Repositories{})
 	if svc == nil {
-		t.Fatal("NewService(nil) returned nil")
+		t.Fatal("NewService(Repositories{}) returned nil")
 	}
 }
 
@@ -32,17 +32,17 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	// Register the pool close FIRST: t.Cleanup runs LIFO, so the delete
 	// cleanups below execute before the pool is closed.
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	svc := NewService(d.Pool())
+	svc := NewServiceFromGorm(d.Gorm())
 
 	tenant, err := svc.CreateTenant(ctx, "it-"+uuid.NewString()[:8])
 	if err != nil {
@@ -73,13 +73,13 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 	// Clean up the created rows by exact id. Registered parent-first because
 	// t.Cleanup runs LIFO: api_key → user (cascades memberships) → tenant.
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
 	})
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
+		_ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID)
 	})
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, key.ID)
+		_ = d.Gorm().Exec( `DELETE FROM api_keys WHERE id = $1`, key.ID)
 	})
 }
 
@@ -90,21 +90,21 @@ func TestListDeleteAPIKeyIntegration(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	svc := NewService(d.Pool())
+	svc := NewServiceFromGorm(d.Gorm())
 
 	tenant, err := svc.CreateTenant(ctx, "keys-"+uuid.NewString()[:8])
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 
 	// keyHash chỉ cần là string bất kỳ — List/Delete không validate hash (tránh import auth → cycle)
 	k, err := svc.CreateAPIKey(ctx, tenant.ID, "test-key", "testhash-"+uuid.NewString(), nil)
@@ -125,7 +125,7 @@ func TestListDeleteAPIKeyIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTenant other: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, other.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
 	if err := svc.DeleteAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
 		t.Errorf("delete with wrong tenant = %v, want ErrNotFound", err)
 	}

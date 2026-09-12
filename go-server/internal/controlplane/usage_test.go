@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/google/uuid"
 )
 
@@ -18,21 +18,21 @@ func TestRecordAndQueryUsage(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	svc := NewService(d.Pool())
+	svc := NewServiceFromGorm(d.Gorm())
 	tenant, err := svc.CreateTenant(ctx, "usage-"+uuid.NewString()[:8])
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 
 	now := time.Now().UTC()
 	if err := svc.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
@@ -81,7 +81,7 @@ func TestRecordAndQueryUsage(t *testing.T) {
 
 	// Cross-tenant isolation: a different tenant sees nothing.
 	other, _ := svc.CreateTenant(ctx, "usage-other-"+uuid.NewString()[:8])
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, other.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
 	empty, err := svc.UsageSummary(ctx, other.ID, from, to)
 	if err != nil {
 		t.Fatalf("empty summary: %v", err)

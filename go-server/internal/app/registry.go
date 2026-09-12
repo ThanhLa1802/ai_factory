@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"log/slog"
 	"os"
 	"time"
@@ -11,8 +10,8 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/db"
 	"github.com/ai-factory/go-server/internal/events"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/runtime"
@@ -39,12 +38,11 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("db", func(*di.Container) (any, error) {
-		ctx := context.Background()
-		d, err := db.Connect(ctx, cfg.DatabaseURL)
+		d, err := database.Open(cfg.DatabaseURL)
 		if err != nil {
 			return nil, err
 		}
-		if err := d.Migrate(ctx); err != nil {
+		if err := database.Migrate(d.Gorm()); err != nil {
 			return nil, err
 		}
 		return d, nil
@@ -100,7 +98,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 
 	// 2. Services
 	if err := c.RegisterSingleton("controlplane", func(cc *di.Container) (any, error) {
-		return controlplane.NewService(cc.MustResolve("db").(*db.DB).Pool()), nil
+		return controlplane.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
 	}); err != nil {
 		return err
 	}
@@ -111,8 +109,8 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("session.manager", func(cc *di.Container) (any, error) {
-		pool := cc.MustResolve("db").(*db.DB).Pool()
-		return session.NewManagerWithStore(session.NewPGStore(pool)), nil
+		g := cc.MustResolve("db").(*database.DB).Gorm()
+		return session.NewManagerWithStore(session.NewGormStore(g)), nil
 	}); err != nil {
 		return err
 	}

@@ -5,6 +5,9 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -19,8 +22,14 @@ type DB struct {
 
 // Open connects to Postgres, configures GORM, and verifies the connection.
 func Open(dsn string) (*DB, error) {
+	gormLogger := logger.New(log.New(os.Stdout, "", log.LstdFlags), logger.Config{
+		SlowThreshold:             time.Second,
+		LogLevel:                  logger.Warn,
+		IgnoreRecordNotFoundError: true,
+		Colorful:                  false,
+	})
 	gdb, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger: gormLogger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open gorm: %w", err)

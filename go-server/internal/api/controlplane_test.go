@@ -15,7 +15,7 @@ import (
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/runtime"
@@ -30,18 +30,18 @@ func TestLoginE2E(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	// Register the pool close FIRST: t.Cleanup runs LIFO, so the delete
 	// cleanups below execute before the pool is closed.
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
@@ -57,7 +57,7 @@ func TestLoginE2E(t *testing.T) {
 		t.Fatalf("create tenant: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
 	})
 	hash, _ := auth.HashPassword("admin-pass")
 	user, err := cp.CreateUser(ctx, username, email, hash, auth.RoleTenantAdmin, tenant.ID)
@@ -65,7 +65,7 @@ func TestLoginE2E(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID)
+		_ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID)
 	})
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
@@ -97,15 +97,15 @@ func TestLoginE2E(t *testing.T) {
 func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t) // helper below
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
 	tenant, _ := cp.CreateTenant(ctx, "pub-ev-"+uuid.NewString()[:8])
 	hash, _ := auth.HashPassword("admin-pass")
 	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := events.NewMemoryEventBus()
 	var published []events.Event
@@ -160,15 +160,15 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
 	tenant, _ := cp.CreateTenant(ctx, "idem-api-"+uuid.NewString()[:8])
 	hash, _ := auth.HashPassword("admin-pass")
 	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RolePlatformAdmin, tenant.ID)
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := events.NewMemoryEventBus()
 	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
@@ -222,19 +222,18 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	}
 }
 
-func dbConnOrSkip(t *testing.T) *db.DB {
+func dbConnOrSkip(t *testing.T) *database.DB {
 	t.Helper()
 	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
 	}
-	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return d
@@ -267,7 +266,7 @@ func loginHelper(t *testing.T, mux *http.ServeMux, user, pass string) string {
 func TestAsyncDeployE2E(t *testing.T) {
 	d := dbConnOrSkip(t)
 	ctx := context.Background()
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
@@ -276,7 +275,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	hash, _ := auth.HashPassword("admin-pass")
 	// NOTE: catalog writes (models/templates) are platform-admin only in the M1
 	// RBAC, so this E2E boots a PLATFORM_ADMIN (deviation from brief, which used
@@ -285,7 +284,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := events.NewMemoryEventBus()
 	worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
@@ -364,15 +363,15 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
@@ -381,13 +380,13 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	hash, _ := auth.HashPassword("admin-pass")
 	user, err := cp.CreateUser(ctx, "kuser-"+suffix, "k@e2e-"+suffix+".io", hash, auth.RoleTenantAdmin, tenant.ID)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
 	mux := http.NewServeMux()
@@ -464,16 +463,15 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	if dsn == "" {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping E2E")
 	}
-	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 

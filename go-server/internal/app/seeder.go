@@ -9,7 +9,6 @@ import (
 
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/jackc/pgx/v5"
 )
 
 // seedAdmin creates the default platform admin + a demo tenant if the admin is
@@ -27,7 +26,7 @@ func seedAdmin(ctx context.Context, cp *controlplane.Service) error {
 	switch {
 	case err == nil:
 		return nil // admin already seeded — idempotent
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, controlplane.ErrNotFound):
 		// admin missing — fall through and seed below
 	default:
 		return fmt.Errorf("look up admin for seed: %w", err)

@@ -18,15 +18,15 @@ import (
 func TestUsageEndpointE2E(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
-	cp := controlplane.NewService(d.Pool())
+	cp := controlplane.NewServiceFromGorm(d.Gorm())
 	secret := []byte("0123456789abcdef")
 	authSvc := auth.NewService(cp, secret, time.Hour)
 
 	tenant, _ := cp.CreateTenant(ctx, "usage-e2e-"+uuid.NewString()[:8])
 	hash, _ := auth.HashPassword("admin-pass")
 	user, _ := cp.CreateUser(ctx, "u-"+uuid.NewString()[:8], "u@io", hash, auth.RoleTenantAdmin, tenant.ID)
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM users WHERE id = $1`, user.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	if err := cp.RecordUsage(ctx, tenant.ID, "qwen-3b", 10, 5); err != nil {
 		t.Fatalf("record: %v", err)

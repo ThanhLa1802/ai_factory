@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 )
 
 // TestPGStoreRoundTrip exercises UpsertSession/AppendMessage/LoadSession against
@@ -18,27 +18,27 @@ func TestPGStoreRoundTrip(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store := NewPGStore(d.Pool())
+	store := NewGormStore(d.Gorm())
 
 	// FK target tenant (fixed id, idempotent).
 	const tenantID = "00000000-0000-0000-0000-000000000001"
-	if _, err := d.Pool().Exec(ctx,
+	if err := d.Gorm().Exec(
 		`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-		tenantID, "session-store-test"); err != nil {
+		tenantID, "session-store-test").Error; err != nil {
 		t.Fatalf("insert tenant: %v", err)
 	}
 
 	// Clean slate so re-runs don't hit the (session_id, seq) unique constraint.
 	const sessionID = "test-store-session"
-	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+	if err := d.Gorm().Exec( `DELETE FROM sessions WHERE id = $1`, sessionID).Error; err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
@@ -94,15 +94,15 @@ func TestSessionForbiddenCrossTenantGetOrCreate(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store := NewPGStore(d.Pool())
+	store := NewGormStore(d.Gorm())
 
 	const (
 		tenantA   = "00000000-0000-0000-0000-000000000011"
@@ -110,14 +110,14 @@ func TestSessionForbiddenCrossTenantGetOrCreate(t *testing.T) {
 		sessionID = "test-forbidden-session"
 	)
 	for i, id := range []string{tenantA, tenantB} {
-		if _, err := d.Pool().Exec(ctx,
+		if err := d.Gorm().Exec(
 			`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-			id, fmt.Sprintf("session-forbidden-test-%d", i)); err != nil {
+			id, fmt.Sprintf("session-forbidden-test-%d", i)).Error; err != nil {
 			t.Fatalf("insert tenant %s: %v", id, err)
 		}
 	}
 	// Clean slate so re-runs don't hit the (session_id, seq) unique constraint.
-	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+	if err := d.Gorm().Exec( `DELETE FROM sessions WHERE id = $1`, sessionID).Error; err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
@@ -137,8 +137,8 @@ func TestSessionForbiddenCrossTenantGetOrCreate(t *testing.T) {
 
 	// B's attempt must not have written any messages into A's session.
 	var n int
-	if err := d.Pool().QueryRow(ctx,
-		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n); err != nil {
+	if err := d.Gorm().Raw(
+		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n).Error; err != nil {
 		t.Fatalf("count messages: %v", err)
 	}
 	if n != 1 {
@@ -155,15 +155,15 @@ func TestSessionForbiddenUpsertZeroRow(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store := NewPGStore(d.Pool())
+	store := NewGormStore(d.Gorm())
 
 	const (
 		tenantA   = "00000000-0000-0000-0000-000000000013"
@@ -171,13 +171,13 @@ func TestSessionForbiddenUpsertZeroRow(t *testing.T) {
 		sessionID = "test-forbidden-upsert"
 	)
 	for i, id := range []string{tenantA, tenantB} {
-		if _, err := d.Pool().Exec(ctx,
+		if err := d.Gorm().Exec(
 			`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-			id, fmt.Sprintf("session-forbidden-upsert-%d", i)); err != nil {
+			id, fmt.Sprintf("session-forbidden-upsert-%d", i)).Error; err != nil {
 			t.Fatalf("insert tenant %s: %v", id, err)
 		}
 	}
-	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+	if err := d.Gorm().Exec( `DELETE FROM sessions WHERE id = $1`, sessionID).Error; err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
@@ -198,8 +198,8 @@ func TestSessionForbiddenUpsertZeroRow(t *testing.T) {
 	}
 
 	var n int
-	if err := d.Pool().QueryRow(ctx,
-		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n); err != nil {
+	if err := d.Gorm().Raw(
+		`SELECT COUNT(*) FROM messages WHERE session_id = $1`, sessionID).Scan(&n).Error; err != nil {
 		t.Fatalf("count messages: %v", err)
 	}
 	if n != 1 {
@@ -215,26 +215,26 @@ func TestStoreListRenameDeleteTitle(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	store := NewPGStore(d.Pool())
+	store := NewGormStore(d.Gorm())
 
 	const tenantID = "00000000-0000-0000-0000-000000000001"
-	if _, err := d.Pool().Exec(ctx,
+	if err := d.Gorm().Exec(
 		`INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-		tenantID, "session-store-test"); err != nil {
+		tenantID, "session-store-test").Error; err != nil {
 		t.Fatalf("insert tenant: %v", err)
 	}
 	const sessionID = "test-store-list"
 
 	// Clean slate.
-	if _, err := d.Pool().Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID); err != nil {
+	if err := d.Gorm().Exec( `DELETE FROM sessions WHERE id = $1`, sessionID).Error; err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 

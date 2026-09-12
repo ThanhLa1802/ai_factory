@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/google/uuid"
 )
 
@@ -18,21 +18,21 @@ func TestIdempotencyKeyIntegration(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	s := NewService(d.Pool())
+	s := NewServiceFromGorm(d.Gorm())
 
 	tenant, err := s.CreateTenant(ctx, "idem-"+uuid.NewString()[:8])
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 
 	// Unknown key → ErrNotFound.
 	if _, err := s.ResolveIdempotencyKey(ctx, tenant.ID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
@@ -57,7 +57,7 @@ func TestIdempotencyKeyIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create other tenant: %v", err)
 	}
-	t.Cleanup(func() { _, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, other.ID) })
+	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
 	if _, err := s.ResolveIdempotencyKey(ctx, other.ID, "k1", "deployment"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("resolve cross-tenant = %v, want ErrNotFound", err)
 	}

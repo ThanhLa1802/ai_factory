@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/ai-factory/go-server/internal/db"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/google/uuid"
 )
 
@@ -18,15 +18,15 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	s := NewService(d.Pool())
+	s := NewServiceFromGorm(d.Gorm())
 
 	// Use an ephemeral tenant so re-runs never collide on FK constraints.
 	tenant, err := s.CreateTenant(ctx, "wl-tenant-"+uuid.NewString()[:8])
@@ -95,9 +95,9 @@ func TestWorkloadRefAndEndpointIntegration(t *testing.T) {
 	// endpoints, then the model/template parents are free to delete (deployments
 	// reference their versions with NO ACTION, so parents must go second).
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM models WHERE id = $1`, model.ID)
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM models WHERE id = $1`, model.ID)
+		_ = d.Gorm().Exec( `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
 	})
 }
 
@@ -109,15 +109,15 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
 	}
 	ctx := context.Background()
-	d, err := db.Connect(ctx, dsn)
+	d, err := database.Open(dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(func() { d.Pool().Close() })
-	if err := d.Migrate(ctx); err != nil {
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	s := NewService(d.Pool())
+	s := NewServiceFromGorm(d.Gorm())
 
 	tenant, err := s.CreateTenant(ctx, "rd-tenant-"+uuid.NewString()[:8])
 	if err != nil {
@@ -178,8 +178,8 @@ func TestResolveDeploymentIntegration(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenant.ID)
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM models WHERE id = $1`, model.ID)
-		_, _ = d.Pool().Exec(ctx, `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
+		_ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID)
+		_ = d.Gorm().Exec( `DELETE FROM models WHERE id = $1`, model.ID)
+		_ = d.Gorm().Exec( `DELETE FROM serving_templates WHERE id = $1`, tpl.ID)
 	})
 }
