@@ -254,7 +254,7 @@ Mỗi phase **giữ hệ thống chạy được** và test xanh. Chỉ **Phase 
 | **2 — Data layer** | GORM models + repository/interface; convert goose → gormigrate. Handler tạm gọi repo qua interface. | test hiện có + smoke CRUD |
 | **3 — HTTP layer** | `net/http` → Gin: handler, middleware, SSE `c.Stream`. | toàn bộ endpoint + SSE |
 | **4 — Modularize** | Tách `controlplane` → `services/{iam,serving,usage}`; `inference` giữ chat/agent/session. | tests + smoke toàn hệ |
-| **5 — Multi-binary** | `cmd/{worker,migrate,seed}`; cờ `Services.*.Enabled`; worker không in-process. | deploy worker chạy độc lập |
+| **5 — Multi-binary ✅** | `cmd/{worker,migrate,seed}`; cờ `Services.*.Enabled`; worker không in-process. | deploy worker chạy độc lập |
 | **6 — Reliability** | outbox, cache-aside, distributed lock, usage aggregate flush. | event không mất khi commit; cache hit; lock one-shot |
 
 > **Ưu tiên:** Phase 1 trước (giá trị cao, rủi ro thấp, không đụng framework). Roadmap self-written inference (sampling loop Tuần 5–6) **tạm hoãn** trong lúc làm đợt này — cần xác nhận.
@@ -301,4 +301,4 @@ Mỗi phase **giữ hệ thống chạy được** và test xanh. Chỉ **Phase 
 1. ~~Ưu tiên đợt kiến trúc này so với roadmap self-written inference (Tuần 5–6)?~~ **Đã chốt (D8): tạm hoãn sampling loop, ưu tiên tái kiến trúc.**
 2. DB cho unit test repository: `sqlite` pure-Go (nhanh, khác dialect) hay testcontainers Postgres (chậm, đúng dialect)? — quyết trước Phase 2.
 3. Có cần giữ chạy song song `net/http` cũ trong lúc migrate (strangler pattern) hay swap trực tiếp rồi sửa test? — quyết trước Phase 3.
-4. `cmd/worker` có mở health endpoint tối thiểu riêng không, hay chỉ log? — quyết trước Phase 5.
+4. ~~`cmd/worker` có mở health endpoint tối thiểu riêng không, hay chỉ log?~~ **Đã chốt (Phase 5, 2026-09-12): worker headless — chỉ log + graceful shutdown, không mở HTTP.**

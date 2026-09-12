@@ -63,22 +63,24 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
-## 🏗️ Kiến trúc lại theo production blueprint (Phase 4 ✅)
+## 🏗️ Kiến trúc lại theo production blueprint (Phase 5 ✅)
 
-Trạng thái: **Phase 4 xong** (2026-09-12) — tách `services/*` + dời infrastructure. (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository; Phase 3 ✅ HTTP layer Gin.)
+Trạng thái: **Phase 5 xong** (2026-09-12) — multi-binary, worker chạy độc lập. (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository; Phase 3 ✅ HTTP layer Gin; Phase 4 ✅ tách `services/*` + dời infrastructure.)
 
 - Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
 - Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
 - Plan Phase 2: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](superpowers/plans/2026-09-12-phase2-data-layer.md)
 - Plan Phase 3: [`docs/superpowers/plans/2026-09-12-phase3-http-gin.md`](superpowers/plans/2026-09-12-phase3-http-gin.md)
 - Plan Phase 4: [`docs/superpowers/plans/2026-09-12-phase4-modularize.md`](superpowers/plans/2026-09-12-phase4-modularize.md)
+- Plan Phase 5: [`docs/superpowers/plans/2026-09-12-phase5-multi-binary.md`](superpowers/plans/2026-09-12-phase5-multi-binary.md)
 - Phase 1 đã thêm: `pkg/di`, viper config, zap logger bridge slog, composition root `internal/app`.
 - Phase 2 đã thêm: `internal/infrastructure/database` (GORM + gormigrate + goose-adoption), `internal/migrations`, 10 repository interface + impl GORM, `session.NewGormStore`; xoá `internal/db` (pgx + goose).
 - Phase 3 đã thêm: Gin v1.11 thay `net/http` + `ServeMux` — handler nhận `*gin.Context`, auth middleware thành `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` chạy trên `c.Writer`/`gin.ResponseWriter`.
 - Phase 4 đã thêm: `internal/services/{iam,serving,usage,inference}` (tách god-package `controlplane`; agent/session/api vào inference) + `internal/infrastructure/{observability,circuitbreaker,retry,message,cache,inference,middleware}` + `pkg/response`; auth thành port trung lập `middleware.Authenticator` (iam implement); phụ thuộc chéo service chỉ nối ở `internal/app`; xoá các package phẳng cũ.
-- Chưa làm (Phase 4 đã hoãn): layer subpackage `handlers/services/repositories/models/dto` trong mỗi service; `cmd/{worker,migrate,seed}` (Phase 5); outbox/cache-aside (Phase 6).
+- Phase 5 đã thêm: 4 binary `cmd/{server,worker,migrate,seed}` + role flags `services.api`/`services.worker` (env `AI_FACTORY_SERVICES_API`/`AI_FACTORY_SERVICES_WORKER`, default true); `RegisterAll` gate provider API-only (inference client/scheduler/loop, HTTP handlers) và worker provider; `App.Run` seed/serve/worker theo role; `app.RunMigrate`/`app.RunSeed`; `cmd/worker` chạy headless (không HTTP); Docker build cả 4 binary + compose service `worker` sau profile (không tự bật).
+- Chưa làm (đã hoãn): layer subpackage `handlers/services/repositories/models/dto` trong mỗi service; outbox/cache-aside (Phase 6).
 - Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
-- Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` ✅ → P5 multi-binary → P6 outbox/cache-aside.
+- Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary ✅ → P6 outbox/cache-aside.
 
 ---
 
@@ -164,6 +166,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-12 | Phase 5 kiến trúc lại ✅ — multi-binary: 4 binary `cmd/{server,worker,migrate,seed}` + role flags `services.api`/`services.worker` (env `AI_FACTORY_SERVICES_API`/`AI_FACTORY_SERVICES_WORKER`, default true). `RegisterAll` gate provider API-only + worker provider; `App.Run` seed/serve/worker theo role; `app.RunMigrate`/`app.RunSeed`; `cmd/worker` chạy headless không HTTP (log + graceful shutdown). Docker build cả 4 binary, compose service `worker` sau `profiles: [worker]` (không tự bật). Test role-gating + `go build/vet/test` xanh. Plan `docs/superpowers/plans/2026-09-12-phase5-multi-binary.md`. |
 | 2026-09-12 | Phase 4 kiến trúc lại ✅ — modularize: tách `internal/services/{iam,serving,usage,inference}` (controlplane → iam/serving/usage; agent+session+api → inference), dời infra sang `internal/infrastructure/{observability,circuitbreaker,retry,message,cache,inference,middleware}`, thêm `pkg/response`; auth thành port trung lập `middleware.Authenticator` (iam implement); phụ thuộc chéo service chỉ nối ở `internal/app`; xoá `auth/controlplane/api/agent/session/runtime/events/ratelimit/observability/circuitbreaker/retry/inference`. Boot smoke + toàn bộ test xanh. Plan `docs/superpowers/plans/2026-09-12-phase4-modularize.md`. |
 | 2026-09-12 | Phase 3 kiến trúc lại ✅ — HTTP layer: Gin v1.11 thay `net/http` + `ServeMux`. Handler `*gin.Context`, auth middleware `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` trên `gin.ResponseWriter` (vẫn `http.Flusher`). Xoá `http.ServeMux` khỏi production code. Plan `docs/superpowers/plans/2026-09-12-phase3-http-gin.md`. |
 | 2026-09-12 | Phase 2 kiến trúc lại ✅ — data layer: GORM v1.31 + gormigrate v2 thay pgx + goose. Thêm `internal/infrastructure/database` (Open/Migrate + goose-adoption), `internal/migrations` (6 migration Go), 10 repository interface + impl GORM (`controlplane`/`session`), `session.NewGormStore`; xoá `internal/db`. `controlplane.Service` giờ chỉ thấy repository interface. Test repo dùng Postgres thật. Plan `docs/superpowers/plans/2026-09-12-phase2-data-layer.md`. |
