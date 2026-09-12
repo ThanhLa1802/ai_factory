@@ -6,8 +6,7 @@ import (
 	"io"
 	"log/slog"
 
-	pb "github.com/ai-factory/go-server/internal/inference/pb"
-	"github.com/ai-factory/go-server/internal/session"
+	pb "github.com/ai-factory/go-server/internal/infrastructure/inference/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -50,10 +49,10 @@ func (c *Client) Close() error {
 type GenerateRequest struct {
 	RequestID      string
 	SessionID      string
-	Messages       []session.Message
+	Messages       []Message
 	SystemPrompt   string
 	SamplingParams SamplingParams
-	Tools          []session.ToolDefinition
+	Tools          []ToolDefinition
 }
 
 // SamplingParams controls token generation.

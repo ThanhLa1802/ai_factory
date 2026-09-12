@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
@@ -121,9 +121,9 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 			// Build tool definitions
 			toolDefs := l.tools.ListTools()
-			sessToolDefs := make([]session.ToolDefinition, len(toolDefs))
+			sessToolDefs := make([]inference.ToolDefinition, len(toolDefs))
 			for i, td := range toolDefs {
-				sessToolDefs[i] = session.ToolDefinition{
+				sessToolDefs[i] = inference.ToolDefinition{
 					Name:        td.Name,
 					Description: td.Description,
 					Parameters:  td.Parameters,
@@ -134,7 +134,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			req := inference.GenerateRequest{
 				RequestID:      uuid.New().String(),
 				SessionID:      sess.GetID(),
-				Messages:       allMessages,
+				Messages:       toInferenceMessages(allMessages),
 				SystemPrompt:   sess.SystemPrompt,
 				SamplingParams: params,
 				Tools:          sessToolDefs,
@@ -267,4 +267,27 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 	}()
 
 	return events
+}
+
+// toInferenceMessages maps session messages onto the inference client's wire
+// types. infrastructure/inference owns those types so it never imports a
+// service package (design §4.2 / D-P4-4).
+func toInferenceMessages(msgs []session.Message) []inference.Message {
+	out := make([]inference.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = inference.Message{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+			ToolResult: m.ToolResult,
+			IsError:    m.IsError,
+		}
+		if len(m.ToolCalls) > 0 {
+			out[i].ToolCalls = make([]inference.ToolCall, len(m.ToolCalls))
+			for j, tc := range m.ToolCalls {
+				out[i].ToolCalls[j] = inference.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+			}
+		}
+	}
+	return out
 }

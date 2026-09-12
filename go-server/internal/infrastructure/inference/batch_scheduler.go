@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/ai-factory/go-server/internal/inference/pb"
+	pb "github.com/ai-factory/go-server/internal/infrastructure/inference/pb"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/google/uuid"
 )

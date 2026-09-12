@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package inference;
 
-option go_package = "go-server/internal/inference/pb";
+option go_package = "go-server/internal/infrastructure/inference/pb";
 
 // InferenceService — Python worker exposes this.
 // Go server calls Generate() to start inference, receives a stream of tokens.
