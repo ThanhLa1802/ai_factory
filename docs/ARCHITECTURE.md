@@ -93,7 +93,7 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `--max-concurrent` | `1` | Batch size (chỉ override khi `>1`) |
 | `--ui-dir` | auto (`ui/` hoặc `../ui`) | Thư mục UI tĩnh |
 
-**Cấu hình (env, `internal/config/config.go`):**
+**Cấu hình (viper: `configs/config.yaml`, env `AI_FACTORY_*` override — `internal/config/config.go`):**
 
 | Biến | Mặc định | Ý nghĩa |
 |---|---|---|
@@ -108,19 +108,20 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `AI_FACTORY_ADMIN_USER/PASSWORD` | `admin` / `admin1234` | Tài khoản admin seed |
 | `AI_FACTORY_DEMO_TENANT` | `acme` | Tenant demo seed |
 
-**Thứ tự khởi động** (`main.go`):
+**Thứ tự khởi động** (`cmd/server/main.go` → `internal/app`):
 
 ```
-config.Load → SetupLogger(slog JSON) → db.Connect(pgx) + Migrate(goose)
-  → controlplane.NewService → auth.NewService → seedAdmin → seedDemo
-  → redis limiter → Kafka event bus (nếu down: MemoryEventBus + warn, worker tắt)
-  → ControlPlaneHandler → gRPC inference client
-  → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (PG store)
-  → api.Handler → ServeMux (routes + /metrics) → middleware chain → ListenAndServe
-  → SIGINT/SIGTERM → server.Close()
+config.Load(path) → SetupLogger(zap JSON bridge slog)
+  → di.NewContainer + app.RegisterAll (đăng ký provider)
+  → app.NewAppFromContainer (force-resolve, fail-fast)
+  → app.Run: db.Connect(pgx) + Migrate(goose) → controlplane → auth
+    → seedAdmin → seedDemo → Kafka event bus (nếu down: MemoryEventBus + warn, worker tắt)
+    → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (PG store)
+    → api.Handler → ServeMux (routes + /metrics) → middleware chain → ListenAndServe
+    → SIGINT/SIGTERM → server.Close() → container.Shutdown/Close (reverse order)
 ```
 
-**Dependency wiring** tập trung ở `main.go` (chưa có DI container — đây là điểm Phase 1 tái kiến trúc sẽ dời sang `internal/app`).
+**Dependency wiring** tập trung ở composition root `internal/app` (`registry.go` đăng ký provider, `app.go` sở hữu lifecycle); dependency được build lazy bởi `pkg/di` (Phase 1 ✅).
 
 ### 2.1 HTTP / API layer — `internal/api/`
 
