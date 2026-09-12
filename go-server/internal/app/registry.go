@@ -67,13 +67,13 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("infrainf.client", func(*di.Container) (any, error) {
+	if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
 		return infrainf.NewClient(opts.InferenceAddr)
 	}); err != nil {
 		return err
 	}
 	if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
-		ic := cc.MustResolve("infrainf.client").(*infrainf.Client)
+		ic := cc.MustResolve("inference.client").(*infrainf.Client)
 		s := infrainf.NewBatchScheduler(ic)
 		if opts.MaxConcurrent > 1 {
 			s.SetMaxBatchSize(opts.MaxConcurrent)
@@ -87,7 +87,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("inferencesvc.loop", func(cc *di.Container) (any, error) {
+	if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
 		return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
 			cc.MustResolve("tool.executor").(*inferencesvc.LocalToolExecutor)), nil
 	}); err != nil {
@@ -121,7 +121,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("inferencesvc.manager", func(cc *di.Container) (any, error) {
+	if err := c.RegisterSingleton("inference.manager", func(cc *di.Container) (any, error) {
 		g := cc.MustResolve("db").(*database.DB).Gorm()
 		return inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(g)), nil
 	}); err != nil {
@@ -146,8 +146,8 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		uiDir := resolveUIDir(opts.UIDir)
 		slog.Info("ui directory", "dir", uiDir)
 		return inferencesvc.NewHandler(
-			cc.MustResolve("inferencesvc.manager").(*inferencesvc.Manager),
-			cc.MustResolve("inferencesvc.loop").(*inferencesvc.Loop),
+			cc.MustResolve("inference.manager").(*inferencesvc.Manager),
+			cc.MustResolve("inference.loop").(*inferencesvc.Loop),
 			uiDir,
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
 			deploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},

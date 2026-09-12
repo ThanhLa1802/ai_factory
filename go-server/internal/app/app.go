@@ -30,8 +30,8 @@ type App struct {
 // fails fast at boot rather than at first request.
 func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, error) {
 	for _, name := range []string{
-		"db", "iam", "iam.auth", "iam.authenticator", "serving", "usage", "bus", "session.manager",
-		"agent.loop", "http.handler", "http.iam", "http.serving", "http.usage",
+		"db", "iam", "iam.auth", "iam.authenticator", "serving", "usage", "bus", "inference.manager",
+		"inference.loop", "http.handler", "http.iam", "http.serving", "http.usage",
 	} {
 		if _, err := c.Resolve(name); err != nil {
 			return nil, err
