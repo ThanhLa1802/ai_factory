@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )

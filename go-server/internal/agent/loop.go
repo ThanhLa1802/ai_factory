@@ -8,7 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/ai-factory/go-server/internal/inference"
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )

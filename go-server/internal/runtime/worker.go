@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/circuitbreaker"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/events"
-	"github.com/ai-factory/go-server/internal/retry"
+	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
+	"github.com/ai-factory/go-server/internal/infrastructure/retry"
 )
 
 // DeploymentStore is the slice of the control plane the worker needs. It is

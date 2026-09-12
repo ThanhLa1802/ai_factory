@@ -9,7 +9,7 @@ import (
 	"time"
 
 	pb "github.com/ai-factory/go-server/internal/inference/pb"
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/google/uuid"
 )
 

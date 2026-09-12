@@ -13,7 +13,7 @@ import (
 
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/pkg/di"
 	"github.com/gin-gonic/gin"

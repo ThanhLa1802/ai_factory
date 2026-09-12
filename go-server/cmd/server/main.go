@@ -7,7 +7,7 @@ import (
 
 	"github.com/ai-factory/go-server/internal/app"
 	"github.com/ai-factory/go-server/internal/config"
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/pkg/di"
 )
 

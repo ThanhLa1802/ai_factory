@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/circuitbreaker"
+	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/events"
 )

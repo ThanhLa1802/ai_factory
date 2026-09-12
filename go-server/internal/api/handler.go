@@ -14,7 +14,7 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/inference"
-	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
