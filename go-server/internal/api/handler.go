@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
@@ -25,9 +24,19 @@ import (
 // serve UI tĩnh từ thư mục ui/ (không nhúng HTML vào binary).
 // Package comment đặt ở đây vì các file UI đã tách thành file HTML độc lập.
 
-// DeploymentResolver resolves model name → READY deployment. Satisfied by *controlplane.Service.
+// ResolvedDeployment is the inference service's own view of a routable
+// deployment. Defined here so inference never imports services/serving
+// (design §4.2 / D-P4-2).
+type ResolvedDeployment struct {
+	ID       string
+	TenantID string
+	Region   string
+}
+
+// DeploymentResolver resolves model name → READY deployment. Satisfied by an
+// adapter over *serving.Service, wired in the composition root.
 type DeploymentResolver interface {
-	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*controlplane.Deployment, error)
+	ResolveDeployment(ctx context.Context, tenantID, modelName string) (*ResolvedDeployment, error)
 }
 
 // UsageRecorder persists token usage per completed turn. Satisfied by *controlplane.Service.
@@ -82,7 +91,7 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 // concurrency limits (fail-open on Redis error). On success returns the
 // deployment and a release func (for concurrency); on failure writes the error
 // response and returns nil, nil, false.
-func (h *Handler) resolveForTenant(ctx context.Context, c *gin.Context, tenantID, model string) (*controlplane.Deployment, func(), bool) {
+func (h *Handler) resolveForTenant(ctx context.Context, c *gin.Context, tenantID, model string) (*ResolvedDeployment, func(), bool) {
 	d, err := h.resolver.ResolveDeployment(ctx, tenantID, model)
 	if err != nil {
 		writeOpenAIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")

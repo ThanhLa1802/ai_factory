@@ -1,4 +1,4 @@
-package runtime
+package serving
 
 import (
 	"context"
@@ -10,24 +10,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 )
 
 type fakeStore struct {
 	mu          sync.Mutex
-	deployments map[string]*controlplane.Deployment
+	deployments map[string]*Deployment
 	workloadRef string
-	endpoints   []*controlplane.Endpoint
+	endpoints   []*Endpoint
 	revSpecs    []map[string]any
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{deployments: map[string]*controlplane.Deployment{}}
+	return &fakeStore{deployments: map[string]*Deployment{}}
 }
 
-func (f *fakeStore) GetDeployment(ctx context.Context, id string) (*controlplane.Deployment, error) {
+func (f *fakeStore) GetDeployment(ctx context.Context, id string) (*Deployment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d, ok := f.deployments[id]
@@ -38,26 +37,26 @@ func (f *fakeStore) GetDeployment(ctx context.Context, id string) (*controlplane
 	return &cp, nil
 }
 
-func (f *fakeStore) TransitionDeployment(ctx context.Context, id, to string) (*controlplane.Deployment, error) {
+func (f *fakeStore) TransitionDeployment(ctx context.Context, id, to string) (*Deployment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d, ok := f.deployments[id]
 	if !ok {
 		return nil, fmt.Errorf("deployment %s not found", id)
 	}
-	if !controlplane.CanTransition(d.Status, to) {
-		return nil, controlplane.ErrInvalidTransition
+	if !CanTransition(d.Status, to) {
+		return nil, ErrInvalidTransition
 	}
 	d.Status = to
 	cp := *d
 	return &cp, nil
 }
 
-func (f *fakeStore) CreateRevision(ctx context.Context, deploymentID string, spec map[string]any, createdBy string) (*controlplane.DeploymentRevision, error) {
+func (f *fakeStore) CreateRevision(ctx context.Context, deploymentID string, spec map[string]any, createdBy string) (*DeploymentRevision, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.revSpecs = append(f.revSpecs, spec)
-	return &controlplane.DeploymentRevision{
+	return &DeploymentRevision{
 		ID: "rev-1", DeploymentID: deploymentID, Revision: 1,
 		Spec: spec, CreatedBy: createdBy,
 	}, nil
@@ -70,10 +69,10 @@ func (f *fakeStore) SetWorkloadRef(ctx context.Context, id, ref string) error {
 	return nil
 }
 
-func (f *fakeStore) CreateEndpoint(ctx context.Context, deploymentID, path, protocol string) (*controlplane.Endpoint, error) {
+func (f *fakeStore) CreateEndpoint(ctx context.Context, deploymentID, path, protocol string) (*Endpoint, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	e := &controlplane.Endpoint{ID: "ep-1", DeploymentID: deploymentID, Path: path, Protocol: protocol, Status: "ACTIVE"}
+	e := &Endpoint{ID: "ep-1", DeploymentID: deploymentID, Path: path, Protocol: protocol, Status: "ACTIVE"}
 	f.endpoints = append(f.endpoints, e)
 	return e, nil
 }
@@ -81,7 +80,7 @@ func (f *fakeStore) CreateEndpoint(ctx context.Context, deploymentID, path, prot
 // failAdapter fails Start to exercise the FAILED path.
 type failAdapter struct{ *WorkerAdapter }
 
-func (a failAdapter) Start(ctx context.Context, d *controlplane.Deployment) error {
+func (a failAdapter) Start(ctx context.Context, d *Deployment) error {
 	return errors.New("worker exploded")
 }
 
@@ -109,8 +108,8 @@ func TestWorkerOnCreatedHappyPath(t *testing.T) {
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
-		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentReady)
+	if got := store.deployments["d1"].Status; got != DeploymentReady {
+		t.Fatalf("status = %s, want %s", got, DeploymentReady)
 	}
 	if store.workloadRef == "" {
 		t.Fatal("workload_ref not set")
@@ -135,7 +134,7 @@ func TestWorkerOnCreatedHappyPath(t *testing.T) {
 func TestWorkerOnCreatedIdempotent(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentReady
+	store.deployments["d1"].Status = DeploymentReady
 
 	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
@@ -172,8 +171,8 @@ func TestWorkerOnCreatedAdapterFailure(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentFailed {
-		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentFailed)
+	if got := store.deployments["d1"].Status; got != DeploymentFailed {
+		t.Fatalf("status = %s, want %s", got, DeploymentFailed)
 	}
 	failed := false
 	for _, e := range published {
@@ -195,7 +194,7 @@ type flakyAdapter struct {
 	fails int
 }
 
-func (a *flakyAdapter) Start(ctx context.Context, d *controlplane.Deployment) error {
+func (a *flakyAdapter) Start(ctx context.Context, d *Deployment) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.fails > 0 {
@@ -223,8 +222,8 @@ func TestWorkerOnCreatedTransientAdapterStartRecovers(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
-		t.Fatalf("status = %s, want %s (transient failure must not fail deployment)", got, controlplane.DeploymentReady)
+	if got := store.deployments["d1"].Status; got != DeploymentReady {
+		t.Fatalf("status = %s, want %s (transient failure must not fail deployment)", got, DeploymentReady)
 	}
 	for _, e := range published {
 		if e.Type == message.TypeDeploymentFailed {
@@ -241,7 +240,7 @@ type countingAdapter struct {
 	starts int
 }
 
-func (a *countingAdapter) Start(ctx context.Context, d *controlplane.Deployment) error {
+func (a *countingAdapter) Start(ctx context.Context, d *Deployment) error {
 	a.mu.Lock()
 	a.starts++
 	a.mu.Unlock()
@@ -267,7 +266,7 @@ func TestWorkerCircuitBreakerFailsFast(t *testing.T) {
 		store.mu.Lock()
 		st := store.deployments["d1"].Status
 		store.mu.Unlock()
-		if st != controlplane.DeploymentFailed {
+		if st != DeploymentFailed {
 			t.Fatalf("deployment %d status = %s, want FAILED", i, st)
 		}
 	}
@@ -283,7 +282,7 @@ func TestWorkerCircuitBreakerFailsFast(t *testing.T) {
 func TestWorkerOnStopHappyPath(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentReady
+	store.deployments["d1"].Status = DeploymentReady
 
 	bus := message.NewMemoryEventBus()
 	var published []message.Event
@@ -299,8 +298,8 @@ func TestWorkerOnStopHappyPath(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentStopped {
-		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentStopped)
+	if got := store.deployments["d1"].Status; got != DeploymentStopped {
+		t.Fatalf("status = %s, want %s", got, DeploymentStopped)
 	}
 	stopped := false
 	for _, e := range published {
@@ -316,7 +315,7 @@ func TestWorkerOnStopHappyPath(t *testing.T) {
 func TestWorkerOnStopAlreadyStopped(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentStopped
+	store.deployments["d1"].Status = DeploymentStopped
 
 	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
@@ -327,15 +326,15 @@ func TestWorkerOnStopAlreadyStopped(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentStopped {
-		t.Fatalf("status = %s, want %s (unchanged)", got, controlplane.DeploymentStopped)
+	if got := store.deployments["d1"].Status; got != DeploymentStopped {
+		t.Fatalf("status = %s, want %s (unchanged)", got, DeploymentStopped)
 	}
 }
 
 func TestWorkerOnStopDuringProvisioning(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
+	store.deployments["d1"].Status = DeploymentProvisioning
 
 	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
@@ -346,8 +345,8 @@ func TestWorkerOnStopDuringProvisioning(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentProvisioning {
-		t.Fatalf("status = %s, want %s (unchanged)", got, controlplane.DeploymentProvisioning)
+	if got := store.deployments["d1"].Status; got != DeploymentProvisioning {
+		t.Fatalf("status = %s, want %s (unchanged)", got, DeploymentProvisioning)
 	}
 }
 
@@ -371,7 +370,7 @@ func TestWorkerOnCreatedFailureReleasesCapacity(t *testing.T) {
 func TestWorkerOnCreatedResumeFromProvisioning(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
+	store.deployments["d1"].Status = DeploymentProvisioning
 
 	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
@@ -382,8 +381,8 @@ func TestWorkerOnCreatedResumeFromProvisioning(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
-		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentReady)
+	if got := store.deployments["d1"].Status; got != DeploymentReady {
+		t.Fatalf("status = %s, want %s", got, DeploymentReady)
 	}
 	if len(store.revSpecs) != 0 {
 		t.Fatalf("revisions = %d, want 0 (resume must not re-create revision)", len(store.revSpecs))
@@ -399,7 +398,7 @@ func TestWorkerOnCreatedResumeFromProvisioning(t *testing.T) {
 func TestWorkerOnCreatedResumeFromStarting(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
-	store.deployments["d1"].Status = controlplane.DeploymentStarting
+	store.deployments["d1"].Status = DeploymentStarting
 	store.deployments["d1"].WorkloadRef = "mock-wl-d1"
 
 	bus := message.NewMemoryEventBus()
@@ -411,8 +410,8 @@ func TestWorkerOnCreatedResumeFromStarting(t *testing.T) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if got := store.deployments["d1"].Status; got != controlplane.DeploymentReady {
-		t.Fatalf("status = %s, want %s", got, controlplane.DeploymentReady)
+	if got := store.deployments["d1"].Status; got != DeploymentReady {
+		t.Fatalf("status = %s, want %s", got, DeploymentReady)
 	}
 	if len(store.revSpecs) != 0 {
 		t.Fatalf("revisions = %d, want 0", len(store.revSpecs))

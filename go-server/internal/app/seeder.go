@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	"github.com/ai-factory/go-server/internal/services/serving"
 )
 
 // seedAdmin creates the default platform admin + a demo tenant if the admin is
@@ -71,7 +71,7 @@ func envOr(key, def string) string {
 
 // seedDemo seeds a demo model + READY deployment for the demo tenant so routing
 // works without Kafka. Idempotent: skips if a READY deployment already resolves.
-func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *controlplane.Service) error {
+func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) error {
 	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
 		return nil
 	}
@@ -92,34 +92,34 @@ func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *controlplane.Service
 	}
 	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen3.5-9b"); err == nil {
 		return nil // already seeded
-	} else if !errors.Is(err, controlplane.ErrNotFound) {
+	} else if !errors.Is(err, serving.ErrNotFound) {
 		return fmt.Errorf("resolve for seed: %w", err)
 	}
 
-	model, err := cp.CreateModel(ctx, controlplane.Model{Name: "qwen3.5-9b", Task: "text-generation", Framework: "llama.cpp"})
+	model, err := cp.CreateModel(ctx, serving.Model{Name: "qwen3.5-9b", Task: "text-generation", Framework: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed model: %w", err)
 	}
-	mv, err := cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen3.5-9b"})
+	mv, err := cp.CreateModelVersion(ctx, serving.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen3.5-9b"})
 	if err != nil {
 		return fmt.Errorf("seed model version: %w", err)
 	}
-	tpl, err := cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "llama-openai", Runtime: "llama.cpp"})
+	tpl, err := cp.CreateTemplate(ctx, serving.ServingTemplate{Name: "llama-openai", Runtime: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed template: %w", err)
 	}
-	tv, err := cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen3.5-9b:latest"})
+	tv, err := cp.CreateTemplateVersion(ctx, serving.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen3.5-9b:latest"})
 	if err != nil {
 		return fmt.Errorf("seed template version: %w", err)
 	}
-	d, err := cp.CreateDeployment(ctx, controlplane.Deployment{
+	d, err := cp.CreateDeployment(ctx, serving.Deployment{
 		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
 		Name: "qwen3.5-9b-prod", Region: "local", DesiredReplicas: 1,
 	})
 	if err != nil {
 		return fmt.Errorf("seed deployment: %w", err)
 	}
-	for _, to := range []string{controlplane.DeploymentProvisioning, controlplane.DeploymentStarting, controlplane.DeploymentReady} {
+	for _, to := range []string{serving.DeploymentProvisioning, serving.DeploymentStarting, serving.DeploymentReady} {
 		if _, err := cp.TransitionDeployment(ctx, d.ID, to); err != nil {
 			return fmt.Errorf("seed transition to %s: %w", to, err)
 		}

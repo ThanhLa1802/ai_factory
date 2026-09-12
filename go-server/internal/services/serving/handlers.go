@@ -1,0 +1,251 @@
+package serving
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
+	"github.com/ai-factory/go-server/pkg/response"
+	"github.com/gin-gonic/gin"
+)
+
+// Handler mounts the serving routes: models, templates, deployments.
+type Handler struct {
+	svc      *Service
+	auth     middleware.Authenticator
+	producer message.Producer
+}
+
+func NewHandler(svc *Service, auth middleware.Authenticator, producer message.Producer) *Handler {
+	return &Handler{svc: svc, auth: auth, producer: producer}
+}
+
+// --- models ---
+
+func (h *Handler) handleCreateModel(c *gin.Context) {
+	var m Model
+	if err := c.ShouldBindJSON(&m); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	created, err := h.svc.CreateModel(c.Request.Context(), m)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, created)
+}
+
+func (h *Handler) handleListModels(c *gin.Context) {
+	ms, err := h.svc.ListModels(c.Request.Context())
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, ms)
+}
+
+func (h *Handler) handleGetModel(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "id required")
+		return
+	}
+	m, err := h.svc.GetModel(c.Request.Context(), id)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "model not found")
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, m)
+}
+
+func (h *Handler) handleCreateModelVersion(c *gin.Context) {
+	id := c.Param("id")
+	var mv ModelVersion
+	if err := c.ShouldBindJSON(&mv); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	mv.ModelID = id
+	created, err := h.svc.CreateModelVersion(c.Request.Context(), mv)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, created)
+}
+
+// --- templates ---
+
+func (h *Handler) handleCreateTemplate(c *gin.Context) {
+	var t ServingTemplate
+	if err := c.ShouldBindJSON(&t); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	created, err := h.svc.CreateTemplate(c.Request.Context(), t)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, created)
+}
+
+func (h *Handler) handleListTemplates(c *gin.Context) {
+	ts, err := h.svc.ListTemplates(c.Request.Context())
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, ts)
+}
+
+func (h *Handler) handleGetTemplate(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.svc.GetTemplate(c.Request.Context(), id)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "template not found")
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, t)
+}
+
+func (h *Handler) handleCreateTemplateVersion(c *gin.Context) {
+	id := c.Param("id")
+	var tv TemplateVersion
+	if err := c.ShouldBindJSON(&tv); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	tv.TemplateID = id
+	created, err := h.svc.CreateTemplateVersion(c.Request.Context(), tv)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, created)
+}
+
+// --- deployments ---
+
+func (h *Handler) handleCreateDeployment(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	var d Deployment
+	if err := c.ShouldBindJSON(&d); err != nil {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+		return
+	}
+	d.TenantID = p.TenantID // derive tenant from auth, never trust body
+
+	// Idempotency-Key: a client retry with the same key returns the same
+	// deployment instead of creating a duplicate (roadmap A5 — idempotency).
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		if existingID, err := h.svc.ResolveIdempotencyKey(c.Request.Context(), p.TenantID, key, "deployment"); err == nil {
+			if existing, gerr := h.svc.GetDeployment(c.Request.Context(), existingID); gerr == nil {
+				response.WriteJSON(c, http.StatusOK, existing)
+				return
+			}
+		}
+	}
+
+	created, err := h.svc.CreateDeployment(c.Request.Context(), d)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		if err := h.svc.SaveIdempotencyKey(c.Request.Context(), p.TenantID, key, "deployment", created.ID); err != nil {
+			slog.Warn("save idempotency key", "err", err) // non-fatal: replay safety is best-effort
+		}
+	}
+
+	ev := message.NewEvent(message.TypeDeploymentCreated, p.TenantID, created.ID, map[string]any{
+		"name":                created.Name,
+		"region":              created.Region,
+		"desired_replicas":    created.DesiredReplicas,
+		"model_version_id":    created.ModelVersionID,
+		"template_version_id": created.TemplateVersionID,
+		"created_by":          p.UserID,
+	})
+	if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
+		// The deployment is persisted but not queued. Mark it FAILED so it is not
+		// left stuck in PENDING (best-effort), then surface the error loudly.
+		_, _ = h.svc.TransitionDeployment(c.Request.Context(), created.ID, DeploymentFailed)
+		response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
+		return
+	}
+	response.WriteJSON(c, http.StatusAccepted, created)
+}
+
+func (h *Handler) handleListDeployments(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	ds, err := h.svc.ListDeployments(c.Request.Context(), p.TenantID)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, ds)
+}
+
+func (h *Handler) handleDeploymentByID(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	id := c.Param("id")
+	d, err := h.svc.GetDeployment(c.Request.Context(), id)
+	if err != nil || d.TenantID != p.TenantID {
+		response.WriteAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, d)
+}
+
+func (h *Handler) handleDeploymentRevisions(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	id := c.Param("id")
+	d, err := h.svc.GetDeployment(c.Request.Context(), id)
+	if err != nil || d.TenantID != p.TenantID {
+		response.WriteAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
+		return
+	}
+	revs, err := h.svc.ListRevisions(c.Request.Context(), id)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, revs)
+}
+
+func (h *Handler) handleDeploymentAction(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	id, action := c.Param("id"), c.Param("action")
+	d, err := h.svc.GetDeployment(c.Request.Context(), id)
+	if err != nil || d.TenantID != p.TenantID {
+		response.WriteAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
+		return
+	}
+	// Async: the worker performs the actual state transitions.
+	switch action {
+	case "start":
+		ev := message.NewEvent(message.TypeDeploymentCreated, p.TenantID, id, map[string]any{
+			"name": d.Name, "region": d.Region, "desired_replicas": d.DesiredReplicas,
+			"model_version_id": d.ModelVersionID, "template_version_id": d.TemplateVersionID,
+			"created_by": p.UserID,
+		})
+		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
+			response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+			return
+		}
+		response.WriteJSON(c, http.StatusAccepted, d)
+	case "stop":
+		ev := message.NewEvent(message.TypeDeploymentStopRequested, p.TenantID, id, nil)
+		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
+			response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+			return
+		}
+		response.WriteJSON(c, http.StatusAccepted, d)
+	default:
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "unknown action "+action)
+		return
+	}
+}

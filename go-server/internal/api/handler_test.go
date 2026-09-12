@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/gin-gonic/gin"
 )
 
@@ -57,11 +56,11 @@ func TestHandleUIRouting(t *testing.T) {
 }
 
 type fakeResolver struct {
-	d   *controlplane.Deployment
+	d   *ResolvedDeployment
 	err error
 }
 
-func (f *fakeResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*controlplane.Deployment, error) {
+func (f *fakeResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*ResolvedDeployment, error) {
 	return f.d, f.err
 }
 
@@ -78,7 +77,7 @@ func (f *fakeLimiter) Acquire(ctx context.Context, key string, limit int) (bool,
 func (f *fakeLimiter) Release(ctx context.Context, key string) error                     { return nil }
 
 func TestResolveForTenantNotFound(t *testing.T) {
-	h := &Handler{resolver: &fakeResolver{err: controlplane.ErrNotFound}, limiter: &fakeLimiter{}, rpmLimit: 60, concLimit: 4}
+	h := &Handler{resolver: &fakeResolver{err: errors.New("not found")}, limiter: &fakeLimiter{}, rpmLimit: 60, concLimit: 4}
 	c, rec := testContext()
 	if _, _, ok := h.resolveForTenant(context.Background(), c, "t1", "qwen-3b"); ok {
 		t.Fatal("want ok=false on not found")
@@ -90,7 +89,7 @@ func TestResolveForTenantNotFound(t *testing.T) {
 
 func TestResolveForTenantRateLimited(t *testing.T) {
 	h := &Handler{
-		resolver: &fakeResolver{d: &controlplane.Deployment{ID: "d1", TenantID: "t1"}},
+		resolver: &fakeResolver{d: &ResolvedDeployment{ID: "d1", TenantID: "t1"}},
 		limiter:  &fakeLimiter{allow: false, acquire: true},
 		rpmLimit: 60, concLimit: 4,
 	}
@@ -105,7 +104,7 @@ func TestResolveForTenantRateLimited(t *testing.T) {
 
 func TestResolveForTenantFailOpen(t *testing.T) {
 	h := &Handler{
-		resolver: &fakeResolver{d: &controlplane.Deployment{ID: "d1", TenantID: "t1"}},
+		resolver: &fakeResolver{d: &ResolvedDeployment{ID: "d1", TenantID: "t1"}},
 		limiter:  &fakeLimiter{allow: false, allowErr: errors.New("redis down"), acquire: true},
 		rpmLimit: 60, concLimit: 4,
 	}

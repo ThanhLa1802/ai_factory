@@ -1,11 +1,9 @@
-package runtime
+package serving
 
 import (
 	"context"
 	"fmt"
 	"sync"
-
-	"github.com/ai-factory/go-server/internal/controlplane"
 )
 
 // MockComputeProvider is a dev/unit-test compute provider that tracks a
@@ -19,7 +17,7 @@ func NewMockComputeProvider() *MockComputeProvider {
 	return &MockComputeProvider{workloads: map[string]string{}}
 }
 
-func (m *MockComputeProvider) RequestCapacity(ctx context.Context, d *controlplane.Deployment) (string, error) {
+func (m *MockComputeProvider) RequestCapacity(ctx context.Context, d *Deployment) (string, error) {
 	ref := "mock-wl-" + d.ID
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -27,14 +25,14 @@ func (m *MockComputeProvider) RequestCapacity(ctx context.Context, d *controlpla
 	return ref, nil
 }
 
-func (m *MockComputeProvider) ReleaseCapacity(ctx context.Context, d *controlplane.Deployment) error {
+func (m *MockComputeProvider) ReleaseCapacity(ctx context.Context, d *Deployment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.workloads, d.ID)
 	return nil
 }
 
-func (m *MockComputeProvider) GetWorkloadStatus(ctx context.Context, d *controlplane.Deployment) (string, error) {
+func (m *MockComputeProvider) GetWorkloadStatus(ctx context.Context, d *Deployment) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.workloads[d.ID]; !ok {
@@ -43,6 +41,6 @@ func (m *MockComputeProvider) GetWorkloadStatus(ctx context.Context, d *controlp
 	return "RUNNING", nil
 }
 
-func (m *MockComputeProvider) UpdateWorkload(ctx context.Context, d *controlplane.Deployment) error {
+func (m *MockComputeProvider) UpdateWorkload(ctx context.Context, d *Deployment) error {
 	return nil
 }

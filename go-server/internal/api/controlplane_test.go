@@ -17,8 +17,8 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
-	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,6 +29,7 @@ type testServices struct {
 	iam     *iam.Service
 	authSvc *iam.AuthService
 	authn   *iam.Authenticator
+	serving *serving.Service
 	cp      *controlplane.Service
 }
 
@@ -41,6 +42,7 @@ func newTestServices(t *testing.T, d *database.DB) *testServices {
 		iam:     iamSvc,
 		authSvc: authSvc,
 		authn:   iam.NewAuthenticator(secret, authSvc),
+		serving: serving.NewServiceFromGorm(d.Gorm()),
 		cp:      controlplane.NewServiceFromGorm(d.Gorm()),
 	}
 }
@@ -49,8 +51,23 @@ func (ts *testServices) mountIAM(mux *gin.Engine) {
 	iam.NewHandler(ts.iam, ts.authSvc, ts.authn).RegisterRoutes(mux)
 }
 
-func (ts *testServices) mountControlPlane(mux *gin.Engine, producer message.Producer) {
-	NewControlPlaneHandler(ts.cp, ts.authn, producer).RegisterRoutes(mux)
+func (ts *testServices) mountServing(mux *gin.Engine, producer message.Producer) {
+	serving.NewHandler(ts.serving, ts.authn, producer).RegisterRoutes(mux)
+}
+
+func (ts *testServices) mountControlPlane(mux *gin.Engine) {
+	NewControlPlaneHandler(ts.cp, ts.authn).RegisterRoutes(mux)
+}
+
+// testResolver adapts serving.Service to the inference handler's resolver.
+type testResolver struct{ svc *serving.Service }
+
+func (r testResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*ResolvedDeployment, error) {
+	d, err := r.svc.ResolveDeployment(ctx, tenantID, modelName)
+	if err != nil {
+		return nil, err
+	}
+	return &ResolvedDeployment{ID: d.ID, TenantID: d.TenantID, Region: d.Region}, nil
 }
 
 // TestLoginE2E runs the full M1 control plane path against a real Postgres.
@@ -110,24 +127,24 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountControlPlane(mux, bus)
+	ts.mountServing(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	// deployments has FKs to model_versions / serving_template_versions, so
 	// create real catalog rows first.
-	model, err := ts.cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	model, err := ts.serving.CreateModel(ctx, serving.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
 	if err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	mv, err := ts.cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	mv, err := ts.serving.CreateModelVersion(ctx, serving.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
 	if err != nil {
 		t.Fatalf("create model version: %v", err)
 	}
-	tpl, err := ts.cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	tpl, err := ts.serving.CreateTemplate(ctx, serving.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
 	if err != nil {
 		t.Fatalf("create template: %v", err)
 	}
-	tv, err := ts.cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	tv, err := ts.serving.CreateTemplateVersion(ctx, serving.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
 	if err != nil {
 		t.Fatalf("create template version: %v", err)
 	}
@@ -165,22 +182,22 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	bus := message.NewMemoryEventBus()
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountControlPlane(mux, bus)
+	ts.mountServing(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
-	model, err := ts.cp.CreateModel(ctx, controlplane.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
+	model, err := ts.serving.CreateModel(ctx, serving.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
 	if err != nil {
 		t.Fatalf("create model: %v", err)
 	}
-	mv, err := ts.cp.CreateModelVersion(ctx, controlplane.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
+	mv, err := ts.serving.CreateModelVersion(ctx, serving.ModelVersion{ModelID: model.ID, Version: "1.0", ArtifactURI: "file:///m"})
 	if err != nil {
 		t.Fatalf("create model version: %v", err)
 	}
-	tpl, err := ts.cp.CreateTemplate(ctx, controlplane.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
+	tpl, err := ts.serving.CreateTemplate(ctx, serving.ServingTemplate{Name: "tpl-" + uuid.NewString()[:8], Runtime: "python"})
 	if err != nil {
 		t.Fatalf("create template: %v", err)
 	}
-	tv, err := ts.cp.CreateTemplateVersion(ctx, controlplane.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
+	tv, err := ts.serving.CreateTemplateVersion(ctx, serving.TemplateVersion{TemplateID: tpl.ID, Version: "1.0", Image: "img"})
 	if err != nil {
 		t.Fatalf("create template version: %v", err)
 	}
@@ -277,7 +294,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	bus := message.NewMemoryEventBus()
-	worker := runtime.NewWorker(ts.cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
+	worker := serving.NewWorker(ts.serving, serving.NewWorkerAdapter("localhost:1"), serving.NewMockComputeProvider(), bus, bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := worker.Run(ctx); err != nil { // Subscribe is non-blocking
 		t.Fatalf("worker run: %v", err)
@@ -285,7 +302,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountControlPlane(mux, bus)
+	ts.mountServing(mux, bus)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	post := func(path string, body any, want int) map[string]any {
@@ -448,7 +465,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	te := agent.NewLocalToolExecutor(t.TempDir())
 	loop := agent.NewLoop(bs, te)
 	sess := session.NewManager()
-	h := NewHandler(sess, loop, t.TempDir(), ts.authn, ts.cp, ts.cp, nil, 60, 4)
+	h := NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.cp, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)

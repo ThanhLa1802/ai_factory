@@ -1,19 +1,17 @@
-package runtime
+package serving
 
 import (
 	"context"
 	"net"
 	"strings"
 	"testing"
-
-	"github.com/ai-factory/go-server/internal/controlplane"
 )
 
-func validDeployment() *controlplane.Deployment {
-	return &controlplane.Deployment{
+func validDeployment() *Deployment {
+	return &Deployment{
 		ID: "d1", TenantID: "t1", Name: "svc",
 		ModelVersionID: "mv1", TemplateVersionID: "tv1",
-		DesiredReplicas: 1, Status: controlplane.DeploymentPending,
+		DesiredReplicas: 1, Status: DeploymentPending,
 	}
 }
 

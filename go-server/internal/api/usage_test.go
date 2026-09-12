@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/google/uuid"
 )
@@ -34,7 +33,7 @@ func TestUsageEndpointE2E(t *testing.T) {
 
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountControlPlane(mux, message.NewMemoryEventBus())
+	ts.mountControlPlane(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	rec := httptest.NewRecorder()

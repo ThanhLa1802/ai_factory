@@ -13,8 +13,8 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
-	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/ai-factory/go-server/pkg/di"
 	"github.com/redis/go-redis/v9"
@@ -113,6 +113,11 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("serving", func(cc *di.Container) (any, error) {
+		return serving.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
+	}); err != nil {
+		return err
+	}
 	if err := c.RegisterSingleton("controlplane", func(cc *di.Container) (any, error) {
 		return controlplane.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
 	}); err != nil {
@@ -128,10 +133,10 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	// 3. Workers (started conditionally by App.Run)
 	if err := c.RegisterSingleton("deployment.worker", func(cc *di.Container) (any, error) {
 		b := cc.MustResolve("bus").(*busBundle)
-		return runtime.NewWorker(
-			cc.MustResolve("controlplane").(*controlplane.Service),
-			runtime.NewWorkerAdapter(opts.InferenceAddr),
-			runtime.NewMockComputeProvider(),
+		return serving.NewWorker(
+			cc.MustResolve("serving").(*serving.Service),
+			serving.NewWorkerAdapter(opts.InferenceAddr),
+			serving.NewMockComputeProvider(),
 			b.Producer, b.Consumer, slog.Default(),
 		), nil
 	}); err != nil {
@@ -147,7 +152,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			cc.MustResolve("agent.loop").(*agent.Loop),
 			uiDir,
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
-			cc.MustResolve("controlplane").(*controlplane.Service),
+			deploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},
 			cc.MustResolve("controlplane").(*controlplane.Service),
 			cc.MustResolve("limiter").(*cache.RedisLimiter),
 			cfg.RateLimitRPM, cfg.RateLimitConcurrency,
@@ -164,12 +169,20 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("http.controlplane", func(cc *di.Container) (any, error) {
+	if err := c.RegisterSingleton("http.serving", func(cc *di.Container) (any, error) {
 		b := cc.MustResolve("bus").(*busBundle)
+		return serving.NewHandler(
+			cc.MustResolve("serving").(*serving.Service),
+			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
+			b.Producer,
+		), nil
+	}); err != nil {
+		return err
+	}
+	if err := c.RegisterSingleton("http.controlplane", func(cc *di.Container) (any, error) {
 		return api.NewControlPlaneHandler(
 			cc.MustResolve("controlplane").(*controlplane.Service),
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
-			b.Producer,
 		), nil
 	}); err != nil {
 		return err
