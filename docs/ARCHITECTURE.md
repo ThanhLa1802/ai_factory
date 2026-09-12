@@ -44,7 +44,7 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
         │     │               │                  │                      │
         │     ▼               ▼                  ▼                      │
         │  PostgreSQL      Redis            Kafka (optional)            │
-        │  (pgx+goose)   (rate limit)   serving.deployment.events       │
+        │  (GORM+pgx)   (rate limit)   serving.deployment.events       │
         │     ▲                                │                       │
         │     └──── runtime.Worker ◄───────────┘ (async deploy)         │
         └──────────────────────────────────────┼───────────────────────┘
@@ -114,9 +114,9 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 config.Load(path) → SetupLogger(zap JSON bridge slog)
   → di.NewContainer + app.RegisterAll (đăng ký provider)
   → app.NewAppFromContainer (force-resolve, fail-fast)
-  → app.Run: db.Connect(pgx) + Migrate(goose) → controlplane → auth
+  → app.Run: database.Open(GORM) + Migrate(gormigrate) → controlplane (repos) → auth
     → seedAdmin → seedDemo → Kafka event bus (nếu down: MemoryEventBus + warn, worker tắt)
-    → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (PG store)
+    → BatchScheduler → ToolExecutor → agent.Loop → session.Manager (GORM store)
     → api.Handler → ServeMux (routes + /metrics) → middleware chain → ListenAndServe
     → SIGINT/SIGTERM → server.Close() → container.Shutdown/Close (reverse order)
 ```
@@ -176,7 +176,7 @@ config.Load(path) → SetupLogger(zap JSON bridge slog)
 
 ### 2.3 Control plane — `internal/controlplane/`
 
-Service duy nhất (`Service`) truy cập Postgres bằng `pgx`, gộp nhiều aggregate:
+Service duy nhất (`Service`) gọi data access qua repository interface (impl GORM), gộp nhiều aggregate:
 
 | Nhóm | File | Nội dung |
 |---|---|---|
@@ -327,10 +327,12 @@ Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 - **Idempotency**: header `Idempotency-Key` trên create deployment + bảng `idempotency_keys`.
 - **Backpressure/load shedding**: BatchScheduler `TrySubmit` → `ErrOverloaded` → 503.
 
-### 2.14 DB + migrations — `internal/db/`
+### 2.14 DB + migrations — `internal/infrastructure/database/`
 
-- `db.Connect` mở `pgxpool` + `Ping`; `db.Migrate` chạy goose migrations nhúng (`goose` + `pgx` stdlib).
-- Migrations: `internal/db/migrations/NNNN_*.sql`.
+- `database.Open` mở GORM (Postgres driver) + `Ping`; `database.Migrate` chạy gormigrate `Up` (bảng `schema_migrations`).
+- **goose adoption:** DB đã migrate bằng goose trước đây (`goose_db_version`) được đánh dấu tương đương rồi bỏ qua — không chạy lại DDL trên dữ liệu hiện hữu.
+- Migrations: `internal/migrations/NNNN_*.go` (chuyển 1:1 từ goose, giữ nguyên tên bảng/cột).
+- Data access qua repository interface (`controlplane.Repositories`, `session.Store`); service không thấy `*gorm.DB`.
 - **Bảng:** `tenants`, `users`, `tenant_memberships`, `api_keys`, `tenant_quotas`, `models`, `model_versions`, `serving_templates`, `serving_template_versions`, `deployments`, `deployment_revisions`, `endpoints`, `idempotency_keys`, `sessions`, `messages`, `usage_events`.
 
 ---
@@ -567,7 +569,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 | Layer | Tech |
 |---|---|
 | Go server | Go 1.25.7, `net/http` + `http.ServeMux`, `google.golang.org/grpc`, `google/uuid` |
-| Persistence | PostgreSQL qua `jackc/pgx/v5` + `pressly/goose/v3` |
+| Persistence | PostgreSQL qua `gorm.io/gorm` + `gorm.io/driver/postgres`, migrate bằng `go-gormigrate/gormigrate/v2` |
 | Rate limit | Redis (`redis/go-redis/v9`) |
 | Events | Kafka (`segmentio/kafka-go`) hoặc in-memory fallback |
 | Auth | `golang-jwt/jwt/v5`, argon2/bcrypt, API key hash |

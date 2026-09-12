@@ -63,13 +63,15 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
-## 🏗️ Kiến trúc lại theo production blueprint (Phase 1 ✅)
+## 🏗️ Kiến trúc lại theo production blueprint (Phase 2 ✅)
 
-Trạng thái: **Phase 1 xong** (2026-09-12) — nền tảng composition root + DI + config + logging.
+Trạng thái: **Phase 2 xong** (2026-09-12) — data layer GORM + gormigrate + repository. (Phase 1 ✅: composition root + DI + config + logging.)
 
 - Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
 - Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
-- Đã thêm: `pkg/di` (lazy DI + lifecycle + circular detection), viper config (`configs/config.yaml`, env `AI_FACTORY_*` vẫn override), zap logger bridge slog (`internal/observability/log.go`), composition root `internal/app` (`options.go`, `registry.go`, `app.go`, `seeder.go`); `cmd/server/main.go` teo lại chỉ còn flags → config → logger → container → app.
+- Plan Phase 2: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](superpowers/plans/2026-09-12-phase2-data-layer.md)
+- Phase 1 đã thêm: `pkg/di` (lazy DI + lifecycle), viper config (`configs/config.yaml`), zap logger bridge slog, composition root `internal/app`; `cmd/server/main.go` teo lại.
+- Phase 2 đã thêm: `internal/infrastructure/database` (GORM + gormigrate + goose-adoption), `internal/migrations` (6 migration Go, giữ nguyên tên bảng/cột), 10 repository interface + impl GORM trong `controlplane`/`session` (Service không còn thấy `*gorm.DB`), `session.NewGormStore`; **xoá `internal/db`** (pgx + goose). Test repo chạy trên Postgres thật (`AI_FACTORY_DATABASE_URL`).
 - Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
 - Lộ trình: P1 nền tảng (composition root + DI) → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.
 
@@ -157,6 +159,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-12 | Phase 2 kiến trúc lại ✅ — data layer: GORM v1.31 + gormigrate v2 thay pgx + goose. Thêm `internal/infrastructure/database` (Open/Migrate + goose-adoption), `internal/migrations` (6 migration Go), 10 repository interface + impl GORM (`controlplane`/`session`), `session.NewGormStore`; xoá `internal/db`. `controlplane.Service` giờ chỉ thấy repository interface. Test repo dùng Postgres thật. Plan `docs/superpowers/plans/2026-09-12-phase2-data-layer.md`. |
 | 2026-09-12 | Phase 1 kiến trúc lại ✅ — composition root + DI + config + logging: thêm `pkg/di` (lazy DI, lifecycle, circular detection), viper (`configs/config.yaml` + env override), zap logger bridge slog, `internal/app` (registry providers + app lifecycle + seeder); `cmd/server/main.go` còn ~55 dòng. Không đổi hành vi endpoint. Plan `docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`. |
 | 2026-09-11 | Thêm spec + plan Phase 1 kiến trúc lại theo production blueprint (modular monolith + DI + composition root; GORM/Gin/viper/zap về sau); tạm hoãn sampling loop. Spec docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md. |
 | 2026-08-16 | Chat history + usage metering + platform console: session bền (list/title/rename/delete qua `/api/v1/sessions`, auto-title 40-rune), token mỗi turn ghi `usage_events` (best-effort) + `GET /api/v1/usage`; `/platform` = Usage + API Keys, `/infra` = deployments/models/templates/quotas. Spec docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md. |

@@ -4,7 +4,7 @@ A learning project simulating a Claude Code / ChatGPT server, comprising an infe
 
 > **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), [`docs/LEARNING_ROADMAP.md`](docs/LEARNING_ROADMAP.md) (project-specific learning roadmap — 2 tracks: backend/platform + self-written inference), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
 >
-> **Rearchitecture (modular monolith):** the Go server is moving to a prod-style layout (modular monolith + DI + composition root + multi-binary), swapping the stack to Gin + GORM + gormigrate + viper + zap while keeping the Python worker as the data plane. **Phase 1 ✅ done** (composition root `internal/app` + lazy DI `pkg/di` + viper config + zap logger); `cmd/server/main.go` is now a thin entry point. Remaining: Gin, GORM, service-module split. Design: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Phase 1 plan: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md).
+> **Rearchitecture (modular monolith):** the Go server is moving to a prod-style layout (modular monolith + DI + composition root + multi-binary), swapping the stack to Gin + GORM + gormigrate + viper + zap while keeping the Python worker as the data plane. **Phase 1 ✅ done** (composition root `internal/app` + lazy DI `pkg/di` + viper config + zap logger); **Phase 2 ✅ done** (GORM v1.31 + gormigrate v2 data layer + repository interfaces; pgx/goose removed); `cmd/server/main.go` is now a thin entry point. Remaining: Gin (HTTP), service-module split, multi-binary. Design: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Phase 1 plan: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md) · Phase 2 plan: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](docs/superpowers/plans/2026-09-12-phase2-data-layer.md).
 
 ## Behavioral Guidelines
 
@@ -107,9 +107,12 @@ ai_factory/
 │   └── internal/
 │       ├── app/                 #   Composition root: options.go, registry.go, app.go, seeder.go
 │       ├── config/              #   config.go (viper loader + flat Config fields)
+│       ├── infrastructure/database/ # GORM open + gormigrate runner (goose adoption)
+│       ├── migrations/          #   6 gormigrate Go migrations (was db/migrations/*.sql)
 │       ├── api/                 #   handler.go, adapters.go, sse.go (HTTP + OpenAI protocol + SSE)
 │       ├── agent/               #   loop.go (agentic loop), tools.go (ToolExecutor)
-│       ├── session/             #   session.go, manager.go (in-memory, truncation)
+│       ├── controlplane/        #   service.go + repositories.go/repository_*.go (GORM) + models.go
+│       ├── session/             #   session.go, manager.go, store.go (Store iface), store_gorm.go
 │       └── inference/           #   client.go (gRPC), batch_scheduler.go, pb/ (codegen)
 ├── python-worker/               # Python inference worker
 │   ├── pyproject.toml
@@ -153,7 +156,8 @@ ai_factory/
 - **gRPC codegen:** Go uses `protoc-gen-go-grpc`, Python uses `grpcio-tools` (regenerated via `python -m worker.generate_proto`).
 - **Chat history (sidebar):** sessions are durable (list/title/rename/delete via `/api/v1/sessions`), auto-titled from the first user message (40-rune truncate). The UI sidebar is ChatGPT-style on `/chat`.
 - **Usage metering:** per-turn prompt/completion tokens are persisted to `usage_events` (best-effort, never fails a turn) and surfaced on `/platform` (Usage tab) + `/api/v1/usage`. Infra management (deployments/models/templates/quotas) moved to `/infra`.
-- **Composition root (Phase 1 ✅):** all wiring lives in `internal/app` (`registry.go` registers DI providers by name; `app.go` owns seed → worker → HTTP → graceful shutdown), dependencies are built lazily by `pkg/di`. Config is viper (`configs/config.yaml` + `AI_FACTORY_*` env overrides, loader `config.Load(path)`); logging is a zap core bridged into `slog` via `zapslog`. Phases 2–4 (GORM, Gin, module split) still pending — spec `docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`.
+- **Composition root (Phase 1 ✅):** all wiring lives in `internal/app` (`registry.go` registers DI providers by name; `app.go` owns seed → worker → HTTP → graceful shutdown), dependencies are built lazily by `pkg/di`. Config is viper (`configs/config.yaml` + `AI_FACTORY_*` env overrides, loader `config.Load(path)`); logging is a zap core bridged into `slog` via `zapslog`.
+- **Data layer (Phase 2 ✅):** GORM v1.31 + gormigrate v2 replace pgx + goose. `internal/infrastructure/database` owns `Open`/`Migrate` (with one-time adoption of an existing goose-migrated DB), `internal/migrations` holds the 6 Go migrations (table/column names unchanged), and data access goes through 10 repository interfaces (`controlplane.Repositories`, `session.Store`) so services never see `*gorm.DB`. Remaining phases: Gin (HTTP), `services/*` module split, multi-binary, outbox — spec `docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`.
 
 ## Engine selection
 
