@@ -1,0 +1,8 @@
+# AI Factory — default configuration. AI_FACTORY_* env vars override these.
+database_url: "postgres://ai_factory:ai_factory@localhost:5432/ai_factory?sslmode=disable"
+jwt_secret: "dev-secret-change-me"
+log_level: "info"
+kafka_addr: "localhost:9092"
+redis_addr: "localhost:6379"
+rate_limit_rpm: 60
+rate_limit_concurrency: 4

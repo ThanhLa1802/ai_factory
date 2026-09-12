@@ -26,7 +26,7 @@ func TestLoadDefaults(t *testing.T) {
 	unsetenv(t, "AI_FACTORY_JWT_SECRET")
 	t.Setenv("AI_FACTORY_LOG_LEVEL", "")
 	t.Setenv("AI_FACTORY_KAFKA_ADDR", "")
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadJWTSecretSetButEmpty(t *testing.T) {
 	t.Setenv("AI_FACTORY_JWT_SECRET", "")
-	if _, err := Load(); err == nil {
+	if _, err := Load(""); err == nil {
 		t.Fatal("Load() error = nil, want set-but-empty to fail loudly")
 	}
 }
@@ -53,7 +53,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("AI_FACTORY_JWT_SECRET", "0123456789abcdef")
 	t.Setenv("AI_FACTORY_LOG_LEVEL", "debug")
 	t.Setenv("AI_FACTORY_KAFKA_ADDR", "localhost:19092")
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRateLimitDefaults(t *testing.T) {
 	t.Setenv("AI_FACTORY_REDIS_ADDR", "")
 	t.Setenv("AI_FACTORY_RATE_LIMIT_RPM", "")
 	t.Setenv("AI_FACTORY_RATE_LIMIT_CONCURRENCY", "")
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -93,11 +93,55 @@ func TestRateLimitEnvOverride(t *testing.T) {
 	t.Setenv("AI_FACTORY_REDIS_ADDR", "redis:6379")
 	t.Setenv("AI_FACTORY_RATE_LIMIT_RPM", "100")
 	t.Setenv("AI_FACTORY_RATE_LIMIT_CONCURRENCY", "8")
-	cfg, err := Load()
+	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if cfg.RedisAddr != "redis:6379" || cfg.RateLimitRPM != 100 || cfg.RateLimitConcurrency != 8 {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestLoadFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("log_level: warn\nkafka_addr: filehost:9092\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_LOG_LEVEL", "")
+	t.Setenv("AI_FACTORY_KAFKA_ADDR", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(file): %v", err)
+	}
+	if cfg.LogLevel != "warn" {
+		t.Errorf("LogLevel = %q, want warn (from file)", cfg.LogLevel)
+	}
+	if cfg.KafkaAddr != "filehost:9092" {
+		t.Errorf("KafkaAddr = %q, want filehost:9092 (from file)", cfg.KafkaAddr)
+	}
+}
+
+func TestLoadEnvOverridesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("log_level: warn\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_LOG_LEVEL", "debug")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(file+env): %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug (env must win over file)", cfg.LogLevel)
+	}
+}
+
+func TestLoadMissingFileFails(t *testing.T) {
+	if _, err := Load("does-not-exist.yaml"); err == nil {
+		t.Fatal("Load(missing file) = nil, want error")
 	}
 }

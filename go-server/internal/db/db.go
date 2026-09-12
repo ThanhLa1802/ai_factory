@@ -40,6 +40,12 @@ func Connect(ctx context.Context, dsn string) (*DB, error) {
 // Pool exposes the underlying pgx pool.
 func (d *DB) Pool() *pgxpool.Pool { return d.pool }
 
+// Close releases the underlying pool (satisfies the DI Closer lifecycle).
+func (d *DB) Close() error {
+	d.pool.Close()
+	return nil
+}
+
 // Migrate applies all embedded goose migrations.
 func (d *DB) Migrate(ctx context.Context) error {
 	sqlDB, err := sql.Open("pgx", d.dsn)
