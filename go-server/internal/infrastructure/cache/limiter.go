@@ -1,5 +1,5 @@
-// Package ratelimit cung cấp rate limiting cho inference gateway.
-package ratelimit
+// Package cache cung cấp rate limiting cho inference gateway.
+package cache
 
 import (
 	"context"

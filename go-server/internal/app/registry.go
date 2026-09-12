@@ -10,10 +10,10 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/events"
-	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	"github.com/ai-factory/go-server/internal/inference"
-	"github.com/ai-factory/go-server/internal/ratelimit"
+	"github.com/ai-factory/go-server/internal/infrastructure/cache"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/ai-factory/go-server/pkg/di"
@@ -22,8 +22,8 @@ import (
 
 // busBundle groups the event bus with whether it is the real Kafka bus.
 type busBundle struct {
-	Producer events.Producer
-	Consumer events.Consumer
+	Producer message.Producer
+	Consumer message.Consumer
 	Kafka    bool
 }
 
@@ -55,16 +55,16 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("limiter", func(cc *di.Container) (any, error) {
-		return ratelimit.NewRedisLimiter(cc.MustResolve("redis").(*redis.Client)), nil
+		return cache.NewRedisLimiter(cc.MustResolve("redis").(*redis.Client)), nil
 	}); err != nil {
 		return err
 	}
 	if err := c.RegisterSingleton("bus", func(*di.Container) (any, error) {
-		if kafkaBus, err := events.NewKafkaEventBus(cfg.KafkaAddr); err == nil {
+		if kafkaBus, err := message.NewKafkaEventBus(cfg.KafkaAddr); err == nil {
 			return &busBundle{Producer: kafkaBus, Consumer: kafkaBus, Kafka: true}, nil
 		}
 		slog.Warn("kafka unreachable; deployment worker disabled", "addr", cfg.KafkaAddr)
-		mem := events.NewMemoryEventBus()
+		mem := message.NewMemoryEventBus()
 		return &busBundle{Producer: mem, Consumer: mem, Kafka: false}, nil
 	}); err != nil {
 		return err
@@ -140,7 +140,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			[]byte(cfg.JWTSecret),
 			cc.MustResolve("controlplane").(*controlplane.Service),
 			cc.MustResolve("controlplane").(*controlplane.Service),
-			cc.MustResolve("limiter").(*ratelimit.RedisLimiter),
+			cc.MustResolve("limiter").(*cache.RedisLimiter),
 			cfg.RateLimitRPM, cfg.RateLimitConcurrency,
 		), nil
 	}); err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/events"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/google/uuid"
 )
 
@@ -35,7 +35,7 @@ func TestUsageEndpointE2E(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 
-	cph := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
+	cph := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
 	cph.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")

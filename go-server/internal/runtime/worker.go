@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/infrastructure/retry"
 )
 
@@ -31,15 +31,15 @@ type Worker struct {
 	store    DeploymentStore
 	adapter  ServingRuntimeAdapter
 	compute  ComputeProvider
-	producer events.Producer
-	consumer events.Consumer
+	producer message.Producer
+	consumer message.Consumer
 	log      *slog.Logger
 	// cb trips open after repeated runtime failures so a known-down worker or
 	// compute provider is not hammered with retries on every deployment (A5).
 	cb *circuitbreaker.CircuitBreaker
 }
 
-func NewWorker(store DeploymentStore, adapter ServingRuntimeAdapter, compute ComputeProvider, producer events.Producer, consumer events.Consumer, log *slog.Logger) *Worker {
+func NewWorker(store DeploymentStore, adapter ServingRuntimeAdapter, compute ComputeProvider, producer message.Producer, consumer message.Consumer, log *slog.Logger) *Worker {
 	return &Worker{
 		store: store, adapter: adapter, compute: compute, producer: producer, consumer: consumer, log: log,
 		cb: circuitbreaker.New(3, 30*time.Second),
@@ -73,22 +73,22 @@ func (w *Worker) cbProbe(ctx context.Context, fn func() error) error {
 // (handlers run on the bus's goroutine), so Run returns the subscribe error or
 // nil immediately.
 func (w *Worker) Run(ctx context.Context) error {
-	return w.consumer.Subscribe(ctx, events.TopicDeploymentEvents, w.handle)
+	return w.consumer.Subscribe(ctx, message.TopicDeploymentEvents, w.handle)
 }
 
 // handle routes deployment-topic events; unknown types are ignored.
-func (w *Worker) handle(ctx context.Context, ev events.Event) error {
+func (w *Worker) handle(ctx context.Context, ev message.Event) error {
 	switch ev.Type {
-	case events.TypeDeploymentCreated:
+	case message.TypeDeploymentCreated:
 		return w.onCreated(ctx, ev)
-	case events.TypeDeploymentStopRequested:
+	case message.TypeDeploymentStopRequested:
 		return w.onStop(ctx, ev)
 	default:
 		return nil
 	}
 }
 
-func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
+func (w *Worker) onCreated(ctx context.Context, ev message.Event) error {
 	d, err := w.store.GetDeployment(ctx, ev.ResourceID)
 	if err != nil {
 		return fmt.Errorf("get deployment %s: %w", ev.ResourceID, err)
@@ -164,11 +164,11 @@ func (w *Worker) onCreated(ctx context.Context, ev events.Event) error {
 	}
 
 	w.log.Info("deployment ready", "id", d.ID, "workload_ref", ref)
-	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
-		events.TypeDeploymentReady, d.TenantID, d.ID, map[string]any{"workload_ref": ref}))
+	return w.producer.Publish(ctx, message.TopicDeploymentEvents, message.NewEvent(
+		message.TypeDeploymentReady, d.TenantID, d.ID, map[string]any{"workload_ref": ref}))
 }
 
-func (w *Worker) onStop(ctx context.Context, ev events.Event) error {
+func (w *Worker) onStop(ctx context.Context, ev message.Event) error {
 	d, err := w.store.GetDeployment(ctx, ev.ResourceID)
 	if err != nil {
 		return fmt.Errorf("get deployment %s: %w", ev.ResourceID, err)
@@ -197,8 +197,8 @@ func (w *Worker) onStop(ctx context.Context, ev events.Event) error {
 		w.log.Warn("release capacity", "deployment", d.ID, "err", err)
 	}
 	w.log.Info("deployment stopped", "id", d.ID)
-	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
-		events.TypeDeploymentStopped, d.TenantID, d.ID, nil))
+	return w.producer.Publish(ctx, message.TopicDeploymentEvents, message.NewEvent(
+		message.TypeDeploymentStopped, d.TenantID, d.ID, nil))
 }
 
 // fail transitions to FAILED (terminal), releases any acquired compute capacity
@@ -212,8 +212,8 @@ func (w *Worker) fail(ctx context.Context, d *controlplane.Deployment, cause err
 		!errors.Is(err, controlplane.ErrInvalidTransition) {
 		return fmt.Errorf("mark failed: %w", err)
 	}
-	return w.producer.Publish(ctx, events.TopicDeploymentEvents, events.NewEvent(
-		events.TypeDeploymentFailed, d.TenantID, d.ID, map[string]any{"error": cause.Error()}))
+	return w.producer.Publish(ctx, message.TopicDeploymentEvents, message.NewEvent(
+		message.TypeDeploymentFailed, d.TenantID, d.ID, map[string]any{"error": cause.Error()}))
 }
 
 // specMap captures the deployment spec for a revision record.

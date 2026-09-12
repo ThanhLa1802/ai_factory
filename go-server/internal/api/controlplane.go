@@ -9,7 +9,7 @@ import (
 
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/events"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/gin-gonic/gin"
 )
 
@@ -18,10 +18,10 @@ type ControlPlaneHandler struct {
 	cp       *controlplane.Service
 	auth     *auth.Service
 	secret   []byte
-	producer events.Producer
+	producer message.Producer
 }
 
-func NewControlPlaneHandler(cp *controlplane.Service, authSvc *auth.Service, secret []byte, producer events.Producer) *ControlPlaneHandler {
+func NewControlPlaneHandler(cp *controlplane.Service, authSvc *auth.Service, secret []byte, producer message.Producer) *ControlPlaneHandler {
 	return &ControlPlaneHandler{cp: cp, auth: authSvc, secret: secret, producer: producer}
 }
 
@@ -289,7 +289,7 @@ func (h *ControlPlaneHandler) handleCreateDeployment(c *gin.Context) {
 		}
 	}
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, claims.TenantID, created.ID, map[string]any{
+	ev := message.NewEvent(message.TypeDeploymentCreated, claims.TenantID, created.ID, map[string]any{
 		"name":                created.Name,
 		"region":              created.Region,
 		"desired_replicas":    created.DesiredReplicas,
@@ -297,7 +297,7 @@ func (h *ControlPlaneHandler) handleCreateDeployment(c *gin.Context) {
 		"template_version_id": created.TemplateVersionID,
 		"created_by":          claims.UserID,
 	})
-	if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
+	if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
 		// The deployment is persisted but not queued. Mark it FAILED so it is not
 		// left stuck in PENDING (best-effort), then surface the error loudly.
 		_, _ = h.cp.TransitionDeployment(c.Request.Context(), created.ID, controlplane.DeploymentFailed)
@@ -355,19 +355,19 @@ func (h *ControlPlaneHandler) handleDeploymentAction(c *gin.Context) {
 	// Async: the worker performs the actual state transitions.
 	switch action {
 	case "start":
-		ev := events.NewEvent(events.TypeDeploymentCreated, claims.TenantID, id, map[string]any{
+		ev := message.NewEvent(message.TypeDeploymentCreated, claims.TenantID, id, map[string]any{
 			"name": d.Name, "region": d.Region, "desired_replicas": d.DesiredReplicas,
 			"model_version_id": d.ModelVersionID, "template_version_id": d.TemplateVersionID,
 			"created_by": claims.UserID,
 		})
-		if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
+		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
 			writeAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}
 		writeJSON(c, http.StatusAccepted, d)
 	case "stop":
-		ev := events.NewEvent(events.TypeDeploymentStopRequested, claims.TenantID, id, nil)
-		if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
+		ev := message.NewEvent(message.TypeDeploymentStopRequested, claims.TenantID, id, nil)
+		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
 			writeAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}

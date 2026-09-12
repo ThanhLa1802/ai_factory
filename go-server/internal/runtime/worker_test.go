@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/events"
+	"github.com/ai-factory/go-server/internal/infrastructure/circuitbreaker"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 )
 
 type fakeStore struct {
@@ -85,7 +85,7 @@ func (a failAdapter) Start(ctx context.Context, d *controlplane.Deployment) erro
 	return errors.New("worker exploded")
 }
 
-func newTestWorker(store DeploymentStore, adapter ServingRuntimeAdapter, bus *events.MemoryEventBus) *Worker {
+func newTestWorker(store DeploymentStore, adapter ServingRuntimeAdapter, bus *message.MemoryEventBus) *Worker {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewWorker(store, adapter, NewMockComputeProvider(), bus, bus, log)
 }
@@ -94,15 +94,15 @@ func TestWorkerOnCreatedHappyPath(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
 
-	bus := events.NewMemoryEventBus()
-	var published []events.Event
-	if err := bus.Subscribe(context.Background(), events.TopicDeploymentEvents,
-		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+	bus := message.NewMemoryEventBus()
+	var published []message.Event
+	if err := bus.Subscribe(context.Background(), message.TopicDeploymentEvents,
+		func(ctx context.Context, ev message.Event) error { published = append(published, ev); return nil }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", map[string]any{"created_by": "u1"})
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", map[string]any{"created_by": "u1"})
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestWorkerOnCreatedHappyPath(t *testing.T) {
 	}
 	ready := false
 	for _, e := range published {
-		if e.Type == events.TypeDeploymentReady {
+		if e.Type == message.TypeDeploymentReady {
 			ready = true
 		}
 	}
@@ -137,10 +137,10 @@ func TestWorkerOnCreatedIdempotent(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	store.deployments["d1"].Status = controlplane.DeploymentReady
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -158,15 +158,15 @@ func TestWorkerOnCreatedAdapterFailure(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
 
-	bus := events.NewMemoryEventBus()
-	var published []events.Event
-	if err := bus.Subscribe(context.Background(), events.TopicDeploymentEvents,
-		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+	bus := message.NewMemoryEventBus()
+	var published []message.Event
+	if err := bus.Subscribe(context.Background(), message.TopicDeploymentEvents,
+		func(ctx context.Context, ev message.Event) error { published = append(published, ev); return nil }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	w := newTestWorker(store, failAdapter{NewWorkerAdapter("localhost:1")}, bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestWorkerOnCreatedAdapterFailure(t *testing.T) {
 	}
 	failed := false
 	for _, e := range published {
-		if e.Type == events.TypeDeploymentFailed {
+		if e.Type == message.TypeDeploymentFailed {
 			failed = true
 		}
 	}
@@ -209,15 +209,15 @@ func TestWorkerOnCreatedTransientAdapterStartRecovers(t *testing.T) {
 	store := newFakeStore()
 	store.deployments["d1"] = validDeployment()
 
-	bus := events.NewMemoryEventBus()
-	var published []events.Event
-	if err := bus.Subscribe(context.Background(), events.TopicDeploymentEvents,
-		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+	bus := message.NewMemoryEventBus()
+	var published []message.Event
+	if err := bus.Subscribe(context.Background(), message.TopicDeploymentEvents,
+		func(ctx context.Context, ev message.Event) error { published = append(published, ev); return nil }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	w := newTestWorker(store, &flakyAdapter{WorkerAdapter: NewWorkerAdapter("localhost:1"), fails: 2}, bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestWorkerOnCreatedTransientAdapterStartRecovers(t *testing.T) {
 		t.Fatalf("status = %s, want %s (transient failure must not fail deployment)", got, controlplane.DeploymentReady)
 	}
 	for _, e := range published {
-		if e.Type == events.TypeDeploymentFailed {
+		if e.Type == message.TypeDeploymentFailed {
 			t.Fatal("deployment_failed published after transient retry; want recovery to READY")
 		}
 	}
@@ -251,7 +251,7 @@ func (a *countingAdapter) Start(ctx context.Context, d *controlplane.Deployment)
 func TestWorkerCircuitBreakerFailsFast(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	adapter := &countingAdapter{WorkerAdapter: NewWorkerAdapter("localhost:1")}
 	w := NewWorker(store, adapter, NewMockComputeProvider(), bus, bus, log)
@@ -260,7 +260,7 @@ func TestWorkerCircuitBreakerFailsFast(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		store.deployments["d1"] = validDeployment()
-		ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+		ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 		if err := w.handle(ctx, ev); err != nil {
 			t.Fatalf("handle %d: %v", i, err)
 		}
@@ -285,15 +285,15 @@ func TestWorkerOnStopHappyPath(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	store.deployments["d1"].Status = controlplane.DeploymentReady
 
-	bus := events.NewMemoryEventBus()
-	var published []events.Event
-	if err := bus.Subscribe(context.Background(), events.TopicDeploymentEvents,
-		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+	bus := message.NewMemoryEventBus()
+	var published []message.Event
+	if err := bus.Subscribe(context.Background(), message.TopicDeploymentEvents,
+		func(ctx context.Context, ev message.Event) error { published = append(published, ev); return nil }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentStopRequested, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentStopRequested, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestWorkerOnStopHappyPath(t *testing.T) {
 	}
 	stopped := false
 	for _, e := range published {
-		if e.Type == events.TypeDeploymentStopped {
+		if e.Type == message.TypeDeploymentStopped {
 			stopped = true
 		}
 	}
@@ -318,10 +318,10 @@ func TestWorkerOnStopAlreadyStopped(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	store.deployments["d1"].Status = controlplane.DeploymentStopped
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentStopRequested, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentStopRequested, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -337,10 +337,10 @@ func TestWorkerOnStopDuringProvisioning(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentStopRequested, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentStopRequested, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle stop during provisioning = %v, want nil (idempotent no-op)", err)
 	}
@@ -356,10 +356,10 @@ func TestWorkerOnCreatedFailureReleasesCapacity(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	compute := NewMockComputeProvider()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := NewWorker(store, failAdapter{NewWorkerAdapter("localhost:1")}, compute, bus, bus, log)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -373,10 +373,10 @@ func TestWorkerOnCreatedResumeFromProvisioning(t *testing.T) {
 	store.deployments["d1"] = validDeployment()
 	store.deployments["d1"].Status = controlplane.DeploymentProvisioning
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -402,10 +402,10 @@ func TestWorkerOnCreatedResumeFromStarting(t *testing.T) {
 	store.deployments["d1"].Status = controlplane.DeploymentStarting
 	store.deployments["d1"].WorkloadRef = "mock-wl-d1"
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	w := newTestWorker(store, NewWorkerAdapter("localhost:1"), bus)
 
-	ev := events.NewEvent(events.TypeDeploymentCreated, "t1", "d1", nil)
+	ev := message.NewEvent(message.TypeDeploymentCreated, "t1", "d1", nil)
 	if err := w.handle(context.Background(), ev); err != nil {
 		t.Fatalf("handle: %v", err)
 	}

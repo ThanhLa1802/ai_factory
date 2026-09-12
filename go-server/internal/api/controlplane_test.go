@@ -15,9 +15,9 @@ import (
 	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
-	"github.com/ai-factory/go-server/internal/infrastructure/database"
-	"github.com/ai-factory/go-server/internal/events"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/infrastructure/database"
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
@@ -69,7 +69,7 @@ func TestLoginE2E(t *testing.T) {
 		_ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID)
 	})
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
+	h := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 
@@ -108,10 +108,10 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	bus := events.NewMemoryEventBus()
-	var published []events.Event
-	if err := bus.Subscribe(ctx, events.TopicDeploymentEvents,
-		func(ctx context.Context, ev events.Event) error { published = append(published, ev); return nil }); err != nil {
+	bus := message.NewMemoryEventBus()
+	var published []message.Event
+	if err := bus.Subscribe(ctx, message.TopicDeploymentEvents,
+		func(ctx context.Context, ev message.Event) error { published = append(published, ev); return nil }); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 		t.Fatalf("create deployment code = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	if len(published) != 1 || published[0].Type != events.TypeDeploymentCreated {
+	if len(published) != 1 || published[0].Type != message.TypeDeploymentCreated {
 		t.Fatalf("published = %+v, want exactly one deployment_created", published)
 	}
 }
@@ -171,7 +171,7 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
@@ -287,7 +287,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	bus := events.NewMemoryEventBus()
+	bus := message.NewMemoryEventBus()
 	worker := runtime.NewWorker(cp, runtime.NewWorkerAdapter("localhost:1"), runtime.NewMockComputeProvider(), bus, bus,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := worker.Run(ctx); err != nil { // Subscribe is non-blocking
@@ -389,7 +389,7 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
+	h := NewControlPlaneHandler(cp, authSvc, secret, message.NewMemoryEventBus())
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 

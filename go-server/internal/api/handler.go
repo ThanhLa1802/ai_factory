@@ -14,8 +14,8 @@ import (
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/inference"
+	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
-	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -44,13 +44,13 @@ type Handler struct {
 	secret     []byte
 	resolver   DeploymentResolver
 	usage      UsageRecorder
-	limiter    ratelimit.Limiter
+	limiter    cache.Limiter
 	rpmLimit   int
 	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, usage UsageRecorder, limiter ratelimit.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, authSvc *auth.Service, secret []byte, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, authSvc: authSvc, secret: secret,
 		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
