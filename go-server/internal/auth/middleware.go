@@ -1,111 +1,125 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/gin-gonic/gin"
 )
 
-type ctxKey struct{}
+// Gin context keys for the authenticated principal.
+const (
+	ctxClaimsKey = "auth.claims"
+	ctxAPIKeyKey = "auth.apikey"
+)
 
-// RequireAuth validates a Bearer JWT and stores *Claims in the context.
-func RequireAuth(secret []byte) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := r.Header.Get("Authorization")
-			const prefix = "Bearer "
-			if !strings.HasPrefix(h, prefix) {
-				writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing bearer token")
-				return
-			}
-			claims, err := ParseToken(secret, strings.TrimPrefix(h, prefix))
-			if err != nil {
-				writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, claims)))
-		})
+// authenticate validates a Bearer JWT and stores the claims on the Gin context.
+// It writes the 401 response and returns false on failure.
+func authenticate(c *gin.Context, secret []byte) bool {
+	h := c.GetHeader("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		writeAuthError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing bearer token")
+		return false
+	}
+	claims, err := ParseToken(secret, strings.TrimPrefix(h, prefix))
+	if err != nil {
+		writeAuthError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token")
+		return false
+	}
+	c.Set(ctxClaimsKey, claims)
+	return true
+}
+
+// RequireAuth validates a Bearer JWT and stores *Claims in the Gin context.
+func RequireAuth(secret []byte) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if authenticate(c, secret) {
+			c.Next()
+		}
 	}
 }
 
 // RequirePermission wraps RequireAuth and additionally checks the role's action.
-func RequirePermission(secret []byte, action string) func(http.Handler) http.Handler {
-	requireAuth := RequireAuth(secret)
-	return func(next http.Handler) http.Handler {
-		return requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			claims, ok := ClaimsFromContext(r.Context())
-			if !ok || !RoleAllows(claims.Role, action) {
-				writeAuthError(w, http.StatusForbidden, "FORBIDDEN", "permission denied")
-				return
-			}
-			next.ServeHTTP(w, r)
-		}))
+func RequirePermission(secret []byte, action string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !authenticate(c, secret) {
+			return
+		}
+		claims, ok := ClaimsFromContext(c)
+		if !ok || !RoleAllows(claims.Role, action) {
+			writeAuthError(c, http.StatusForbidden, "FORBIDDEN", "permission denied")
+			return
+		}
+		c.Next()
 	}
 }
 
 // ClaimsFromContext extracts the authenticated claims.
-func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
-	c, ok := ctx.Value(ctxKey{}).(*Claims)
-	return c, ok
+func ClaimsFromContext(c *gin.Context) (*Claims, bool) {
+	v, ok := c.Get(ctxClaimsKey)
+	if !ok {
+		return nil, false
+	}
+	claims, ok := v.(*Claims)
+	return claims, ok
 }
-
-func writeAuthError(w http.ResponseWriter, status int, code, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"` + msg + `"}}`))
-}
-
-// apiKeyCtxKey marks an API key stored in the request context.
-type apiKeyCtxKey struct{}
 
 // APIKeyFromContext extracts the API key authenticated by InferenceAuth.
-func APIKeyFromContext(ctx context.Context) (*controlplane.APIKey, bool) {
-	k, ok := ctx.Value(apiKeyCtxKey{}).(*controlplane.APIKey)
-	return k, ok
+func APIKeyFromContext(c *gin.Context) (*controlplane.APIKey, bool) {
+	v, ok := c.Get(ctxAPIKeyKey)
+	if !ok {
+		return nil, false
+	}
+	key, ok := v.(*controlplane.APIKey)
+	return key, ok
 }
 
 // TenantIDFromContext trả tenant từ Claims (JWT) hoặc APIKey, bất kể đường auth nào.
-func TenantIDFromContext(ctx context.Context) (string, bool) {
-	if c, ok := ClaimsFromContext(ctx); ok {
-		return c.TenantID, true
+func TenantIDFromContext(c *gin.Context) (string, bool) {
+	if claims, ok := ClaimsFromContext(c); ok {
+		return claims.TenantID, true
 	}
-	if k, ok := APIKeyFromContext(ctx); ok {
-		return k.TenantID, true
+	if key, ok := APIKeyFromContext(c); ok {
+		return key.TenantID, true
 	}
 	return "", false
 }
 
 // InferenceAuth gates inference routes behind a Bearer JWT or a Bearer API key.
-// A JWT puts Claims in the context under ctxKey (so ClaimsFromContext works); an
-// API key goes under apiKeyCtxKey (read via APIKeyFromContext). Invalid → 401;
-// inactive/expired key → 403. Never logs the raw token.
-func InferenceAuth(secret []byte, svc *Service) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			h := r.Header.Get("Authorization")
-			const prefix = "Bearer "
-			if !strings.HasPrefix(h, prefix) {
-				writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing bearer token")
-				return
-			}
-			tok := strings.TrimPrefix(h, prefix)
-			if claims, err := ParseToken(secret, tok); err == nil {
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, claims)))
-				return
-			}
-			key, err := svc.AuthenticateAPIKey(r.Context(), tok)
-			if err == nil {
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), apiKeyCtxKey{}, key)))
-				return
-			}
-			if errors.Is(err, ErrKeyInactive) {
-				writeAuthError(w, http.StatusForbidden, "FORBIDDEN", "API key inactive or expired")
-				return
-			}
-			writeAuthError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
-		})
+// A JWT stores claims (read via ClaimsFromContext); an API key is stored under
+// the API-key key (read via APIKeyFromContext). Invalid → 401; inactive/expired
+// key → 403. Never logs the raw token.
+func InferenceAuth(secret []byte, svc *Service) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		h := c.GetHeader("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(h, prefix) {
+			writeAuthError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing bearer token")
+			return
+		}
+		tok := strings.TrimPrefix(h, prefix)
+		if claims, err := ParseToken(secret, tok); err == nil {
+			c.Set(ctxClaimsKey, claims)
+			c.Next()
+			return
+		}
+		key, err := svc.AuthenticateAPIKey(c.Request.Context(), tok)
+		if err == nil {
+			c.Set(ctxAPIKeyKey, key)
+			c.Next()
+			return
+		}
+		if errors.Is(err, ErrKeyInactive) {
+			writeAuthError(c, http.StatusForbidden, "FORBIDDEN", "API key inactive or expired")
+			return
+		}
+		writeAuthError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
 	}
+}
+
+func writeAuthError(c *gin.Context, status int, code, msg string) {
+	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": msg}})
 }

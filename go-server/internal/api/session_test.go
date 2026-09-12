@@ -34,7 +34,7 @@ func TestSessionEndpointsE2E(t *testing.T) {
 	h := &Handler{sessionMgr: mgr, secret: secret, authSvc: authSvc, uiDir: t.TempDir()}
 	cph := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
 
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 	cph.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")

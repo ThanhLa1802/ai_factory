@@ -16,6 +16,7 @@ import (
 	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/pkg/di"
+	"github.com/gin-gonic/gin"
 )
 
 // App owns the runtime lifecycle: seed → start worker → serve HTTP → shutdown.
@@ -40,6 +41,18 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 	return &App{cfg: cfg, container: c, log: slog.Default(), port: port}, nil
 }
 
+// NewHTTPHandler builds the Gin engine: global middleware + mounted routes.
+func NewHTTPHandler(c *di.Container) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	e := gin.New()
+	e.HandleMethodNotAllowed = true
+	e.Use(recoveryMiddleware, corsMiddleware, traceMiddleware, loggingMiddleware, metricsMiddleware)
+	c.MustResolve("http.handler").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	c.MustResolve("http.controlplane").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	e.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
+	return e
+}
+
 // Run seeds, starts the worker (if Kafka is up), serves HTTP, and blocks until
 // SIGINT/SIGTERM, then shuts the container down.
 func (a *App) Run() error {
@@ -60,13 +73,8 @@ func (a *App) Run() error {
 		a.log.Info("deployment worker started (async deploy)")
 	}
 
-	mux := http.NewServeMux()
-	a.container.MustResolve("http.handler").(interface{ RegisterRoutes(*http.ServeMux) }).RegisterRoutes(mux)
-	a.container.MustResolve("http.controlplane").(interface{ RegisterRoutes(*http.ServeMux) }).RegisterRoutes(mux)
-	mux.Handle("/metrics", observability.MetricsHandler())
-
-	handler := corsMiddleware(traceMiddleware(loggingMiddleware(metricsMiddleware(mux))))
-	server := &http.Server{Addr: fmt.Sprintf(":%d", a.port), Handler: handler}
+	engine := NewHTTPHandler(a.container)
+	server := &http.Server{Addr: fmt.Sprintf(":%d", a.port), Handler: engine}
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -88,63 +96,71 @@ func (a *App) Run() error {
 	return nil
 }
 
+// recoveryMiddleware converts a panic into a 500 instead of crashing the server.
+func recoveryMiddleware(c *gin.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic recovered", "err", r, "path", c.Request.URL.Path)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": gin.H{"code": "INTERNAL_ERROR", "message": "internal error"},
+			})
+		}
+	}()
+	c.Next()
+}
+
 // loggingMiddleware logs each request as a structured JSON line.
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("http request", "method", r.Method, "path", r.URL.Path)
-		next.ServeHTTP(w, r)
-	})
+func loggingMiddleware(c *gin.Context) {
+	slog.Info("http request", "method", c.Request.Method, "path", c.Request.URL.Path)
+	c.Next()
 }
 
 // corsMiddleware cho phép UI tĩnh (mở file:// hoặc serve ở port khác) gọi API.
 // Dev/demo nên mở toàn bộ origin; chặn preflight OPTIONS.
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-id")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+func corsMiddleware(c *gin.Context) {
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+	c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-id")
+	if c.Request.Method == http.MethodOptions {
+		c.AbortWithStatus(http.StatusNoContent)
+		return
+	}
+	c.Next()
 }
 
 // traceMiddleware continues an inbound W3C traceparent (if any) and starts a
 // root span for the request. The span — and therefore the trace — ends when the
 // handler returns. See observability.StartSpan/End (A6 — traces).
-func traceMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := observability.ExtractTraceparent(r.Context(), r.Header.Get(observability.TraceparentHeader))
-		ctx, span := observability.StartSpan(ctx, "http "+r.Method+" "+r.URL.Path)
-		defer span.End()
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+func traceMiddleware(c *gin.Context) {
+	ctx := observability.ExtractTraceparent(c.Request.Context(), c.GetHeader(observability.TraceparentHeader))
+	ctx, span := observability.StartSpan(ctx, "http "+c.Request.Method+" "+c.Request.URL.Path)
+	defer span.End()
+	c.Request = c.Request.WithContext(ctx)
+	c.Next()
 }
 
 // metricsMiddleware ghi status + duration của mỗi request vào Prometheus.
-// Labels tenant/deployment/model/region được handler set trên statusRecorder
+// Labels tenant/deployment/model/region được handler set trên metricWriter
 // sau khi route resolve (xem observability.RouteLabelSetter); nếu handler không
 // set thì chúng để trống. Status ghi HTTP status code thật.
 // Đồng thời theo dõi số request đang phục vụ (serving_inflight_requests).
-func metricsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		observability.IncInflight()
-		defer observability.DecInflight()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
-		status := strconv.Itoa(rec.status)
-		observability.HTTPRequestsTotal.WithLabelValues(rec.tenant, rec.deployment, rec.model, rec.region, status).Inc()
-		observability.RequestDurationSeconds.WithLabelValues(rec.tenant, rec.deployment, rec.model, rec.region, status).Observe(time.Since(start).Seconds())
-	})
+func metricsMiddleware(c *gin.Context) {
+	start := time.Now()
+	observability.IncInflight()
+	mw := &metricWriter{ResponseWriter: c.Writer, status: http.StatusOK}
+	c.Writer = mw
+	c.Next()
+	observability.DecInflight()
+	status := strconv.Itoa(mw.status)
+	observability.HTTPRequestsTotal.WithLabelValues(mw.tenant, mw.deployment, mw.model, mw.region, status).Inc()
+	observability.RequestDurationSeconds.WithLabelValues(mw.tenant, mw.deployment, mw.model, mw.region, status).Observe(time.Since(start).Seconds())
 }
 
-// statusRecorder bắt status code thực tế của handler (mặc định 200 khi WriteHeader không được gọi)
+// metricWriter bắt status code thực tế của handler (mặc định 200 khi WriteHeader không được gọi)
 // và lưu serving-domain labels (tenant/deployment/model/region) mà handler set sau route resolve.
-type statusRecorder struct {
-	http.ResponseWriter
+// Nó nhúng gin.ResponseWriter nên vẫn thỏa http.Flusher (SSE streaming).
+type metricWriter struct {
+	gin.ResponseWriter
 	status     int
 	tenant     string
 	deployment string
@@ -152,23 +168,13 @@ type statusRecorder struct {
 	region     string
 }
 
-func (r *statusRecorder) WriteHeader(code int) {
-	r.status = code
-	r.ResponseWriter.WriteHeader(code)
+func (w *metricWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // SetRouteLabels implements observability.RouteLabelSetter — handler gọi sau
 // khi resolve deployment để metrics ghi nhãn theo route thật.
-func (r *statusRecorder) SetRouteLabels(tenant, deployment, model, region string) {
-	r.tenant, r.deployment, r.model, r.region = tenant, deployment, model, region
-}
-
-// Flush delegating xuống writer gốc nếu nó hỗ trợ (SSE streaming).
-// http.ResponseWriter là interface không khai báo Flush, nên nếu không
-// override, statusRecorder không thỏa http.Flusher → NewSSEWriter fail
-// với "streaming not supported" trên /v1/chat/completions.
-func (r *statusRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+func (w *metricWriter) SetRouteLabels(tenant, deployment, model, region string) {
+	w.tenant, w.deployment, w.model, w.region = tenant, deployment, model, region
 }

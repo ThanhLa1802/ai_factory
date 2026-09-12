@@ -20,6 +20,7 @@ import (
 	"github.com/ai-factory/go-server/internal/inference"
 	"github.com/ai-factory/go-server/internal/runtime"
 	"github.com/ai-factory/go-server/internal/session"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -69,7 +70,7 @@ func TestLoginE2E(t *testing.T) {
 	})
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 
 	// login
@@ -115,7 +116,7 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	}
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
@@ -172,7 +173,7 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 
 	bus := events.NewMemoryEventBus()
 	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
@@ -239,7 +240,7 @@ func dbConnOrSkip(t *testing.T) *database.DB {
 	return d
 }
 
-func loginHelper(t *testing.T, mux *http.ServeMux, user, pass string) string {
+func loginHelper(t *testing.T, mux *gin.Engine, user, pass string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"username": user, "password": pass})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
@@ -294,7 +295,7 @@ func TestAsyncDeployE2E(t *testing.T) {
 	}
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, bus)
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
@@ -389,7 +390,7 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	h := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 
 	// login
@@ -487,7 +488,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	sess := session.NewManager()
 	h := NewHandler(sess, loop, t.TempDir(), authSvc, secret, cp, cp, nil, 60, 4)
 
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	h.RegisterRoutes(mux)
 
 	rec := httptest.NewRecorder()

@@ -1,17 +1,16 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ai-factory/go-server/internal/auth"
 	"github.com/ai-factory/go-server/internal/controlplane"
 	"github.com/ai-factory/go-server/internal/events"
+	"github.com/gin-gonic/gin"
 )
 
 // ControlPlaneHandler mounts /api/v1/* routes.
@@ -27,264 +26,265 @@ func NewControlPlaneHandler(cp *controlplane.Service, authSvc *auth.Service, sec
 }
 
 // RegisterRoutes mounts all control plane routes.
-func (h *ControlPlaneHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/auth/login", h.handleLogin)
+func (h *ControlPlaneHandler) RegisterRoutes(e *gin.Engine) {
+	e.POST("/api/v1/auth/login", h.handleLogin)
 
-	mux.Handle("POST /api/v1/api-keys", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleCreateAPIKey)))
-	mux.Handle("GET /api/v1/api-keys", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleListAPIKeys)))
-	mux.Handle("DELETE /api/v1/api-keys/", auth.RequirePermission(h.secret, auth.ActionKeyManage)(http.HandlerFunc(h.handleDeleteAPIKey)))
+	keys := e.Group("/api/v1/api-keys", auth.RequirePermission(h.secret, auth.ActionKeyManage))
+	keys.POST("", h.handleCreateAPIKey)
+	keys.GET("", h.handleListAPIKeys)
+	keys.DELETE("/:id", h.handleDeleteAPIKey)
 
-	mux.Handle("POST /api/v1/tenants", auth.RequirePermission(h.secret, auth.ActionTenantManage)(http.HandlerFunc(h.handleCreateTenant)))
-	mux.Handle("GET /api/v1/tenants", auth.RequirePermission(h.secret, auth.ActionTenantRead)(http.HandlerFunc(h.handleListTenants)))
+	tenants := e.Group("/api/v1/tenants")
+	tenants.POST("", auth.RequirePermission(h.secret, auth.ActionTenantManage), h.handleCreateTenant)
+	tenants.GET("", auth.RequirePermission(h.secret, auth.ActionTenantRead), h.handleListTenants)
 
-	mux.Handle("POST /api/v1/models", auth.RequirePermission(h.secret, auth.ActionModelWrite)(http.HandlerFunc(h.handleCreateModel)))
-	mux.Handle("GET /api/v1/models", auth.RequirePermission(h.secret, auth.ActionModelRead)(http.HandlerFunc(h.handleListModels)))
-	mux.Handle("GET /api/v1/models/", auth.RequirePermission(h.secret, auth.ActionModelRead)(http.HandlerFunc(h.handleGetModel)))
-	mux.Handle("POST /api/v1/models/", auth.RequirePermission(h.secret, auth.ActionModelWrite)(http.HandlerFunc(h.handleCreateModelVersion)))
+	e.POST("/api/v1/models", auth.RequirePermission(h.secret, auth.ActionModelWrite), h.handleCreateModel)
+	e.GET("/api/v1/models", auth.RequirePermission(h.secret, auth.ActionModelRead), h.handleListModels)
+	e.GET("/api/v1/models/:id", auth.RequirePermission(h.secret, auth.ActionModelRead), h.handleGetModel)
+	e.POST("/api/v1/models/:id/versions", auth.RequirePermission(h.secret, auth.ActionModelWrite), h.handleCreateModelVersion)
 
-	mux.Handle("POST /api/v1/templates", auth.RequirePermission(h.secret, auth.ActionTemplateWrite)(http.HandlerFunc(h.handleCreateTemplate)))
-	mux.Handle("GET /api/v1/templates", auth.RequirePermission(h.secret, auth.ActionTemplateRead)(http.HandlerFunc(h.handleListTemplates)))
-	mux.Handle("GET /api/v1/templates/", auth.RequirePermission(h.secret, auth.ActionTemplateRead)(http.HandlerFunc(h.handleGetTemplate)))
-	mux.Handle("POST /api/v1/templates/", auth.RequirePermission(h.secret, auth.ActionTemplateWrite)(http.HandlerFunc(h.handleCreateTemplateVersion)))
+	e.POST("/api/v1/templates", auth.RequirePermission(h.secret, auth.ActionTemplateWrite), h.handleCreateTemplate)
+	e.GET("/api/v1/templates", auth.RequirePermission(h.secret, auth.ActionTemplateRead), h.handleListTemplates)
+	e.GET("/api/v1/templates/:id", auth.RequirePermission(h.secret, auth.ActionTemplateRead), h.handleGetTemplate)
+	e.POST("/api/v1/templates/:id/versions", auth.RequirePermission(h.secret, auth.ActionTemplateWrite), h.handleCreateTemplateVersion)
 
-	mux.Handle("POST /api/v1/deployments", auth.RequirePermission(h.secret, auth.ActionDeployWrite)(http.HandlerFunc(h.handleCreateDeployment)))
-	mux.Handle("GET /api/v1/deployments", auth.RequirePermission(h.secret, auth.ActionDeployRead)(http.HandlerFunc(h.handleListDeployments)))
-	mux.Handle("GET /api/v1/deployments/", auth.RequirePermission(h.secret, auth.ActionDeployRead)(http.HandlerFunc(h.handleDeploymentByID)))
-	mux.Handle("POST /api/v1/deployments/", auth.RequirePermission(h.secret, auth.ActionDeployWrite)(http.HandlerFunc(h.handleDeploymentAction)))
+	e.POST("/api/v1/deployments", auth.RequirePermission(h.secret, auth.ActionDeployWrite), h.handleCreateDeployment)
+	e.GET("/api/v1/deployments", auth.RequirePermission(h.secret, auth.ActionDeployRead), h.handleListDeployments)
+	e.GET("/api/v1/deployments/:id", auth.RequirePermission(h.secret, auth.ActionDeployRead), h.handleDeploymentByID)
+	e.GET("/api/v1/deployments/:id/revisions", auth.RequirePermission(h.secret, auth.ActionDeployRead), h.handleDeploymentRevisions)
+	e.POST("/api/v1/deployments/:id/:action", auth.RequirePermission(h.secret, auth.ActionDeployWrite), h.handleDeploymentAction)
 
-	mux.Handle("POST /api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionQuotaManage)(http.HandlerFunc(h.handleUpsertQuota)))
-	mux.Handle("GET /api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionUsageRead)(http.HandlerFunc(h.handleListQuotas)))
+	e.POST("/api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionQuotaManage), h.handleUpsertQuota)
+	e.GET("/api/v1/quotas", auth.RequirePermission(h.secret, auth.ActionUsageRead), h.handleListQuotas)
 
-	mux.Handle("GET /api/v1/usage", auth.RequirePermission(h.secret, auth.ActionUsageRead)(http.HandlerFunc(h.handleGetUsage)))
+	e.GET("/api/v1/usage", auth.RequirePermission(h.secret, auth.ActionUsageRead), h.handleGetUsage)
 }
 
 // --- auth ---
 
-func (h *ControlPlaneHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
+func (h *ControlPlaneHandler) handleLogin(c *gin.Context) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
-	token, err := h.auth.Login(r.Context(), req.Username, req.Password)
+	token, err := h.auth.Login(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
-		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
+		writeAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid credentials")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"access_token": token})
+	writeJSON(c, http.StatusOK, map[string]string{"access_token": token})
 }
 
-func (h *ControlPlaneHandler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
+func (h *ControlPlaneHandler) handleCreateAPIKey(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
 	var req struct {
 		Name      string     `json:"name"`
 		ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
 	raw, hash := auth.GenerateAPIKey()
-	key, err := h.cp.CreateAPIKey(r.Context(), claims.TenantID, req.Name, hash, req.ExpiresAt)
+	key, err := h.cp.CreateAPIKey(c.Request.Context(), claims.TenantID, req.Name, hash, req.ExpiresAt)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": key.ID, "tenant_id": key.TenantID, "name": key.Name, "key": raw})
+	writeJSON(c, http.StatusCreated, gin.H{"id": key.ID, "tenant_id": key.TenantID, "name": key.Name, "key": raw})
 }
 
-func (h *ControlPlaneHandler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	keys, err := h.cp.ListAPIKeys(r.Context(), claims.TenantID)
+func (h *ControlPlaneHandler) handleListAPIKeys(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	keys, err := h.cp.ListAPIKeys(c.Request.Context(), claims.TenantID)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, keys)
+	writeJSON(c, http.StatusOK, keys)
 }
 
-func (h *ControlPlaneHandler) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/api-keys/")
-	if err := h.cp.DeleteAPIKey(r.Context(), id, claims.TenantID); err != nil {
+func (h *ControlPlaneHandler) handleDeleteAPIKey(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
+	if err := h.cp.DeleteAPIKey(c.Request.Context(), id, claims.TenantID); err != nil {
 		if errors.Is(err, controlplane.ErrNotFound) {
-			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "api key not found")
+			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "api key not found")
 			return
 		}
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
 }
 
 // --- tenants ---
 
-func (h *ControlPlaneHandler) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
+func (h *ControlPlaneHandler) handleCreateTenant(c *gin.Context) {
 	var req struct {
 		Name string `json:"name"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "name required")
+	if err := c.ShouldBindJSON(&req); err != nil || req.Name == "" {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "name required")
 		return
 	}
-	t, err := h.cp.CreateTenant(r.Context(), req.Name)
+	t, err := h.cp.CreateTenant(c.Request.Context(), req.Name)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, t)
+	writeJSON(c, http.StatusCreated, t)
 }
 
-func (h *ControlPlaneHandler) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	tenants, err := h.cp.ListTenants(r.Context())
+func (h *ControlPlaneHandler) handleListTenants(c *gin.Context) {
+	tenants, err := h.cp.ListTenants(c.Request.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, tenants)
+	writeJSON(c, http.StatusOK, tenants)
 }
 
 // --- models ---
 
-func (h *ControlPlaneHandler) handleCreateModel(w http.ResponseWriter, r *http.Request) {
+func (h *ControlPlaneHandler) handleCreateModel(c *gin.Context) {
 	var m controlplane.Model
-	if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&m); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
-	created, err := h.cp.CreateModel(r.Context(), m)
+	created, err := h.cp.CreateModel(c.Request.Context(), m)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(c, http.StatusCreated, created)
 }
 
-func (h *ControlPlaneHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
-	ms, err := h.cp.ListModels(r.Context())
+func (h *ControlPlaneHandler) handleListModels(c *gin.Context) {
+	ms, err := h.cp.ListModels(c.Request.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, ms)
+	writeJSON(c, http.StatusOK, ms)
 }
 
-func (h *ControlPlaneHandler) handleGetModel(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/models/")
+func (h *ControlPlaneHandler) handleGetModel(c *gin.Context) {
+	id := c.Param("id")
 	if id == "" {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "id required")
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "id required")
 		return
 	}
-	m, err := h.cp.GetModel(r.Context(), id)
+	m, err := h.cp.GetModel(c.Request.Context(), id)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "model not found")
+		writeAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "model not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, m)
+	writeJSON(c, http.StatusOK, m)
 }
 
-func (h *ControlPlaneHandler) handleCreateModelVersion(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/models/")
-	id = strings.TrimSuffix(id, "/versions")
+func (h *ControlPlaneHandler) handleCreateModelVersion(c *gin.Context) {
+	id := c.Param("id")
 	var mv controlplane.ModelVersion
-	if err := json.NewDecoder(r.Body).Decode(&mv); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&mv); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
 	mv.ModelID = id
-	created, err := h.cp.CreateModelVersion(r.Context(), mv)
+	created, err := h.cp.CreateModelVersion(c.Request.Context(), mv)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(c, http.StatusCreated, created)
 }
 
 // --- templates ---
 
-func (h *ControlPlaneHandler) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
+func (h *ControlPlaneHandler) handleCreateTemplate(c *gin.Context) {
 	var t controlplane.ServingTemplate
-	if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&t); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
-	created, err := h.cp.CreateTemplate(r.Context(), t)
+	created, err := h.cp.CreateTemplate(c.Request.Context(), t)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(c, http.StatusCreated, created)
 }
 
-func (h *ControlPlaneHandler) handleListTemplates(w http.ResponseWriter, r *http.Request) {
-	ts, err := h.cp.ListTemplates(r.Context())
+func (h *ControlPlaneHandler) handleListTemplates(c *gin.Context) {
+	ts, err := h.cp.ListTemplates(c.Request.Context())
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, ts)
+	writeJSON(c, http.StatusOK, ts)
 }
 
-func (h *ControlPlaneHandler) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/templates/")
-	t, err := h.cp.GetTemplate(r.Context(), id)
+func (h *ControlPlaneHandler) handleGetTemplate(c *gin.Context) {
+	id := c.Param("id")
+	t, err := h.cp.GetTemplate(c.Request.Context(), id)
 	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "template not found")
+		writeAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "template not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, t)
+	writeJSON(c, http.StatusOK, t)
 }
 
-func (h *ControlPlaneHandler) handleCreateTemplateVersion(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/templates/")
-	id = strings.TrimSuffix(id, "/versions")
+func (h *ControlPlaneHandler) handleCreateTemplateVersion(c *gin.Context) {
+	id := c.Param("id")
 	var tv controlplane.TemplateVersion
-	if err := json.NewDecoder(r.Body).Decode(&tv); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&tv); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
 	tv.TemplateID = id
-	created, err := h.cp.CreateTemplateVersion(r.Context(), tv)
+	created, err := h.cp.CreateTemplateVersion(c.Request.Context(), tv)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, created)
+	writeJSON(c, http.StatusCreated, created)
 }
 
 // --- deployments ---
 
-func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
+func (h *ControlPlaneHandler) handleCreateDeployment(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
 	var d controlplane.Deployment
-	if err := json.NewDecoder(r.Body).Decode(&d); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&d); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
 	d.TenantID = claims.TenantID // derive tenant from auth, never trust body
 
 	// Idempotency-Key: a client retry with the same key returns the same
 	// deployment instead of creating a duplicate (roadmap A5 — idempotency).
-	if key := r.Header.Get("Idempotency-Key"); key != "" {
-		if existingID, err := h.cp.ResolveIdempotencyKey(r.Context(), claims.TenantID, key, "deployment"); err == nil {
-			if existing, gerr := h.cp.GetDeployment(r.Context(), existingID); gerr == nil {
-				writeJSON(w, http.StatusOK, existing)
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		if existingID, err := h.cp.ResolveIdempotencyKey(c.Request.Context(), claims.TenantID, key, "deployment"); err == nil {
+			if existing, gerr := h.cp.GetDeployment(c.Request.Context(), existingID); gerr == nil {
+				writeJSON(c, http.StatusOK, existing)
 				return
 			}
 		}
 	}
 
-	created, err := h.cp.CreateDeployment(r.Context(), d)
+	created, err := h.cp.CreateDeployment(c.Request.Context(), d)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	if key := r.Header.Get("Idempotency-Key"); key != "" {
-		if err := h.cp.SaveIdempotencyKey(r.Context(), claims.TenantID, key, "deployment", created.ID); err != nil {
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		if err := h.cp.SaveIdempotencyKey(c.Request.Context(), claims.TenantID, key, "deployment", created.ID); err != nil {
 			slog.Warn("save idempotency key", "err", err) // non-fatal: replay safety is best-effort
 		}
 	}
@@ -297,59 +297,59 @@ func (h *ControlPlaneHandler) handleCreateDeployment(w http.ResponseWriter, r *h
 		"template_version_id": created.TemplateVersionID,
 		"created_by":          claims.UserID,
 	})
-	if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
+	if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
 		// The deployment is persisted but not queued. Mark it FAILED so it is not
 		// left stuck in PENDING (best-effort), then surface the error loudly.
-		_, _ = h.cp.TransitionDeployment(r.Context(), created.ID, controlplane.DeploymentFailed)
-		writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
+		_, _ = h.cp.TransitionDeployment(c.Request.Context(), created.ID, controlplane.DeploymentFailed)
+		writeAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, created)
+	writeJSON(c, http.StatusAccepted, created)
 }
 
-func (h *ControlPlaneHandler) handleListDeployments(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	ds, err := h.cp.ListDeployments(r.Context(), claims.TenantID)
+func (h *ControlPlaneHandler) handleListDeployments(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	ds, err := h.cp.ListDeployments(c.Request.Context(), claims.TenantID)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, ds)
+	writeJSON(c, http.StatusOK, ds)
 }
 
-func (h *ControlPlaneHandler) handleDeploymentByID(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/deployments/")
-	id = strings.TrimSuffix(id, "/revisions")
-	d, err := h.cp.GetDeployment(r.Context(), id)
+func (h *ControlPlaneHandler) handleDeploymentByID(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
+	d, err := h.cp.GetDeployment(c.Request.Context(), id)
 	if err != nil || d.TenantID != claims.TenantID {
-		writeAPIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
+		writeAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
 		return
 	}
-	if strings.HasSuffix(r.URL.Path, "/revisions") {
-		revs, err := h.cp.ListRevisions(r.Context(), id)
-		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, revs)
-		return
-	}
-	writeJSON(w, http.StatusOK, d)
+	writeJSON(c, http.StatusOK, d)
 }
 
-func (h *ControlPlaneHandler) handleDeploymentAction(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	path := strings.TrimPrefix(r.URL.Path, "/api/v1/deployments/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) != 2 {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "bad path")
+func (h *ControlPlaneHandler) handleDeploymentRevisions(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
+	d, err := h.cp.GetDeployment(c.Request.Context(), id)
+	if err != nil || d.TenantID != claims.TenantID {
+		writeAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
 		return
 	}
-	id, action := parts[0], parts[1]
-	d, err := h.cp.GetDeployment(r.Context(), id)
+	revs, err := h.cp.ListRevisions(c.Request.Context(), id)
+	if err != nil {
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeJSON(c, http.StatusOK, revs)
+}
+
+func (h *ControlPlaneHandler) handleDeploymentAction(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id, action := c.Param("id"), c.Param("action")
+	d, err := h.cp.GetDeployment(c.Request.Context(), id)
 	if err != nil || d.TenantID != claims.TenantID {
-		writeAPIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
+		writeAPIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "deployment not found")
 		return
 	}
 	// Async: the worker performs the actual state transitions.
@@ -360,57 +360,57 @@ func (h *ControlPlaneHandler) handleDeploymentAction(w http.ResponseWriter, r *h
 			"model_version_id": d.ModelVersionID, "template_version_id": d.TemplateVersionID,
 			"created_by": claims.UserID,
 		})
-		if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
-			writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+		if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
+			writeAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusAccepted, d)
+		writeJSON(c, http.StatusAccepted, d)
 	case "stop":
 		ev := events.NewEvent(events.TypeDeploymentStopRequested, claims.TenantID, id, nil)
-		if err := h.producer.Publish(r.Context(), events.TopicDeploymentEvents, ev); err != nil {
-			writeAPIError(w, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
+		if err := h.producer.Publish(c.Request.Context(), events.TopicDeploymentEvents, ev); err != nil {
+			writeAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusAccepted, d)
+		writeJSON(c, http.StatusAccepted, d)
 	default:
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "unknown action "+action)
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "unknown action "+action)
 		return
 	}
 }
 
 // --- quotas ---
 
-func (h *ControlPlaneHandler) handleUpsertQuota(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
+func (h *ControlPlaneHandler) handleUpsertQuota(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
 	var q controlplane.Quota
-	if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
+	if err := c.ShouldBindJSON(&q); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "invalid body")
 		return
 	}
 	q.TenantID = claims.TenantID
-	created, err := h.cp.UpsertQuota(r.Context(), q)
+	created, err := h.cp.UpsertQuota(c.Request.Context(), q)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, created)
+	writeJSON(c, http.StatusOK, created)
 }
 
-func (h *ControlPlaneHandler) handleListQuotas(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	qs, err := h.cp.ListQuotas(r.Context(), claims.TenantID)
+func (h *ControlPlaneHandler) handleListQuotas(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	qs, err := h.cp.ListQuotas(c.Request.Context(), claims.TenantID)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, qs)
+	writeJSON(c, http.StatusOK, qs)
 }
 
-func (h *ControlPlaneHandler) handleGetUsage(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
+func (h *ControlPlaneHandler) handleGetUsage(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
 
 	days := 30
-	if v := r.URL.Query().Get("days"); v != "" {
+	if v := c.Query("days"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 90 {
 			days = n
 		}
@@ -424,43 +424,31 @@ func (h *ControlPlaneHandler) handleGetUsage(w http.ResponseWriter, r *http.Requ
 	monthStart := now.AddDate(0, 0, -30)
 	dailyStart := now.AddDate(0, 0, -(days - 1))
 
-	today, err := h.cp.UsageSummary(r.Context(), claims.TenantID, todayStart, now)
+	today, err := h.cp.UsageSummary(c.Request.Context(), claims.TenantID, todayStart, now)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	month, err := h.cp.UsageSummary(r.Context(), claims.TenantID, monthStart, now)
+	month, err := h.cp.UsageSummary(c.Request.Context(), claims.TenantID, monthStart, now)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	daily, err := h.cp.UsageDaily(r.Context(), claims.TenantID, dailyStart, now)
+	daily, err := h.cp.UsageDaily(c.Request.Context(), claims.TenantID, dailyStart, now)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	byModel, err := h.cp.UsageByModel(r.Context(), claims.TenantID, monthStart, now)
+	byModel, err := h.cp.UsageByModel(c.Request.Context(), claims.TenantID, monthStart, now)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(c, http.StatusOK, gin.H{
 		"today":    today,
 		"month":    month,
 		"daily":    daily,
 		"by_model": byModel,
 	})
-}
-
-// --- helpers ---
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeAPIError(w http.ResponseWriter, status int, code, msg string) {
-	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": msg}})
 }

@@ -36,7 +36,7 @@ func TestUsageEndpointE2E(t *testing.T) {
 	}
 
 	cph := NewControlPlaneHandler(cp, authSvc, secret, events.NewMemoryEventBus())
-	mux := http.NewServeMux()
+	mux := newTestEngine()
 	cph.RegisterRoutes(mux)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 

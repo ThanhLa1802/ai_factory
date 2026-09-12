@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/ai-factory/go-server/internal/agent"
@@ -18,6 +17,7 @@ import (
 	"github.com/ai-factory/go-server/internal/observability"
 	"github.com/ai-factory/go-server/internal/ratelimit"
 	"github.com/ai-factory/go-server/internal/session"
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
@@ -57,19 +57,22 @@ func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, aut
 	}
 }
 
-// RegisterRoutes registers all HTTP routes on the given mux.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.Handle("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc)(http.HandlerFunc(h.handleOpenAIChatCompletions)))
-	mux.HandleFunc("/health", h.handleHealth)
-	mux.Handle("GET /api/v1/sessions", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleListSessions)))
-	mux.Handle("GET /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleGetSession)))
-	mux.Handle("PATCH /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleRenameSession)))
-	mux.Handle("DELETE /api/v1/sessions/", auth.RequireAuth(h.secret)(http.HandlerFunc(h.handleDeleteSession)))
+// RegisterRoutes registers all HTTP routes on the given Gin engine.
+func (h *Handler) RegisterRoutes(e *gin.Engine) {
+	e.POST("/v1/chat/completions", auth.InferenceAuth(h.secret, h.authSvc), h.handleOpenAIChatCompletions)
+	e.GET("/health", h.handleHealth)
+
+	sessions := e.Group("/api/v1/sessions", auth.RequireAuth(h.secret))
+	sessions.GET("", h.handleListSessions)
+	sessions.GET("/:id", h.handleGetSession)
+	sessions.PATCH("/:id", h.handleRenameSession)
+	sessions.DELETE("/:id", h.handleDeleteSession)
 
 	// Static UI for testing
-	mux.HandleFunc("/", h.handleUI)
-	// Technical concepts documentation
-	mux.HandleFunc("/concepts", h.handleConcepts)
+	e.GET("/", h.handleUI)
+	e.GET("/chat", h.handleUI)
+	e.GET("/keys", h.handleUI)
+	e.GET("/concepts", h.handleConcepts)
 }
 
 // ==========================================================================
@@ -80,18 +83,18 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 // concurrency limits (fail-open on Redis error). On success returns the
 // deployment and a release func (for concurrency); on failure writes the error
 // response and returns nil, nil, false.
-func (h *Handler) resolveForTenant(ctx context.Context, w http.ResponseWriter, tenantID, model string) (*controlplane.Deployment, func(), bool) {
+func (h *Handler) resolveForTenant(ctx context.Context, c *gin.Context, tenantID, model string) (*controlplane.Deployment, func(), bool) {
 	d, err := h.resolver.ResolveDeployment(ctx, tenantID, model)
 	if err != nil {
-		writeOpenAIError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
+		writeOpenAIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
 		return nil, nil, false
 	}
 	if !h.allow(ctx, "tenant:"+tenantID+":rpm", h.rpmLimit, time.Minute) {
-		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
+		writeOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
 		return nil, nil, false
 	}
 	if !h.acquire(ctx, "deployment:"+d.ID+":concurrency", h.concLimit) {
-		writeOpenAIError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
+		writeOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
 		return nil, nil, false
 	}
 	release := func() { _ = h.limiter.Release(context.Background(), "deployment:"+d.ID+":concurrency") }
@@ -116,57 +119,52 @@ func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
 	return ok
 }
 
-func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
+func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	var req OpenAIRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
 	if err := ValidateOpenAIRequest(&req); err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
-	tenantID, _ := auth.TenantIDFromContext(r.Context())
-	d, release, ok := h.resolveForTenant(r.Context(), w, tenantID, req.Model)
+	tenantID, _ := auth.TenantIDFromContext(c)
+	d, release, ok := h.resolveForTenant(c.Request.Context(), c, tenantID, req.Model)
 	if !ok {
 		return
 	}
 	defer release()
-	if ls, ok := w.(observability.RouteLabelSetter); ok {
+	if ls, ok := c.Writer.(observability.RouteLabelSetter); ok {
 		ls.SetRouteLabels(d.TenantID, d.ID, req.Model, d.Region)
 	}
 
-	sessionID := r.Header.Get("x-session-id")
+	sessionID := c.GetHeader("x-session-id")
 	if sessionID == "" {
 		sessionID = session.NewSessionID()
 	}
 	userID := ""
-	if claims, ok := auth.ClaimsFromContext(r.Context()); ok {
+	if claims, ok := auth.ClaimsFromContext(c); ok {
 		userID = claims.UserID
 	}
-	sess, err := h.sessionMgr.GetOrCreate(r.Context(), sessionID, tenantID, userID)
+	sess, err := h.sessionMgr.GetOrCreate(c.Request.Context(), sessionID, tenantID, userID)
 	if err != nil {
 		// A cross-tenant session-id collision must be indistinguishable from a
 		// missing session — 404 never reveals that the id exists elsewhere.
 		if errors.Is(err, session.ErrSessionForbidden) {
-			writeOpenAIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			writeOpenAIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeOpenAIError(w, http.StatusForbidden, "FORBIDDEN", err.Error())
+		writeOpenAIError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
 		return
 	}
 	sess.Model = req.Model
 
 	msgs, systemPrompt, err := OpenAIToInternal(&req)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
@@ -179,24 +177,24 @@ func (h *Handler) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Req
 		params.MaxTokens = req.MaxTokens
 	}
 
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	go func() {
-		<-r.Context().Done()
+		<-c.Request.Context().Done()
 		cancel()
 	}()
 
 	if req.Stream {
-		h.handleOpenAIStream(ctx, w, sess, msgs, params, req.Model, tenantID)
+		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, tenantID)
 	} else {
-		h.handleOpenAINonStream(ctx, w, sess, msgs, params, req.Model, tenantID)
+		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, tenantID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
-	sse, err := NewSSEWriter(w)
+func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
+	sse, err := NewSSEWriter(c.Writer)
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
+		writeOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
 		return
 	}
 
@@ -317,7 +315,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, w http.ResponseWriter,
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWriter, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
 	var (
 		content string
 		usage   *inference.Usage
@@ -344,10 +342,10 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 			case agent.LoopEventError:
 				if errors.Is(event.Err, inference.ErrOverloaded) {
 					observability.IncOverloaded(tenantID, modelID)
-					writeOpenAIError(w, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
+					writeOpenAIError(c, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
 					return
 				}
-				writeOpenAIError(w, http.StatusInternalServerError, "internal_error", event.Err.Error())
+				writeOpenAIError(c, http.StatusInternalServerError, "internal_error", event.Err.Error())
 				return
 			}
 		}
@@ -377,49 +375,47 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, w http.ResponseWrit
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	c.JSON(http.StatusOK, resp)
 }
 
 // ==========================================================================
 // Health, Sessions, UI
 // ==========================================================================
 
-func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+func (h *Handler) handleHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 		"server": "ai-factory",
 	})
 }
 
-func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
-	claims, ok := auth.ClaimsFromContext(r.Context())
+func (h *Handler) handleListSessions(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
-		writeAPIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
+		writeAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
 		return
 	}
-	list, err := h.sessionMgr.ListSessions(r.Context(), claims.TenantID, claims.UserID)
+	list, err := h.sessionMgr.ListSessions(c.Request.Context(), claims.TenantID, claims.UserID)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, list)
+	writeJSON(c, http.StatusOK, list)
 }
 
-func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	sess, err := h.sessionMgr.GetPersisted(r.Context(), id, claims.TenantID, claims.UserID)
+func (h *Handler) handleGetSession(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
+	sess, err := h.sessionMgr.GetPersisted(c.Request.Context(), id, claims.TenantID, claims.UserID)
 	if errors.Is(err, session.ErrSessionNotFound) {
-		writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 		return
 	}
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(c, http.StatusOK, gin.H{
 		"id":         sess.ID,
 		"title":      sess.Title,
 		"model":      sess.Model,
@@ -429,44 +425,44 @@ func (h *Handler) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) handleRenameSession(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+func (h *Handler) handleRenameSession(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
 	var req struct {
 		Title string `json:"title"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Title == "" {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST", "title required")
+	if err := c.ShouldBindJSON(&req); err != nil || req.Title == "" {
+		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "title required")
 		return
 	}
-	if err := h.sessionMgr.RenameSession(r.Context(), id, claims.TenantID, claims.UserID, req.Title); err != nil {
+	if err := h.sessionMgr.RenameSession(c.Request.Context(), id, claims.TenantID, claims.UserID, req.Title); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
-			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": req.Title})
+	writeJSON(c, http.StatusOK, gin.H{"id": id, "title": req.Title})
 }
 
-func (h *Handler) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.ClaimsFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	if err := h.sessionMgr.DeleteSession(r.Context(), id, claims.TenantID, claims.UserID); err != nil {
+func (h *Handler) handleDeleteSession(c *gin.Context) {
+	claims, _ := auth.ClaimsFromContext(c)
+	id := c.Param("id")
+	if err := h.sessionMgr.DeleteSession(c.Request.Context(), id, claims.TenantID, claims.UserID); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
-			writeAPIError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
 }
 
-func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleUI(c *gin.Context) {
 	var file string
-	switch r.URL.Path {
+	switch c.Request.URL.Path {
 	case "/":
 		file = "index.html"
 	case "/chat":
@@ -474,28 +470,12 @@ func (h *Handler) handleUI(w http.ResponseWriter, r *http.Request) {
 	case "/keys":
 		file = "keys.html"
 	default:
-		http.NotFound(w, r)
+		c.Status(http.StatusNotFound)
 		return
 	}
-	http.ServeFile(w, r, filepath.Join(h.uiDir, file))
+	c.File(filepath.Join(h.uiDir, file))
 }
 
-func (h *Handler) handleConcepts(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, filepath.Join(h.uiDir, "concepts.html"))
-}
-
-// ==========================================================================
-// Helpers
-// ==========================================================================
-
-func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": map[string]interface{}{
-			"type":    typ,
-			"message": msg,
-			"code":    status,
-		},
-	})
+func (h *Handler) handleConcepts(c *gin.Context) {
+	c.File(filepath.Join(h.uiDir, "concepts.html"))
 }

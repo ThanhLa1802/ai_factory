@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,26 +8,41 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/gin-gonic/gin"
 )
+
+func newRouter(handlers ...gin.HandlerFunc) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.GET("/", handlers...)
+	e.POST("/v1/chat/completions", handlers...)
+	return e
+}
+
+func do(e *gin.Engine, method, path, authHeader string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+	return rec
+}
 
 func TestRequireAuthAcceptsValidToken(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	token, _ := IssueToken(secret, "u1", "t1", RoleTenantViewer, time.Hour)
 
-	handler := RequireAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := ClaimsFromContext(r.Context())
+	e := newRouter(RequireAuth(secret), func(c *gin.Context) {
+		claims, ok := ClaimsFromContext(c)
 		if !ok {
-			http.Error(w, "no claims", http.StatusInternalServerError)
+			c.String(http.StatusInternalServerError, "no claims")
 			return
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(claims.TenantID))
-	}))
+		c.String(http.StatusOK, claims.TenantID)
+	})
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	rec := do(e, http.MethodGet, "/", "Bearer "+token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -39,12 +53,8 @@ func TestRequireAuthAcceptsValidToken(t *testing.T) {
 
 func TestRequireAuthRejectsMissing(t *testing.T) {
 	secret := []byte("0123456789abcdef")
-	handler := RequireAuth(secret)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	e := newRouter(RequireAuth(secret), func(c *gin.Context) { c.Status(http.StatusOK) })
+	rec := do(e, http.MethodGet, "/", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rec.Code)
 	}
@@ -53,13 +63,8 @@ func TestRequireAuthRejectsMissing(t *testing.T) {
 func TestRequirePermissionDeniesViewerWrite(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	token, _ := IssueToken(secret, "u1", "t1", RoleTenantViewer, time.Hour)
-	handler := RequirePermission(secret, ActionDeployWrite)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	e := newRouter(RequirePermission(secret, ActionDeployWrite), func(c *gin.Context) { c.Status(http.StatusOK) })
+	rec := do(e, http.MethodGet, "/", "Bearer "+token)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("code = %d, want 403", rec.Code)
 	}
@@ -73,17 +78,14 @@ func TestInferenceAuthJWT(t *testing.T) {
 	}
 	svc := NewService(&fakeStore{}, secret, time.Hour)
 	var gotTenant string
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := ClaimsFromContext(r.Context())
+	e := newRouter(InferenceAuth(secret, svc), func(c *gin.Context) {
+		claims, ok := ClaimsFromContext(c)
 		if !ok {
 			t.Error("ClaimsFromContext: not ok")
 		}
 		gotTenant = claims.TenantID
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	rec := httptest.NewRecorder()
-	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)
+	rec := do(e, http.MethodPost, "/v1/chat/completions", "Bearer "+token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -95,19 +97,15 @@ func TestInferenceAuthJWT(t *testing.T) {
 func TestInferenceAuthAPIKey(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	svc := NewService(&fakeStore{key: &controlplane.APIKey{ID: "k1", TenantID: "t9", Status: "ACTIVE"}}, secret, time.Hour)
-	// raw key bất kỳ: fakeStore trả key cố định, không cần hash khớp
 	var gotTenant string
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		key, ok := APIKeyFromContext(r.Context())
+	e := newRouter(InferenceAuth(secret, svc), func(c *gin.Context) {
+		key, ok := APIKeyFromContext(c)
 		if !ok {
 			t.Error("APIKeyFromContext: not ok")
 		}
 		gotTenant = key.TenantID
 	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("Authorization", "Bearer sk-whatever")
-	rec := httptest.NewRecorder()
-	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)
+	rec := do(e, http.MethodPost, "/v1/chat/completions", "Bearer sk-whatever")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s, want 200", rec.Code, rec.Body.String())
 	}
@@ -119,12 +117,8 @@ func TestInferenceAuthAPIKey(t *testing.T) {
 func TestInferenceAuthMissingHeader(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	svc := NewService(&fakeStore{}, secret, time.Hour)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next must not run without auth")
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil) // no Authorization
-	rec := httptest.NewRecorder()
-	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)
+	e := newRouter(InferenceAuth(secret, svc), func(c *gin.Context) { t.Error("next must not run without auth") })
+	rec := do(e, http.MethodPost, "/v1/chat/completions", "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rec.Code)
 	}
@@ -136,13 +130,8 @@ func TestInferenceAuthMissingHeader(t *testing.T) {
 func TestInferenceAuthInvalidToken(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	svc := NewService(&fakeStore{}, secret, time.Hour)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next must not run on invalid token")
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("Authorization", "Bearer not-a-token-not-a-key")
-	rec := httptest.NewRecorder()
-	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)
+	e := newRouter(InferenceAuth(secret, svc), func(c *gin.Context) { t.Error("next must not run on invalid token") })
+	rec := do(e, http.MethodPost, "/v1/chat/completions", "Bearer not-a-token-not-a-key")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", rec.Code)
 	}
@@ -151,13 +140,8 @@ func TestInferenceAuthInvalidToken(t *testing.T) {
 func TestInferenceAuthInactiveKey(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	svc := NewService(&fakeStore{key: &controlplane.APIKey{ID: "k1", TenantID: "t9", Status: "REVOKED"}}, secret, time.Hour)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next must not run on inactive key")
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	req.Header.Set("Authorization", "Bearer sk-inactive")
-	rec := httptest.NewRecorder()
-	InferenceAuth(secret, svc)(next).ServeHTTP(rec, req)
+	e := newRouter(InferenceAuth(secret, svc), func(c *gin.Context) { t.Error("next must not run on inactive key") })
+	rec := do(e, http.MethodPost, "/v1/chat/completions", "Bearer sk-inactive")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("code = %d, want 403", rec.Code)
 	}
@@ -167,19 +151,21 @@ func TestInferenceAuthInactiveKey(t *testing.T) {
 }
 
 func TestTenantIDFromContext(t *testing.T) {
-	ctx := context.Background()
+	gin.SetMode(gin.TestMode)
 
-	if _, ok := TenantIDFromContext(ctx); ok {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	if _, ok := TenantIDFromContext(c); ok {
 		t.Fatal("empty context → want ok=false")
 	}
 
-	claims := &Claims{UserID: "u1", TenantID: "tenant-1", Role: RoleTenantAdmin}
-	if id, ok := TenantIDFromContext(context.WithValue(ctx, ctxKey{}, claims)); !ok || id != "tenant-1" {
+	c.Set(ctxClaimsKey, &Claims{UserID: "u1", TenantID: "tenant-1", Role: RoleTenantAdmin})
+	if id, ok := TenantIDFromContext(c); !ok || id != "tenant-1" {
 		t.Fatalf("claims → (%q,%v), want (tenant-1,true)", id, ok)
 	}
 
-	key := &controlplane.APIKey{ID: "k1", TenantID: "tenant-2"}
-	if id, ok := TenantIDFromContext(context.WithValue(ctx, apiKeyCtxKey{}, key)); !ok || id != "tenant-2" {
+	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c2.Set(ctxAPIKeyKey, &controlplane.APIKey{ID: "k1", TenantID: "tenant-2"})
+	if id, ok := TenantIDFromContext(c2); !ok || id != "tenant-2" {
 		t.Fatalf("api key → (%q,%v), want (tenant-2,true)", id, ok)
 	}
 }

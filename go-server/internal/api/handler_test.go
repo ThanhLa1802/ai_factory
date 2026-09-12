@@ -11,7 +11,22 @@ import (
 	"time"
 
 	"github.com/ai-factory/go-server/internal/controlplane"
+	"github.com/gin-gonic/gin"
 )
+
+// newTestEngine returns a Gin engine in test mode (no debug output).
+func newTestEngine() *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	return gin.New()
+}
+
+// testContext returns a Gin context writing to a fresh recorder.
+func testContext() (*gin.Context, *httptest.ResponseRecorder) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	return c, rec
+}
 
 // TestHandleUIRouting: handleUI route theo path chính xác, không gated (tạo file tạm).
 func TestHandleUIRouting(t *testing.T) {
@@ -22,15 +37,20 @@ func TestHandleUIRouting(t *testing.T) {
 		}
 	}
 	h := &Handler{uiDir: dir}
+	e := newTestEngine()
+	e.GET("/", h.handleUI)
+	e.GET("/chat", h.handleUI)
+	e.GET("/keys", h.handleUI)
+
 	for path, want := range map[string]string{"/": "index.html", "/chat": "chat.html", "/keys": "keys.html"} {
 		rec := httptest.NewRecorder()
-		h.handleUI(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK || rec.Body.String() != want {
 			t.Errorf("%s → code %d body %q, want 200 %q", path, rec.Code, rec.Body.String(), want)
 		}
 	}
 	rec := httptest.NewRecorder()
-	h.handleUI(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("/nope → code %d, want 404", rec.Code)
 	}
@@ -59,8 +79,8 @@ func (f *fakeLimiter) Release(ctx context.Context, key string) error            
 
 func TestResolveForTenantNotFound(t *testing.T) {
 	h := &Handler{resolver: &fakeResolver{err: controlplane.ErrNotFound}, limiter: &fakeLimiter{}, rpmLimit: 60, concLimit: 4}
-	rec := httptest.NewRecorder()
-	if _, _, ok := h.resolveForTenant(context.Background(), rec, "t1", "qwen-3b"); ok {
+	c, rec := testContext()
+	if _, _, ok := h.resolveForTenant(context.Background(), c, "t1", "qwen-3b"); ok {
 		t.Fatal("want ok=false on not found")
 	}
 	if rec.Code != http.StatusNotFound {
@@ -74,8 +94,8 @@ func TestResolveForTenantRateLimited(t *testing.T) {
 		limiter:  &fakeLimiter{allow: false, acquire: true},
 		rpmLimit: 60, concLimit: 4,
 	}
-	rec := httptest.NewRecorder()
-	if _, _, ok := h.resolveForTenant(context.Background(), rec, "t1", "qwen-3b"); ok {
+	c, rec := testContext()
+	if _, _, ok := h.resolveForTenant(context.Background(), c, "t1", "qwen-3b"); ok {
 		t.Fatal("want ok=false on rate limited")
 	}
 	if rec.Code != http.StatusTooManyRequests {
@@ -89,8 +109,8 @@ func TestResolveForTenantFailOpen(t *testing.T) {
 		limiter:  &fakeLimiter{allow: false, allowErr: errors.New("redis down"), acquire: true},
 		rpmLimit: 60, concLimit: 4,
 	}
-	rec := httptest.NewRecorder()
-	d, release, ok := h.resolveForTenant(context.Background(), rec, "t1", "qwen-3b")
+	c, _ := testContext()
+	d, release, ok := h.resolveForTenant(context.Background(), c, "t1", "qwen-3b")
 	if !ok || d == nil || release == nil {
 		t.Fatal("want ok=true on fail-open (redis error)")
 	}

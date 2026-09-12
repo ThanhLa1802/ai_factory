@@ -6,20 +6,20 @@ import (
 	"testing"
 
 	"github.com/ai-factory/go-server/internal/observability"
+	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-// TestMetricsMiddleware verifies the middleware increments the request counter
-// with the real HTTP status code and passes the response through unchanged.
-func TestMetricsMiddleware(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
-	h := metricsMiddleware(next)
+// TestMetricsMiddlewareGin verifies the Gin middleware increments the request
+// counter with the real HTTP status code and passes the response through.
+func TestMetricsMiddlewareGin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(metricsMiddleware)
+	e.GET("/some-path", func(c *gin.Context) { c.Status(http.StatusTeapot) })
 
-	req := httptest.NewRequest(http.MethodGet, "/some-path", nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/some-path", nil))
 
 	counter, err := observability.HTTPRequestsTotal.GetMetricWithLabelValues("", "", "", "", "418")
 	if err != nil {
@@ -33,19 +33,22 @@ func TestMetricsMiddleware(t *testing.T) {
 	}
 }
 
-// statusRecorder phải thỏa http.Flusher để SSE streaming hoạt động.
-// Trước fix, statusRecorder embed http.ResponseWriter (interface không khai báo
-// Flush) nên w.(http.Flusher) trong NewSSEWriter fail → 500 "streaming not supported".
-func TestStatusRecorderImplementsFlusher(t *testing.T) {
-	// Compile-time: statusRecorder giờ có Flush() delegate.
-	var _ http.Flusher = (*statusRecorder)(nil)
+// metricWriter phải thỏa http.Flusher để SSE streaming hoạt động qua Gin.
+func TestMetricWriterImplementsFlusher(t *testing.T) {
+	// Compile-time: metricWriter có Flush (nhúng gin.ResponseWriter).
+	var _ http.Flusher = (*metricWriter)(nil)
 
-	// Runtime, đúng path NewSSEWriter: assertion qua biến kiểu http.ResponseWriter.
+	gin.SetMode(gin.TestMode)
+	e := gin.New()
+	e.Use(metricsMiddleware)
+	var isFlusher bool
+	e.GET("/sse", func(c *gin.Context) {
+		_, isFlusher = c.Writer.(http.Flusher)
+		c.Status(http.StatusOK)
+	})
 	rec := httptest.NewRecorder()
-	var w http.ResponseWriter = &statusRecorder{ResponseWriter: rec}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		t.Fatal("statusRecorder must implement http.Flusher so SSE streaming survives the metrics middleware")
+	e.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	if !isFlusher {
+		t.Fatal("c.Writer must implement http.Flusher so SSE streaming survives the metrics middleware")
 	}
-	flusher.Flush()
 }
