@@ -4,7 +4,7 @@ A learning project simulating a Claude Code / ChatGPT server, comprising an infe
 
 > **Further reading:** [`README.md`](README.md) (public overview), [`docs/TRACKING.md`](docs/TRACKING.md) (progress tracker — where the project currently is), [`docs/LEARNING_ROADMAP.md`](docs/LEARNING_ROADMAP.md) (project-specific learning roadmap — 2 tracks: backend/platform + self-written inference), `docs/ARCHITECTURE.md` (detailed architecture, deep-dive into each component + integration gaps), `docs/BENCHMARK.md` (performance metrics), `CONTEXT.md` (domain glossary), `docs/superpowers/specs/` (approved design docs). This file is only an overview + roadmap.
 >
-> **Rearchitecture (modular monolith):** the Go server is moving to a prod-style layout (modular monolith + DI + composition root + multi-binary), swapping the stack to Gin + GORM + gormigrate + viper + zap while keeping the Python worker as the data plane. **Phase 1 ✅** (composition root `internal/app` + lazy DI `pkg/di` + viper config + zap logger); **Phase 2 ✅** (GORM v1.31 + gormigrate v2 data layer + repository interfaces; pgx/goose removed); **Phase 3 ✅** (HTTP layer on Gin v1.11 — handlers, middleware, SSE, auth). `cmd/server/main.go` is a thin entry point. Remaining: `services/*` module split, multi-binary, outbox. Design: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Phase 1 plan: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md) · Phase 2 plan: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](docs/superpowers/plans/2026-09-12-phase2-data-layer.md) · Phase 3 plan: [`docs/superpowers/plans/2026-09-12-phase3-http-gin.md`](docs/superpowers/plans/2026-09-12-phase3-http-gin.md).
+> **Rearchitecture (modular monolith):** the Go server is moving to a prod-style layout (modular monolith + DI + composition root + multi-binary), swapping the stack to Gin + GORM + gormigrate + viper + zap while keeping the Python worker as the data plane. **Phase 1 ✅** (composition root `internal/app` + lazy DI `pkg/di` + viper config + zap logger); **Phase 2 ✅** (GORM v1.31 + gormigrate v2 data layer + repository interfaces; pgx/goose removed); **Phase 3 ✅** (HTTP layer on Gin v1.11 — handlers, middleware, SSE, auth); **Phase 4 ✅** (modularize — `internal/services/{iam,serving,usage,inference}` + `internal/infrastructure/*` relocation + neutral auth port; cross-service deps wired only in `internal/app`). `cmd/server/main.go` is a thin entry point. Remaining: multi-binary (Phase 5), outbox/cache-aside (Phase 6). Design: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Phase 1 plan: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md) · Phase 2 plan: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](docs/superpowers/plans/2026-09-12-phase2-data-layer.md) · Phase 3 plan: [`docs/superpowers/plans/2026-09-12-phase3-http-gin.md`](docs/superpowers/plans/2026-09-12-phase3-http-gin.md) · Phase 4 plan: [`docs/superpowers/plans/2026-09-12-phase4-modularize.md`](docs/superpowers/plans/2026-09-12-phase4-modularize.md).
 
 ## Behavioral Guidelines
 
@@ -103,17 +103,26 @@ ai_factory/
 │   ├── go.mod / go.sum
 │   ├── configs/config.yaml      #   Default config (viper; AI_FACTORY_* env overrides)
 │   ├── pkg/di/                  #   Lazy DI container + lifecycle (container.go, errors.go, lifecycle.go)
+│   ├── pkg/response/            #   Shared JSON envelope helpers (WriteJSON/WriteAPIError/WriteOpenAIError)
 │   ├── cmd/server/main.go       #   Thin entry point (flags → config → logger → container → app)
 │   └── internal/
-│       ├── app/                 #   Composition root: options.go, registry.go, app.go, seeder.go
+│       ├── app/                 #   Composition root: options.go, registry.go, app.go, seeder.go, adapters.go
 │       ├── config/              #   config.go (viper loader + flat Config fields)
-│       ├── infrastructure/database/ # GORM open + gormigrate runner (goose adoption)
+│       ├── infrastructure/
+│       │   ├── database/        #   GORM open + gormigrate runner (goose adoption)
+│       │   ├── observability/   #   zap logger, Prometheus metrics, W3C traces
+│       │   ├── circuitbreaker/  #   3-state breaker
+│       │   ├── retry/           #   exponential backoff + jitter
+│       │   ├── message/         #   event envelope + Kafka/memory bus
+│       │   ├── cache/           #   Redis rate limiter
+│       │   ├── inference/       #   gRPC client + batch scheduler + pb/ (codegen)
+│       │   └── middleware/      #   global Gin chain + neutral auth port (Authenticator)
 │       ├── migrations/          #   6 gormigrate Go migrations (was db/migrations/*.sql)
-│       ├── api/                 #   handler.go, adapters.go, sse.go, respond.go (Gin + OpenAI protocol + SSE)
-│       ├── agent/               #   loop.go (agentic loop), tools.go (ToolExecutor)
-│       ├── controlplane/        #   service.go + repositories.go/repository_*.go (GORM) + models.go
-│       ├── session/             #   session.go, manager.go, store.go (Store iface), store_gorm.go
-│       └── inference/           #   client.go (gRPC), batch_scheduler.go, pb/ (codegen)
+│       └── services/
+│           ├── iam/             #   tenants, users, API keys, JWT/API-key auth + Authenticator
+│           ├── serving/         #   catalog (models/templates), deployments, runtime adapter + worker
+│           ├── usage/           #   quota + usage metering
+│           └── inference/       #   chat/SSE, agentic loop, tools, durable sessions
 ├── python-worker/               # Python inference worker
 │   ├── pyproject.toml
 │   ├── benchmark.py             #   performance benchmark
@@ -157,8 +166,9 @@ ai_factory/
 - **Chat history (sidebar):** sessions are durable (list/title/rename/delete via `/api/v1/sessions`), auto-titled from the first user message (40-rune truncate). The UI sidebar is ChatGPT-style on `/chat`.
 - **Usage metering:** per-turn prompt/completion tokens are persisted to `usage_events` (best-effort, never fails a turn) and surfaced on `/platform` (Usage tab) + `/api/v1/usage`. Infra management (deployments/models/templates/quotas) moved to `/infra`.
 - **Composition root (Phase 1 ✅):** all wiring lives in `internal/app` (`registry.go` registers DI providers by name; `app.go` owns seed → worker → HTTP → graceful shutdown), dependencies are built lazily by `pkg/di`. Config is viper (`configs/config.yaml` + `AI_FACTORY_*` env overrides, loader `config.Load(path)`); logging is a zap core bridged into `slog` via `zapslog`.
-- **Data layer (Phase 2 ✅):** GORM v1.31 + gormigrate v2 replace pgx + goose. `internal/infrastructure/database` owns `Open`/`Migrate` (with one-time adoption of an existing goose-migrated DB), `internal/migrations` holds the 6 Go migrations (table/column names unchanged), and data access goes through 10 repository interfaces (`controlplane.Repositories`, `session.Store`) so services never see `*gorm.DB`.
-- **HTTP layer (Phase 3 ✅):** Gin v1.11 replaces `net/http` + `http.ServeMux`. Handlers take `*gin.Context` and respond via `c.JSON`; per-route auth middleware (`auth.RequireAuth`/`RequirePermission`/`InferenceAuth`) are `gin.HandlerFunc`s; the global chain is recovery → CORS → trace → logging → metrics; `/metrics` is mounted with `gin.WrapH`. SSE keeps the existing `SSEWriter` driven by `c.Writer` (a `gin.ResponseWriter`, still `http.Flusher`). Remaining phases: `services/*` module split, multi-binary, outbox — spec `docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`.
+- **Data layer (Phase 2 ✅):** GORM v1.31 + gormigrate v2 replace pgx + goose. `internal/infrastructure/database` owns `Open`/`Migrate` (with one-time adoption of an existing goose-migrated DB), `internal/migrations` holds the 6 Go migrations (table/column names unchanged), and data access goes through repository interfaces (`iam.Repositories`, `serving.Repositories`, `usage.Repositories`, `inference.Store`) so services never see `*gorm.DB`.
+- **HTTP layer (Phase 3 ✅):** Gin v1.11 replaces `net/http` + `http.ServeMux`. Handlers take `*gin.Context` and respond via `c.JSON`; per-route auth middleware (`middleware.RequireAuth`/`RequirePermission`/`InferenceAuth`) are `gin.HandlerFunc`s; the global chain is recovery → CORS → trace → logging → metrics; `/metrics` is mounted with `gin.WrapH`. SSE keeps the existing `SSEWriter` driven by `c.Writer` (a `gin.ResponseWriter`, still `http.Flusher`).
+- **Modularize (Phase 4 ✅):** the flat `internal/*` packages are gone. Services live in `internal/services/{iam,serving,usage,inference}` (each owning its handlers/router/repositories/models); generic infrastructure moved to `internal/infrastructure/*` (`message`, `cache`, `inference`, `middleware`, …); shared JSON envelopes in `pkg/response`. Auth is a neutral port: `infrastructure/middleware.Authenticator` is implemented by `services/iam`. **No service imports another service** — cross-service seams are consumer-defined interfaces (`inference.DeploymentResolver`, `inference.UsageRecorder`, the `Auth` port) wired only in `internal/app` (`app/adapters.go`). Remaining phases: multi-binary (Phase 5), outbox/cache-aside (Phase 6) — spec `docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`.
 
 ## Engine selection
 

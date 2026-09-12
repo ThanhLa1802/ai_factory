@@ -2,9 +2,9 @@
 
 > Tài liệu này mô tả kiến trúc **thực tế** của dự án dựa trên mã nguồn hiện tại, bổ sung cho `CONTEXT.md` (glossary ngắn) và `CLAUDE.md` (tổng quan + lộ trình). Nó đi sâu vào từng thành phần, luồng dữ liệu và các giới hạn tích hợp.
 
-**Trạng thái doc:** cập nhật 2026-09-12 — khớp code sau M1–M3 (control plane + runtime adapter + routing/rate limit), A5 (reliability), A6 (observability), chat history + usage, và NextJS UI (`web/`). Nếu có thay đổi kiến trúc, cập nhật lại.
+**Trạng thái doc:** cập nhật 2026-09-12 — khớp code sau M1–M3 (control plane + runtime adapter + routing/rate limit), A5 (reliability), A6 (observability), chat history + usage, NextJS UI (`web/`), và Phase 1–4 tái kiến trúc (composition root/DI, GORM, Gin, `services/*`). Nếu có thay đổi kiến trúc, cập nhật lại.
 
-> **Đang tái kiến trúc:** Go server sẽ chuyển sang layout production (modular monolith + DI + composition root + multi-binary; Gin + GORM + gormigrate + viper + zap). Thiết kế: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md) · Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md). Tài liệu dưới đây mô tả **cấu trúc hiện tại** (trước tái kiến trúc).
+> **Đã tái kiến trúc (Phase 1–4 ✅):** Go server dùng layout production (modular monolith + DI + composition root; Gin + GORM + gormigrate + viper + zap; `internal/services/{iam,serving,usage,inference}` + `internal/infrastructure/*`). Plan Phase 4: [`docs/superpowers/plans/2026-09-12-phase4-modularize.md`](superpowers/plans/2026-09-12-phase4-modularize.md). Các đường dẫn trong tài liệu dưới đây đã ánh xạ sang layout mới; còn lại Phase 5 (multi-binary) và Phase 6 (outbox/cache-aside).
 
 ---
 
@@ -63,10 +63,10 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
 Một request inference trải qua **3 lần "đổi format"**:
 
 1. **Protocol gốc** (`OpenAIRequest`) → `adapters.go` chuyển về **internal canonical format** (`session.Message`).
-2. Internal → **proto** (`inference.pb.go`) tại `internal/inference/client.go` / `batch_scheduler.go`.
+2. Internal → **proto** (`inference.pb.go`) tại `internal/infrastructure/inference/client.go` / `batch_scheduler.go`.
 3. Proto → **dict OpenAI-style** tại Python (`server.py` `_messages_from_proto` / `_tools_from_proto`) → chat template của model.
 
-Cấu trúc message internal (protocol-agnostic) nằm ở `internal/session/session.go`:
+Cấu trúc message internal (protocol-agnostic) nằm ở `internal/services/inference/session.go`:
 
 ```go
 type Message struct {
@@ -123,7 +123,7 @@ config.Load(path) → SetupLogger(zap JSON bridge slog)
 
 **Dependency wiring** tập trung ở composition root `internal/app` (`registry.go` đăng ký provider, `app.go` sở hữu lifecycle); dependency được build lazy bởi `pkg/di` (Phase 1 ✅).
 
-### 2.1 HTTP / API layer — `internal/api/` (Gin v1.11)
+### 2.1 HTTP / API layer — `internal/services/inference/` (Gin v1.11)
 
 Handler nhận `*gin.Context`; route + auth middleware `gin.HandlerFunc`; global chain recovery → CORS → trace → logging → metrics (`internal/app`). SSE dùng `gin.ResponseWriter` (vẫn `http.Flusher`).
 
@@ -176,7 +176,7 @@ Handler nhận `*gin.Context`; route + auth middleware `gin.HandlerFunc`; global
 - **RBAC** (`rbac.go`): 4 role — `PLATFORM_ADMIN`, `TENANT_ADMIN`, `TENANT_DEVELOPER`, `TENANT_VIEWER` — map tới 11 action (`tenant.*`, `model.*`, `template.*`, `deployment.*`, `key.manage`, `quota.manage`, `usage.read`).
 - Password hash: `internal/auth/password.go` (argon2/bcrypt). API key: `apikey.go` (generate + hash). JWT: `jwt.go`.
 
-### 2.3 Control plane — `internal/controlplane/`
+### 2.3 Control plane — `internal/services/{iam,serving,usage}/`
 
 Service duy nhất (`Service`) gọi data access qua repository interface (impl GORM), gộp nhiều aggregate:
 
@@ -203,7 +203,7 @@ READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
 - Mọi chuyển trạng thái đi qua `validTransitions` — chuyển không hợp lệ bị từ chối.
 - Mọi thay đổi config tạo **deployment revision** (rollback/audit).
 
-### 2.4 Session Manager — `internal/session/`
+### 2.4 Session Manager — `internal/services/inference/`
 
 - Session **bền trong Postgres** (`sessions`, `messages` qua `store.go`/`PGStore`), không còn chỉ in-memory. `Manager` cache in-memory + ghi DB.
 - `GetOrCreate(sessionID, tenantID, userID)`, `ListSessions`, `GetPersisted`, `RenameSession`, `DeleteSession`; tự đặt tiêu đề từ tin nhắn user đầu tiên (cắt 40 rune).
@@ -216,7 +216,7 @@ READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
 - Quét từ cuối về đầu, giữ message gần nhất vừa token budget.
 - **Bảo toàn cặp tool**: nếu message giữ đầu tiên là `tool_result`, lùi thêm để giữ `tool_use` tương ứng; bỏ `tool_use` orphaned ở cuối.
 
-### 2.5 Agentic Loop — `internal/agent/loop.go`
+### 2.5 Agentic Loop — `internal/services/inference/loop.go`
 
 `Loop` giữ `BatchScheduler` + `ToolExecutor`. API: `RunStreaming(ctx, sess, userMessage, params) <-chan LoopEvent`.
 
@@ -245,7 +245,7 @@ READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
 
 Tool results **không** stream về client — đưa vào session và dùng cho lượt inference tiếp theo.
 
-### 2.6 Tool Executor — `internal/agent/tools.go`
+### 2.6 Tool Executor — `internal/services/inference/tools.go`
 
 - Interface `ToolExecutor`: `Execute(ctx, name, params)` + `ListTools()`.
 - `LocalToolExecutor` chạy tool **trực tiếp trên host**, timeout `30s` mỗi tool. Interface cho phép swap sang sandbox (Docker) sau.
@@ -260,7 +260,7 @@ Tool results **không** stream về client — đưa vào session và dùng cho 
 
 Kết quả JSON: `{"result": "..."}` hoặc `{"error": "..."}`. ⚠️ **`run_command` không sandbox** — đúng cho học tập, không phù hợp production.
 
-### 2.7 Batch Scheduler — `internal/inference/batch_scheduler.go`
+### 2.7 Batch Scheduler — `internal/infrastructure/inference/batch_scheduler.go`
 
 Lõi của "continuous batching" (hiện là **static batch**). Gom request đến gần nhau vào 1 forward pass.
 
@@ -281,7 +281,7 @@ Handler 3 ──┘        │                        │
 
 Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 
-### 2.8 gRPC Client — `internal/inference/client.go`
+### 2.8 gRPC Client — `internal/infrastructure/inference/client.go`
 
 - Giữ cả 2 stubs: `InferenceServiceClient` + `BatchInferenceServiceClient`.
 - Config: `insecure` credentials (local), `MaxCallRecvMsgSize = 100MB`, `MaxCallSendMsgSize = 10MB`.
@@ -290,7 +290,7 @@ Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 
 > ⚠️ Runtime hiện chỉ dùng **đường batch** (loop gọi `scheduler.Submit`). Đường single `Generate` tồn tại nhưng chưa dùng ở runtime — xem §10.1.
 
-### 2.9 Events — `internal/events/`
+### 2.9 Events — `internal/infrastructure/message/`
 
 - Envelope (§6.2): `{event_id, event_type, event_version, timestamp, tenant_id, resource_id, trace_id, payload}`, `event_version = 1`, timestamp UTC.
 - Topics: `serving.deployment.events`, `serving.inference.events`, `serving.audit.events`. Hiện dùng deployment topic.
@@ -298,20 +298,20 @@ Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 - Hai implementation: `KafkaEventBus` (segmentio/kafka-go, partition key `resource_id`) và `MemoryEventBus` (in-process, dùng cho test + fallback khi Kafka down).
 - **Kafka tùy chọn khi boot**: nếu không kết nối được → warn + MemoryEventBus → deployment worker tắt, deployment kẹt `PENDING`; chat/inference vẫn chạy.
 
-### 2.10 Runtime adapter + Deployment worker — `internal/runtime/`
+### 2.10 Runtime adapter + Deployment worker — `internal/services/serving/`
 
 - **`ServingRuntimeAdapter`** (§3.3 spec): `Create/Start/Stop/Restart/Delete/GetStatus/HealthCheck`. Adapter đầu tiên: `WorkerAdapter` (wrap Python worker gRPC; lifecycle validate spec + TCP health check).
 - **`ComputeProvider`**: `RequestCapacity/ReleaseCapacity/GetWorkloadStatus/UpdateWorkload`. Dev dùng `MockComputeProvider` (in-memory workload ref).
 - **`Worker`**: consumer của `serving.deployment.events`. `deployment_created` → chạy state machine `PENDING→PROVISIONING→STARTING→READY` (hoặc `FAILED`), set workload_ref, tạo endpoint, tạo revision, publish `deployment_ready`/`deployment_failed`. `deployment_stop_requested` → `STOPPING→STOPPED`. Idempotent nhờ state guard (event replay an toàn).
 - API `POST /api/v1/deployments` trả **202 Accepted**; worker chạy async.
 
-### 2.11 Rate limit — `internal/ratelimit/`
+### 2.11 Rate limit — `internal/infrastructure/cache/`
 
 - Interface `Limiter`: `Allow(key, limit, window)` (fixed-window counter) + `Acquire/Release(key, limit)` (concurrency).
 - `RedisLimiter`: dùng Redis (`redis/go-redis/v9`).
 - Áp ở inference gateway: `tenant:{id}:rpm` + `deployment:{id}:concurrency`. **Fail-open** khi Redis down.
 
-### 2.12 Observability — `internal/observability/`
+### 2.12 Observability — `internal/infrastructure/observability/`
 
 - **Logging:** `slog` JSON structured.
 - **Metrics (Prometheus, `/metrics`)**:
@@ -322,7 +322,7 @@ Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 - **Tracing:** span kiểu W3C `traceparent` (HTTP → agent.loop → inference.batch) emit dạng structured log, dependency-free (`trace.go`). Tiền thân của OTel.
 - Route labels (tenant/deployment/model/region) được handler set sau khi routing qua `RouteLabelSetter` (statusRecorder).
 
-### 2.13 Reliability (A5) — `internal/retry/`, `internal/circuitbreaker/`
+### 2.13 Reliability (A5) — `internal/infrastructure/retry/`, `internal/infrastructure/circuitbreaker/`
 
 - **Retry/backoff/jitter** (`retry`): áp dụng cho worker provisioning (RequestCapacity, adapter.Start).
 - **Circuit breaker** (`circuitbreaker`): 3-state, gắn vào provisioning.
@@ -395,7 +395,7 @@ service BatchInferenceService {
 - `SamplingParams`: `max_tokens` (1024), `temperature` (0.7), `top_p` (0.9), `top_k` (50), `stop_sequences`.
 - `BatchGenerateResponse`: như `GenerateResponse` + `request_id`.
 
-**Codegen:** Go `protoc-gen-go-grpc` → `go-server/internal/inference/pb/`; Python `grpcio-tools` → `python-worker/worker/pb/` (`python -m worker.generate_proto`).
+**Codegen:** Go `protoc-gen-go-grpc` → `go-server/internal/infrastructure/inference/pb/`; Python `grpcio-tools` → `python-worker/worker/pb/` (`python -m worker.generate_proto`).
 
 ---
 
@@ -576,7 +576,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 | Events | Kafka (`segmentio/kafka-go`) hoặc in-memory fallback |
 | Auth | `golang-jwt/jwt/v5`, argon2/bcrypt, API key hash |
 | Observability | `prometheus/client_golang`, `log/slog` JSON, W3C trace tự viết |
-| Reliability | `internal/retry`, `internal/circuitbreaker` (tự viết) |
+| Reliability | `internal/infrastructure/retry`, `internal/infrastructure/circuitbreaker` (tự viết) |
 | Python worker | Python ≥3.11, `grpcio` (aio), `torch`, `transformers`, `bitsandbytes`, `accelerate` (+ `httpx` cho llama proxy) |
 | Model | Transformers: Qwen/Qwen2.5-Coder-7B-Instruct (4-bit NF4) · Llama: Qwen3.5-9B GGUF Q4_K_M (llama-server) |
 | Contract | Protobuf 3, server-streaming gRPC |

@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-08-16** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-09-12** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -63,19 +63,22 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
-## 🏗️ Kiến trúc lại theo production blueprint (Phase 3 ✅)
+## 🏗️ Kiến trúc lại theo production blueprint (Phase 4 ✅)
 
-Trạng thái: **Phase 3 xong** (2026-09-12) — HTTP layer Gin. (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository.)
+Trạng thái: **Phase 4 xong** (2026-09-12) — tách `services/*` + dời infrastructure. (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository; Phase 3 ✅ HTTP layer Gin.)
 
 - Spec: [`docs/superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md`](superpowers/specs/2026-09-11-modular-monolith-rearchitecture-design.md)
 - Plan Phase 1: [`docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`](superpowers/plans/2026-09-11-phase1-composition-root-di.md)
 - Plan Phase 2: [`docs/superpowers/plans/2026-09-12-phase2-data-layer.md`](superpowers/plans/2026-09-12-phase2-data-layer.md)
 - Plan Phase 3: [`docs/superpowers/plans/2026-09-12-phase3-http-gin.md`](superpowers/plans/2026-09-12-phase3-http-gin.md)
+- Plan Phase 4: [`docs/superpowers/plans/2026-09-12-phase4-modularize.md`](superpowers/plans/2026-09-12-phase4-modularize.md)
 - Phase 1 đã thêm: `pkg/di`, viper config, zap logger bridge slog, composition root `internal/app`.
 - Phase 2 đã thêm: `internal/infrastructure/database` (GORM + gormigrate + goose-adoption), `internal/migrations`, 10 repository interface + impl GORM, `session.NewGormStore`; xoá `internal/db` (pgx + goose).
 - Phase 3 đã thêm: Gin v1.11 thay `net/http` + `ServeMux` — handler nhận `*gin.Context`, auth middleware thành `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` chạy trên `c.Writer`/`gin.ResponseWriter`.
+- Phase 4 đã thêm: `internal/services/{iam,serving,usage,inference}` (tách god-package `controlplane`; agent/session/api vào inference) + `internal/infrastructure/{observability,circuitbreaker,retry,message,cache,inference,middleware}` + `pkg/response`; auth thành port trung lập `middleware.Authenticator` (iam implement); phụ thuộc chéo service chỉ nối ở `internal/app`; xoá các package phẳng cũ.
+- Chưa làm (Phase 4 đã hoãn): layer subpackage `handlers/services/repositories/models/dto` trong mỗi service; `cmd/{worker,migrate,seed}` (Phase 5); outbox/cache-aside (Phase 6).
 - Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
-- Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` → P5 multi-binary → P6 outbox/cache-aside.
+- Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` ✅ → P5 multi-binary → P6 outbox/cache-aside.
 
 ---
 
@@ -85,13 +88,13 @@ Trạng thái: **✅ Xong**
 
 - [x] Proto contract 2 service server-streaming — [`proto/inference.proto`](../proto/inference.proto)
 - [x] gRPC server Python (InferenceServicer + BatchInferenceServicer) — [`python-worker/worker/server.py`](../python-worker/worker/server.py)
-- [x] gRPC client Go + route event theo `request_id` — [`go-server/internal/inference/client.go`](../go-server/internal/inference/client.go)
-- [x] BatchScheduler static batching (gom 100ms, batch ≤ 4) — [`go-server/internal/inference/batch_scheduler.go`](../go-server/internal/inference/batch_scheduler.go)
-- [x] OpenAI protocol (`/v1/chat/completions` → canonical format) — [`go-server/internal/api/adapters.go`](../go-server/internal/api/adapters.go)
-- [x] SSE streaming — [`go-server/internal/api/sse.go`](../go-server/internal/api/sse.go)
-- [x] Session manager in-memory (8K ctx, truncation) — [`go-server/internal/session/`](../go-server/internal/session/)
-- [x] Agentic loop (max 10 iter) — [`go-server/internal/agent/loop.go`](../go-server/internal/agent/loop.go)
-- [x] ToolExecutor + 4 built-in tools — [`go-server/internal/agent/tools.go`](../go-server/internal/agent/tools.go)
+- [x] gRPC client Go + route event theo `request_id` — [`go-server/internal/infrastructure/inference/client.go`](../go-server/internal/infrastructure/inference/client.go)
+- [x] BatchScheduler static batching (gom 100ms, batch ≤ 4) — [`go-server/internal/infrastructure/inference/batch_scheduler.go`](../go-server/internal/infrastructure/inference/batch_scheduler.go)
+- [x] OpenAI protocol (`/v1/chat/completions` → canonical format) — [`go-server/internal/services/inference/adapters.go`](../go-server/internal/services/inference/adapters.go)
+- [x] SSE streaming — [`go-server/internal/services/inference/sse.go`](../go-server/internal/services/inference/sse.go)
+- [x] Session manager in-memory (8K ctx, truncation) — [`go-server/internal/services/inference/`](../go-server/internal/services/inference/)
+- [x] Agentic loop (max 10 iter) — [`go-server/internal/services/inference/loop.go`](../go-server/internal/services/inference/loop.go)
+- [x] ToolExecutor + 4 built-in tools — [`go-server/internal/services/inference/tools.go`](../go-server/internal/services/inference/tools.go)
 - [x] Cancel propagation client → Go → gRPC → Python
 
 ## ✅ Giai đoạn 2 — Tuần 3–4: Tokenizer byte-level BPE tự viết
@@ -161,6 +164,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-12 | Phase 4 kiến trúc lại ✅ — modularize: tách `internal/services/{iam,serving,usage,inference}` (controlplane → iam/serving/usage; agent+session+api → inference), dời infra sang `internal/infrastructure/{observability,circuitbreaker,retry,message,cache,inference,middleware}`, thêm `pkg/response`; auth thành port trung lập `middleware.Authenticator` (iam implement); phụ thuộc chéo service chỉ nối ở `internal/app`; xoá `auth/controlplane/api/agent/session/runtime/events/ratelimit/observability/circuitbreaker/retry/inference`. Boot smoke + toàn bộ test xanh. Plan `docs/superpowers/plans/2026-09-12-phase4-modularize.md`. |
 | 2026-09-12 | Phase 3 kiến trúc lại ✅ — HTTP layer: Gin v1.11 thay `net/http` + `ServeMux`. Handler `*gin.Context`, auth middleware `gin.HandlerFunc`, chain recovery → CORS → trace → logging → metrics, `/metrics` qua `gin.WrapH`; SSE giữ `SSEWriter` trên `gin.ResponseWriter` (vẫn `http.Flusher`). Xoá `http.ServeMux` khỏi production code. Plan `docs/superpowers/plans/2026-09-12-phase3-http-gin.md`. |
 | 2026-09-12 | Phase 2 kiến trúc lại ✅ — data layer: GORM v1.31 + gormigrate v2 thay pgx + goose. Thêm `internal/infrastructure/database` (Open/Migrate + goose-adoption), `internal/migrations` (6 migration Go), 10 repository interface + impl GORM (`controlplane`/`session`), `session.NewGormStore`; xoá `internal/db`. `controlplane.Service` giờ chỉ thấy repository interface. Test repo dùng Postgres thật. Plan `docs/superpowers/plans/2026-09-12-phase2-data-layer.md`. |
 | 2026-09-12 | Phase 1 kiến trúc lại ✅ — composition root + DI + config + logging: thêm `pkg/di` (lazy DI, lifecycle, circular detection), viper (`configs/config.yaml` + env override), zap logger bridge slog, `internal/app` (registry providers + app lifecycle + seeder); `cmd/server/main.go` còn ~55 dòng. Không đổi hành vi endpoint. Plan `docs/superpowers/plans/2026-09-11-phase1-composition-root-di.md`. |

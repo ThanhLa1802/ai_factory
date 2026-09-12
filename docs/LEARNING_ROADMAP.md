@@ -20,11 +20,11 @@
 |---|---|---|
 | API Gateway / OpenAI-compatible `/v1/chat/completions` | Go server, adapters.go, SSE | ✅ Xong (Tuần 1–2) |
 | Streaming (SSE, client disconnect, cancel) | SSE + cancel propagation client→Go→gRPC→Python | ✅ Xong |
-| Redis: rate limiting, concurrency counter | `internal/ratelimit` (tenant RPM + deployment concurrency) | ✅ Xong (M3) |
+| Redis: rate limiting, concurrency counter | `internal/infrastructure/cache` (tenant RPM + deployment concurrency) | ✅ Xong (M3) |
 | Kafka: event bus, consumer, idempotency | Deployment events (`serving.deployment.events`), worker PENDING→READY | ✅ Xong (M2, Kafka optional / in-memory fallback) |
 | PostgreSQL: control plane, transaction | Postgres lưu models/deployments | ✅ Xong (M2) |
 | Auth / tenant / quota | Consumer slice: JWT + API key, UI login/chat/keys | ✅ Xong |
-| Distributed Systems: retry, backoff, timeout, backpressure | `internal/retry` (exp backoff + jitter), `internal/circuitbreaker` (3-state CLOSED/OPEN/HALF-OPEN), BatchScheduler `TrySubmit` backpressure + load shedding → 503, cancel propagation | ✅ Xong |
+| Distributed Systems: retry, backoff, timeout, backpressure | `internal/infrastructure/retry` (exp backoff + jitter), `internal/infrastructure/circuitbreaker` (3-state CLOSED/OPEN/HALF-OPEN), BatchScheduler `TrySubmit` backpressure + load shedding → 503, cancel propagation | ✅ Xong |
 | LLM Serving concepts (tokenization, prefill, decode, KV cache, batching, TTFT/TPOT) | Đúng phần lõi dự án — đang tự viết từng phần | 🔜 Đang làm |
 | Observability (logs/metrics/traces, structured logging, không log prompt/key) | slog JSON toàn bộ, Prometheus `serving_*` (requests/duration/tokens/inflight/overloaded), trace span kiểu W3C `traceparent` (log-based, không OTel SDK), usage metering | ✅ Xong |
 | System Design (10 câu hỏi §30) | Áp dụng khi review kiến trúc (routing, cancel, async deploy) | 🔜 Thường trực |
@@ -59,7 +59,7 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 | A2. Control plane | Postgres, deployment PENDING→READY, Kafka events, ServingRuntimeAdapter | ✅ Xong (M2) |
 | A3. Routing + rate limit | Model→deployment READY (tenant-scoped), Redis RPM + concurrency | ✅ Xong (M3) |
 | A4. Auth + tenant | JWT/API key trên inference, UI login/chat/keys | ✅ Xong |
-| A5. Reliability | Retry/backoff/jitter (`internal/retry` + worker provisioning), idempotency (Kafka consumer state-machine guard + deploy `Idempotency-Key` + `idempotency_keys` table), circuit breaker (`internal/circuitbreaker` + worker), backpressure/load shedding (BatchScheduler `TrySubmit` → 503) | ✅ Xong |
+| A5. Reliability | Retry/backoff/jitter (`internal/infrastructure/retry` + worker provisioning), idempotency (Kafka consumer state-machine guard + deploy `Idempotency-Key` + `idempotency_keys` table), circuit breaker (`internal/infrastructure/circuitbreaker` + worker), backpressure/load shedding (BatchScheduler `TrySubmit` → 503) | ✅ Xong |
 | A6. Observability | Structured logs (slog JSON toàn bộ), metrics (Prometheus `serving_*`: requests, duration, tokens, inflight, overloaded), trace span kiểu W3C `traceparent` (dependency-free; OTel SDK có thể thay sau), usage metering (prompt/completion tokens) | ✅ Xong |
 | A9. UI (NextJS) | Web app `web/` — platform management (deployments/models/templates/quotas) + chat (SSE) + admin (tenants); proxy `/api/v1` + `/v1` về Go qua rewrites; JWT + role gating | ✅ Xong |
 | A7. Data platform | Kafka → ClickHouse → Superset (nếu mở rộng) | ⛔ Hoãn |
