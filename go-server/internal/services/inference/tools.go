@@ -1,4 +1,4 @@
-package agent
+package inference
 
 import (
 	"context"
@@ -17,13 +17,6 @@ type ToolExecutor interface {
 	Execute(ctx context.Context, toolName string, params json.RawMessage) (json.RawMessage, error)
 	// ListTools returns all available tool definitions.
 	ListTools() []ToolDefinition
-}
-
-// ToolDefinition matches the session.ToolDefinition format used across the system.
-type ToolDefinition struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Parameters  string `json:"parameters"` // JSON Schema
 }
 
 // ---------------------------------------------------------------------------

@@ -5,17 +5,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/agent"
-	"github.com/ai-factory/go-server/internal/api"
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
-	"github.com/ai-factory/go-server/internal/infrastructure/inference"
+	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
-	"github.com/ai-factory/go-server/internal/session"
 	"github.com/ai-factory/go-server/pkg/di"
 	"github.com/redis/go-redis/v9"
 )
@@ -69,14 +67,14 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
-		return inference.NewClient(opts.InferenceAddr)
+	if err := c.RegisterSingleton("infrainf.client", func(*di.Container) (any, error) {
+		return infrainf.NewClient(opts.InferenceAddr)
 	}); err != nil {
 		return err
 	}
 	if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
-		ic := cc.MustResolve("inference.client").(*inference.Client)
-		s := inference.NewBatchScheduler(ic)
+		ic := cc.MustResolve("infrainf.client").(*infrainf.Client)
+		s := infrainf.NewBatchScheduler(ic)
 		if opts.MaxConcurrent > 1 {
 			s.SetMaxBatchSize(opts.MaxConcurrent)
 		}
@@ -85,13 +83,13 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("tool.executor", func(*di.Container) (any, error) {
-		return agent.NewLocalToolExecutor(opts.WorkDir), nil
+		return inferencesvc.NewLocalToolExecutor(opts.WorkDir), nil
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("agent.loop", func(cc *di.Container) (any, error) {
-		return agent.NewLoop(cc.MustResolve("batch.scheduler").(*inference.BatchScheduler),
-			cc.MustResolve("tool.executor").(*agent.LocalToolExecutor)), nil
+	if err := c.RegisterSingleton("inferencesvc.loop", func(cc *di.Container) (any, error) {
+		return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
+			cc.MustResolve("tool.executor").(*inferencesvc.LocalToolExecutor)), nil
 	}); err != nil {
 		return err
 	}
@@ -123,9 +121,9 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("session.manager", func(cc *di.Container) (any, error) {
+	if err := c.RegisterSingleton("inferencesvc.manager", func(cc *di.Container) (any, error) {
 		g := cc.MustResolve("db").(*database.DB).Gorm()
-		return session.NewManagerWithStore(session.NewGormStore(g)), nil
+		return inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(g)), nil
 	}); err != nil {
 		return err
 	}
@@ -147,9 +145,9 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	if err := c.RegisterSingleton("http.handler", func(cc *di.Container) (any, error) {
 		uiDir := resolveUIDir(opts.UIDir)
 		slog.Info("ui directory", "dir", uiDir)
-		return api.NewHandler(
-			cc.MustResolve("session.manager").(*session.Manager),
-			cc.MustResolve("agent.loop").(*agent.Loop),
+		return inferencesvc.NewHandler(
+			cc.MustResolve("inferencesvc.manager").(*inferencesvc.Manager),
+			cc.MustResolve("inferencesvc.loop").(*inferencesvc.Loop),
 			uiDir,
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
 			deploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},

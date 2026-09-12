@@ -1,4 +1,4 @@
-package api
+package app
 
 import (
 	"bytes"
@@ -12,17 +12,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
-	"github.com/ai-factory/go-server/internal/infrastructure/inference"
+	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
-	"github.com/ai-factory/go-server/internal/session"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
+
+func newTestEngine() *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	return gin.New()
+}
 
 // testServices bundles the split IAM + control-plane services for E2E tests.
 type testServices struct {
@@ -62,12 +66,12 @@ func (ts *testServices) mountControlPlane(mux *gin.Engine) {
 // testResolver adapts serving.Service to the inference handler's resolver.
 type testResolver struct{ svc *serving.Service }
 
-func (r testResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*ResolvedDeployment, error) {
+func (r testResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*inferencesvc.ResolvedDeployment, error) {
 	d, err := r.svc.ResolveDeployment(ctx, tenantID, modelName)
 	if err != nil {
 		return nil, err
 	}
-	return &ResolvedDeployment{ID: d.ID, TenantID: d.TenantID, Region: d.Region}, nil
+	return &inferencesvc.ResolvedDeployment{ID: d.ID, TenantID: d.TenantID, Region: d.Region}, nil
 }
 
 // TestLoginE2E runs the full M1 control plane path against a real Postgres.
@@ -450,22 +454,22 @@ func TestAPIKeyLifecycleE2E(t *testing.T) {
 }
 
 // TestInferenceAuthRequiredE2E: /v1/chat/completions không auth phải 401 (không cần worker,
-// middleware chặn trước khi vào handler). Dựng api.Handler với authenticator thật.
+// middleware chặn trước khi vào handler). Dựng inference.Handler với authenticator thật.
 func TestInferenceAuthRequiredE2E(t *testing.T) {
 	d := dbConnOrSkip(t)
 	ts := newTestServices(t, d)
 
 	// worker addr chỉ dùng khi gọi thật; grpc.NewClient là lazy nên không cần worker chạy
-	ic, err := inference.NewClient("localhost:59999")
+	ic, err := infrainf.NewClient("localhost:59999")
 	if err != nil {
 		t.Fatalf("inference.NewClient: %v", err)
 	}
 	t.Cleanup(func() { ic.Close() })
-	bs := inference.NewBatchScheduler(ic)
-	te := agent.NewLocalToolExecutor(t.TempDir())
-	loop := agent.NewLoop(bs, te)
-	sess := session.NewManager()
-	h := NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, 60, 4)
+	bs := infrainf.NewBatchScheduler(ic)
+	te := inferencesvc.NewLocalToolExecutor(t.TempDir())
+	loop := inferencesvc.NewLoop(bs, te)
+	sess := inferencesvc.NewManager()
+	h := inferencesvc.NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)

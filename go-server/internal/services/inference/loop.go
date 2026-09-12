@@ -1,4 +1,4 @@
-package agent
+package inference
 
 import (
 	"context"
@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/ai-factory/go-server/internal/infrastructure/inference"
+	infra "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
-	"github.com/ai-factory/go-server/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -43,7 +42,7 @@ type LoopEvent struct {
 	Token string
 
 	// ToolUse — populated for LoopEventToolUse.
-	ToolCall *session.ToolCall
+	ToolCall *ToolCall
 
 	// ToolResult — populated for LoopEventToolResult.
 	ToolResult string
@@ -52,7 +51,7 @@ type LoopEvent struct {
 	// Final — populated for LoopEventFinal.
 	StopReason   string
 	FinishReason string
-	Usage        *inference.Usage
+	Usage        *infra.Usage
 
 	// Error — populated for LoopEventError.
 	Err error
@@ -66,12 +65,12 @@ type LoopEvent struct {
 // Uses BatchScheduler for inference — individual GenerateStream calls are collected
 // and batched together for GPU efficiency.
 type Loop struct {
-	scheduler *inference.BatchScheduler
+	scheduler *infra.BatchScheduler
 	tools     ToolExecutor
 }
 
 // NewLoop creates a new agentic loop with batch scheduler.
-func NewLoop(scheduler *inference.BatchScheduler, executor ToolExecutor) *Loop {
+func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor) *Loop {
 	return &Loop{
 		scheduler: scheduler,
 		tools:     executor,
@@ -88,7 +87,7 @@ func NewLoop(scheduler *inference.BatchScheduler, executor ToolExecutor) *Loop {
 //
 // The channel is closed when generation completes or on fatal error.
 // Cancel the context to abort (cancel propagation → gRPC → Python worker).
-func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMessage session.Message, params inference.SamplingParams) <-chan LoopEvent {
+func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Message, params infra.SamplingParams) <-chan LoopEvent {
 	events := make(chan LoopEvent, 64) // buffer to avoid blocking on token emission
 
 	go func() {
@@ -115,15 +114,15 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 			// Get current messages, truncate if needed
 			allMessages := sess.GetMessages()
-			if sess.EstimatedTokens() > int(float64(sess.MaxTokens)*session.DangerZoneBeforeTruncate) {
-				allMessages = session.TruncateMessages(allMessages, sess.MaxTokens)
+			if sess.EstimatedTokens() > int(float64(sess.MaxTokens)*DangerZoneBeforeTruncate) {
+				allMessages = TruncateMessages(allMessages, sess.MaxTokens)
 			}
 
 			// Build tool definitions
 			toolDefs := l.tools.ListTools()
-			sessToolDefs := make([]inference.ToolDefinition, len(toolDefs))
+			sessToolDefs := make([]infra.ToolDefinition, len(toolDefs))
 			for i, td := range toolDefs {
-				sessToolDefs[i] = inference.ToolDefinition{
+				sessToolDefs[i] = infra.ToolDefinition{
 					Name:        td.Name,
 					Description: td.Description,
 					Parameters:  td.Parameters,
@@ -131,7 +130,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			}
 
 			// Send to inference
-			req := inference.GenerateRequest{
+			req := infra.GenerateRequest{
 				RequestID:      uuid.New().String(),
 				SessionID:      sess.GetID(),
 				Messages:       toInferenceMessages(allMessages),
@@ -154,10 +153,10 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			// Collect response while streaming tokens
 			var (
 				assistantContent string
-				toolCalls        []session.ToolCall
+				toolCalls        []ToolCall
 				stopReason       string
 				finishReason     string
-				usage            *inference.Usage
+				usage            *infra.Usage
 			)
 
 			for event := range grpcEvents {
@@ -179,7 +178,7 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 
 				case "tool_use":
 					if event.ToolUse != nil {
-						tc := session.ToolCall{
+						tc := ToolCall{
 							ID:        event.ToolUse.ID,
 							Name:      event.ToolUse.Name,
 							Arguments: event.ToolUse.Arguments,
@@ -208,8 +207,8 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 			}
 
 			// Build and save assistant message
-			assistantMsg := session.Message{
-				Role:    session.RoleAssistant,
+			assistantMsg := Message{
+				Role:    RoleAssistant,
 				Content: assistantContent,
 			}
 			if len(toolCalls) > 0 {
@@ -231,8 +230,8 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 						resultText = string(toolResult)
 					}
 
-					toolMsg := session.Message{
-						Role:       session.RoleTool,
+					toolMsg := Message{
+						Role:       RoleTool,
 						ToolCallID: tc.ID,
 						ToolResult: resultText,
 						IsError:    isError,
@@ -272,10 +271,10 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *session.Session, userMess
 // toInferenceMessages maps session messages onto the inference client's wire
 // types. infrastructure/inference owns those types so it never imports a
 // service package (design §4.2 / D-P4-4).
-func toInferenceMessages(msgs []session.Message) []inference.Message {
-	out := make([]inference.Message, len(msgs))
+func toInferenceMessages(msgs []Message) []infra.Message {
+	out := make([]infra.Message, len(msgs))
 	for i, m := range msgs {
-		out[i] = inference.Message{
+		out[i] = infra.Message{
 			Role:       m.Role,
 			Content:    m.Content,
 			ToolCallID: m.ToolCallID,
@@ -283,9 +282,9 @@ func toInferenceMessages(msgs []session.Message) []inference.Message {
 			IsError:    m.IsError,
 		}
 		if len(m.ToolCalls) > 0 {
-			out[i].ToolCalls = make([]inference.ToolCall, len(m.ToolCalls))
+			out[i].ToolCalls = make([]infra.ToolCall, len(m.ToolCalls))
 			for j, tc := range m.ToolCalls {
-				out[i].ToolCalls[j] = inference.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+				out[i].ToolCalls[j] = infra.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
 			}
 		}
 	}

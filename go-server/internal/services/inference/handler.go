@@ -1,4 +1,4 @@
-package api
+package inference
 
 import (
 	"context"
@@ -10,19 +10,17 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/agent"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
-	"github.com/ai-factory/go-server/internal/infrastructure/inference"
+	infra "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
-	"github.com/ai-factory/go-server/internal/session"
+	"github.com/ai-factory/go-server/pkg/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// Package api cung cấp HTTP handlers, SSE streaming, protocol adapters và
-// serve UI tĩnh từ thư mục ui/ (không nhúng HTML vào binary).
-// Package comment đặt ở đây vì các file UI đã tách thành file HTML độc lập.
+// Package inference owns the chat completions HTTP surface (OpenAI protocol,
+// SSE), the agentic loop, tools, and durable sessions.
 
 // ResolvedDeployment is the inference service's own view of a routable
 // deployment. Defined here so inference never imports services/serving
@@ -46,8 +44,8 @@ type UsageRecorder interface {
 
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
-	sessionMgr *session.Manager
-	loop       *agent.Loop
+	sessionMgr *Manager
+	loop       *Loop
 	uiDir      string // thư mục chứa UI tĩnh (index.html, chat.html, keys.html)
 	auth       middleware.Authenticator
 	resolver   DeploymentResolver
@@ -58,29 +56,11 @@ type Handler struct {
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *session.Manager, loop *agent.Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, auth: auth,
 		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
-}
-
-// RegisterRoutes registers all HTTP routes on the given Gin engine.
-func (h *Handler) RegisterRoutes(e *gin.Engine) {
-	e.POST("/v1/chat/completions", middleware.InferenceAuth(h.auth), h.handleOpenAIChatCompletions)
-	e.GET("/health", h.handleHealth)
-
-	sessions := e.Group("/api/v1/sessions", middleware.RequireAuth(h.auth))
-	sessions.GET("", h.handleListSessions)
-	sessions.GET("/:id", h.handleGetSession)
-	sessions.PATCH("/:id", h.handleRenameSession)
-	sessions.DELETE("/:id", h.handleDeleteSession)
-
-	// Static UI for testing
-	e.GET("/", h.handleUI)
-	e.GET("/chat", h.handleUI)
-	e.GET("/keys", h.handleUI)
-	e.GET("/concepts", h.handleConcepts)
 }
 
 // ==========================================================================
@@ -94,15 +74,15 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 func (h *Handler) resolveForTenant(ctx context.Context, c *gin.Context, tenantID, model string) (*ResolvedDeployment, func(), bool) {
 	d, err := h.resolver.ResolveDeployment(ctx, tenantID, model)
 	if err != nil {
-		writeOpenAIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
+		response.WriteOpenAIError(c, http.StatusNotFound, "RESOURCE_NOT_FOUND", "no READY deployment for model")
 		return nil, nil, false
 	}
 	if !h.allow(ctx, "tenant:"+tenantID+":rpm", h.rpmLimit, time.Minute) {
-		writeOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
+		response.WriteOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "rate limit exceeded")
 		return nil, nil, false
 	}
 	if !h.acquire(ctx, "deployment:"+d.ID+":concurrency", h.concLimit) {
-		writeOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
+		response.WriteOpenAIError(c, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "concurrency limit exceeded")
 		return nil, nil, false
 	}
 	release := func() { _ = h.limiter.Release(context.Background(), "deployment:"+d.ID+":concurrency") }
@@ -130,12 +110,12 @@ func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
 func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	var req OpenAIRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+		response.WriteOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
 	if err := ValidateOpenAIRequest(&req); err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+		response.WriteOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
@@ -151,25 +131,25 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 
 	sessionID := c.GetHeader("x-session-id")
 	if sessionID == "" {
-		sessionID = session.NewSessionID()
+		sessionID = NewSessionID()
 	}
 	userID := p.UserID
 	sess, err := h.sessionMgr.GetOrCreate(c.Request.Context(), sessionID, p.TenantID, userID)
 	if err != nil {
 		// A cross-tenant session-id collision must be indistinguishable from a
 		// missing session — 404 never reveals that the id exists elsewhere.
-		if errors.Is(err, session.ErrSessionForbidden) {
-			writeOpenAIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
+		if errors.Is(err, ErrSessionForbidden) {
+			response.WriteOpenAIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeOpenAIError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
+		response.WriteOpenAIError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
 		return
 	}
 	sess.Model = req.Model
 
 	msgs, systemPrompt, err := OpenAIToInternal(&req)
 	if err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+		response.WriteOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 
@@ -177,7 +157,7 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		sess.SetSystemPrompt(systemPrompt)
 	}
 
-	params := inference.DefaultSamplingParams()
+	params := infra.DefaultSamplingParams()
 	if req.MaxTokens > 0 {
 		params.MaxTokens = req.MaxTokens
 	}
@@ -196,10 +176,10 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID string) {
 	sse, err := NewSSEWriter(c.Writer)
 	if err != nil {
-		writeOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
+		response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
 		return
 	}
 
@@ -211,7 +191,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 
 		for event := range events {
 			switch event.Type {
-			case agent.LoopEventToken:
+			case LoopEventToken:
 				// OpenAI SSE format — each token is a chunk
 				data, _ := json.Marshal(map[string]interface{}{
 					"id":      completionID,
@@ -228,7 +208,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
 				sse.flusher.Flush()
 
-			case agent.LoopEventReasoning:
+			case LoopEventReasoning:
 				// Reasoning token — display-only; emit as delta.reasoning_content.
 				data, _ := json.Marshal(map[string]interface{}{
 					"id":      completionID,
@@ -245,7 +225,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
 				sse.flusher.Flush()
 
-			case agent.LoopEventToolUse:
+			case LoopEventToolUse:
 				// OpenAI format for tool calls in stream
 				if event.ToolCall != nil {
 					data, _ := json.Marshal(map[string]interface{}{
@@ -273,7 +253,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 					sse.flusher.Flush()
 				}
 
-			case agent.LoopEventFinal:
+			case LoopEventFinal:
 				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
 					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
@@ -300,11 +280,11 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
 				sse.flusher.Flush()
 
-			case agent.LoopEventError:
+			case LoopEventError:
 				// Overload is load shedding (backpressure): the worker queue is
 				// saturated, so tell the client to back off. SSE already started,
 				// so surface it as an error frame rather than an HTTP status.
-				if errors.Is(event.Err, inference.ErrOverloaded) {
+				if errors.Is(event.Err, infra.ErrOverloaded) {
 					observability.IncOverloaded(tenantID, modelID)
 					sse.SendError("OVERLOADED: " + event.Err.Error())
 					return
@@ -320,10 +300,10 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *session.Session, msgs []session.Message, params inference.SamplingParams, modelID, tenantID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID string) {
 	var (
 		content string
-		usage   *inference.Usage
+		usage   *infra.Usage
 	)
 
 	for _, userMsg := range msgs {
@@ -331,9 +311,9 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 
 		for event := range events {
 			switch event.Type {
-			case agent.LoopEventToken:
+			case LoopEventToken:
 				content += event.Token
-			case agent.LoopEventFinal:
+			case LoopEventFinal:
 				usage = event.Usage
 				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
@@ -344,13 +324,13 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 						}
 					}
 				}
-			case agent.LoopEventError:
-				if errors.Is(event.Err, inference.ErrOverloaded) {
+			case LoopEventError:
+				if errors.Is(event.Err, infra.ErrOverloaded) {
 					observability.IncOverloaded(tenantID, modelID)
-					writeOpenAIError(c, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
+					response.WriteOpenAIError(c, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
 					return
 				}
-				writeOpenAIError(c, http.StatusInternalServerError, "internal_error", event.Err.Error())
+				response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", event.Err.Error())
 				return
 			}
 		}
@@ -397,30 +377,30 @@ func (h *Handler) handleHealth(c *gin.Context) {
 func (h *Handler) handleListSessions(c *gin.Context) {
 	p, ok := middleware.PrincipalFromContext(c)
 	if !ok {
-		writeAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
+		response.WriteAPIError(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing claims")
 		return
 	}
 	list, err := h.sessionMgr.ListSessions(c.Request.Context(), p.TenantID, p.UserID)
 	if err != nil {
-		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, list)
+	response.WriteJSON(c, http.StatusOK, list)
 }
 
 func (h *Handler) handleGetSession(c *gin.Context) {
 	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
 	sess, err := h.sessionMgr.GetPersisted(c.Request.Context(), id, p.TenantID, p.UserID)
-	if errors.Is(err, session.ErrSessionNotFound) {
-		writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
+	if errors.Is(err, ErrSessionNotFound) {
+		response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 		return
 	}
 	if err != nil {
-		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, gin.H{
+	response.WriteJSON(c, http.StatusOK, gin.H{
 		"id":         sess.ID,
 		"title":      sess.Title,
 		"model":      sess.Model,
@@ -437,29 +417,29 @@ func (h *Handler) handleRenameSession(c *gin.Context) {
 		Title string `json:"title"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.Title == "" {
-		writeAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "title required")
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "title required")
 		return
 	}
 	if err := h.sessionMgr.RenameSession(c.Request.Context(), id, p.TenantID, p.UserID, req.Title); err != nil {
-		if errors.Is(err, session.ErrSessionNotFound) {
-			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
+		if errors.Is(err, ErrSessionNotFound) {
+			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(c, http.StatusOK, gin.H{"id": id, "title": req.Title})
+	response.WriteJSON(c, http.StatusOK, gin.H{"id": id, "title": req.Title})
 }
 
 func (h *Handler) handleDeleteSession(c *gin.Context) {
 	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
 	if err := h.sessionMgr.DeleteSession(c.Request.Context(), id, p.TenantID, p.UserID); err != nil {
-		if errors.Is(err, session.ErrSessionNotFound) {
-			writeAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
+		if errors.Is(err, ErrSessionNotFound) {
+			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
 		}
-		writeAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 	c.Status(http.StatusNoContent)

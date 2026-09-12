@@ -1,10 +1,8 @@
-package api
+package inference
 
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/ai-factory/go-server/internal/session"
 )
 
 // ==========================================================================
@@ -59,25 +57,25 @@ type OpenAIFunctionDef struct {
 }
 
 // OpenAIToInternal converts an OpenAI request to internal messages.
-func OpenAIToInternal(req *OpenAIRequest) ([]session.Message, string, error) {
-	msgs := make([]session.Message, 0, len(req.Messages))
+func OpenAIToInternal(req *OpenAIRequest) ([]Message, string, error) {
+	msgs := make([]Message, 0, len(req.Messages))
 	var systemPrompt string
 
 	for _, om := range req.Messages {
-		msg := session.Message{
+		msg := Message{
 			Role:    om.Role,
 			Content: om.Content,
 		}
 
 		// Extract system prompt from system message
-		if om.Role == session.RoleSystem && om.Content != "" {
+		if om.Role == RoleSystem && om.Content != "" {
 			systemPrompt = om.Content
 			continue // system messages are not part of conversation history
 		}
 
 		// Tool calls
 		for _, tc := range om.ToolCalls {
-			msg.ToolCalls = append(msg.ToolCalls, session.ToolCall{
+			msg.ToolCalls = append(msg.ToolCalls, ToolCall{
 				ID:        tc.ID,
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
@@ -85,7 +83,7 @@ func OpenAIToInternal(req *OpenAIRequest) ([]session.Message, string, error) {
 		}
 
 		// Tool result
-		if om.Role == session.RoleTool {
+		if om.Role == RoleTool {
 			msg.ToolCallID = om.ToolCallID
 			msg.ToolResult = om.Content
 		}

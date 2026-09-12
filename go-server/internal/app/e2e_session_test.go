@@ -1,4 +1,4 @@
-package api
+package app
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/ai-factory/go-server/internal/services/iam"
-	"github.com/ai-factory/go-server/internal/session"
+	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/google/uuid"
 )
 
@@ -25,8 +25,8 @@ func TestSessionEndpointsE2E(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	mgr := session.NewManagerWithStore(session.NewGormStore(d.Gorm()))
-	h := &Handler{sessionMgr: mgr, auth: ts.authn, uiDir: t.TempDir()}
+	mgr := inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(d.Gorm()))
+	h := inferencesvc.NewHandler(mgr, nil, t.TempDir(), ts.authn, nil, nil, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
@@ -35,12 +35,12 @@ func TestSessionEndpointsE2E(t *testing.T) {
 	authH := func() string { return "Bearer " + token }
 
 	// Seed one session with a user message.
-	sid := session.NewSessionID()
+	sid := inferencesvc.NewSessionID()
 	sess, err := mgr.GetOrCreate(ctx, sid, tenant.ID, user.ID)
 	if err != nil {
 		t.Fatalf("get or create: %v", err)
 	}
-	sess.AddMessage(ctx, session.Message{Role: session.RoleUser, Content: "hello world"})
+	sess.AddMessage(ctx, inferencesvc.Message{Role: inferencesvc.RoleUser, Content: "hello world"})
 
 	// List contains the seeded session.
 	rec := httptest.NewRecorder()
@@ -48,7 +48,7 @@ func TestSessionEndpointsE2E(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list code = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	var list []session.SessionSummary
+	var list []inferencesvc.SessionSummary
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("unmarshal list: %v", err)
 	}
@@ -69,8 +69,8 @@ func TestSessionEndpointsE2E(t *testing.T) {
 		t.Fatalf("get code = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var got struct {
-		Messages []session.Message `json:"messages"`
-		Title    string            `json:"title"`
+		Messages []inferencesvc.Message `json:"messages"`
+		Title    string                 `json:"title"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal get: %v", err)
