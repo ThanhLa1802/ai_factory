@@ -45,11 +45,11 @@
 
 **Files:** `internal/config/config.go`, `internal/config/config_test.go`, `configs/config.yaml`.
 
-- [ ] **Step 1: Write failing test** — defaults `Services.API == true && Services.Worker == true`; `AI_FACTORY_SERVICES_API=false` override yields `false`; YAML `services: {worker: false}` respected.
-- [ ] **Step 2: Verify fail.**
-- [ ] **Step 3: Implement** `type ServicesConfig struct { API, Worker bool }`; add `Services ServicesConfig` to `Config`; `v.SetDefault("services.api", true)`, `v.SetDefault("services.worker", true)`; populate from `v.GetBool(...)`. Add the block to `configs/config.yaml`.
-- [ ] **Step 4:** `go test ./internal/config/`.
-- [ ] **Step 5: Commit** `feat(config): add services.api/services.worker role flags`.
+- [x] **Step 1: Write failing test** — defaults `Services.API == true && Services.Worker == true`; `AI_FACTORY_SERVICES_API=false` override yields `false`; YAML `services: {worker: false}` respected.
+- [x] **Step 2: Verify fail.**
+- [x] **Step 3: Implement** `type ServicesConfig struct { API, Worker bool }`; add `Services ServicesConfig` to `Config`; `v.SetDefault("services.api", true)`, `v.SetDefault("services.worker", true)`; populate from `v.GetBool(...)`. Add the block to `configs/config.yaml`.
+- [x] **Step 4:** `go test ./internal/config/`.
+- [x] **Step 5: Commit** `feat(config): add services.api/services.worker role flags`.
 
 ---
 
@@ -64,13 +64,13 @@ func (a *App) Run() error          // seeds only if API; starts worker if enable
 func RunMigrate(cfg *config.Config) error
 func RunSeed(ctx context.Context, cfg *config.Config) error
 ```
-- [ ] **Step 1: Write failing test** (`internal/app/role_test.go`, no DB): with `Services{API:false,Worker:false}`, `RegisterAll` succeeds and `Resolve("http.handler")` / `Resolve("deployment.worker")` return *not-registered*; with `Services{API:true,Worker:false}` those same resolves are *registered* (error is not "not registered").
-- [ ] **Step 2: Verify fail.**
-- [ ] **Step 3: Implement gating** in `RegisterAll`: move `inference.client`, `batch.scheduler`, `tool.executor`, `inference.loop`, `inference.manager` and the four `http.*` providers under `if cfg.Services.API`; wrap `deployment.worker` in `if cfg.Services.Worker`. Keep logger/db/redis/limiter/bus/iam/serving/usage **always** registered.
-- [ ] **Step 4: Implement lifecycle:** `NewAppFromContainer` force-resolves role-dependent names; `Run` seeds only when API, starts worker when enabled, serves HTTP only when API, otherwise logs + waits for signal.
-- [ ] **Step 5: Implement runners:** `RunMigrate` (config → `database.Open` → `database.Migrate`) and `RunSeed` (minimal `RegisterAll` with both roles off → resolve `iam`/`serving` → `seedAdmin`+`seedDemo`).
-- [ ] **Step 6:** `go build ./...`, `go vet ./...`, `go test ./...`.
-- [ ] **Step 7: Commit** `refactor(app): role-gated wiring + migrate/seed runners`.
+- [x] **Step 1: Write failing test** (`internal/app/role_test.go`, no DB): with `Services{API:false,Worker:false}`, `RegisterAll` succeeds and `Resolve("http.handler")` / `Resolve("deployment.worker")` return *not-registered*; with `Services{API:true,Worker:false}` those same resolves are *registered* (error is not "not registered").
+- [x] **Step 2: Verify fail.**
+- [x] **Step 3: Implement gating** in `RegisterAll`: move `inference.client`, `batch.scheduler`, `tool.executor`, `inference.loop`, `inference.manager` and the four `http.*` providers under `if cfg.Services.API`; wrap `deployment.worker` in `if cfg.Services.Worker`. Keep logger/db/redis/limiter/bus/iam/serving/usage **always** registered.
+- [x] **Step 4: Implement lifecycle:** `NewAppFromContainer` force-resolves role-dependent names; `Run` seeds only when API, starts worker when enabled, serves HTTP only when API, otherwise logs + waits for signal.
+- [x] **Step 5: Implement runners:** `RunMigrate` (config → `database.Open` → `database.Migrate`) and `RunSeed` (minimal `RegisterAll` with both roles off → resolve `iam`/`serving` → `seedAdmin`+`seedDemo`).
+- [x] **Step 6:** `go build ./...`, `go vet ./...`, `go test ./...`.
+- [x] **Step 7: Commit** `refactor(app): role-gated wiring + migrate/seed runners`.
 
 ---
 
@@ -78,11 +78,11 @@ func RunSeed(ctx context.Context, cfg *config.Config) error
 
 **Files:** `cmd/worker/main.go`, `cmd/migrate/main.go`, `cmd/seed/main.go`; touch `cmd/server/main.go` only if needed (it is not).
 
-- [ ] **Step 1: `cmd/worker`** — flags `--config`, `--inference-addr`; `config.Load` → force `API=false, Worker=true` → `SetupLogger` → `RegisterAll` → `NewAppFromContainer(cfg, 0)` → `Run()`.
-- [ ] **Step 2: `cmd/migrate`** — flags `--config`; `config.Load` → `SetupLogger` → `app.RunMigrate(cfg)`; log + exit non-zero on error.
-- [ ] **Step 3: `cmd/seed`** — flags `--config`; `config.Load` → `SetupLogger` → `app.RunSeed(ctx, cfg)`; log + exit.
-- [ ] **Step 4:** `go build ./...`.
-- [ ] **Step 5: Commit** `feat(cmd): add worker/migrate/seed binaries`.
+- [x] **Step 1: `cmd/worker`** — flags `--config`, `--inference-addr`; `config.Load` → force `API=false, Worker=true` → `SetupLogger` → `RegisterAll` → `NewAppFromContainer(cfg, 0)` → `Run()`.
+- [x] **Step 2: `cmd/migrate`** — flags `--config`; `config.Load` → `SetupLogger` → `app.RunMigrate(cfg)`; log + exit non-zero on error.
+- [x] **Step 3: `cmd/seed`** — flags `--config`; `config.Load` → `SetupLogger` → `app.RunSeed(ctx, cfg)`; log + exit.
+- [x] **Step 4:** `go build ./...`.
+- [x] **Step 5: Commit** `feat(cmd): add worker/migrate/seed binaries`.
 
 ---
 
@@ -90,9 +90,9 @@ func RunSeed(ctx context.Context, cfg *config.Config) error
 
 **Files:** `go-server/Dockerfile`, `deployments/docker-compose.yml`.
 
-- [ ] **Step 1:** Build all four binaries in the builder stage (`/out/{server,worker,migrate,seed}`) and copy them into the runtime image.
-- [ ] **Step 2:** Add a `worker` compose service (same image, `entrypoint: /app/worker`, `services.worker=true`, `services.api=false`, depends on postgres + kafka) — commented note that Kafka's advertised listener is host-only.
-- [ ] **Step 3: Commit** `build(docker): ship multi-binary image + worker service`.
+- [x] **Step 1:** Build all four binaries in the builder stage (`/out/{server,worker,migrate,seed}`) and copy them into the runtime image.
+- [x] **Step 2:** Add a `worker` compose service (same image, `entrypoint: /app/worker`, `services.worker=true`, `services.api=false`, depends on postgres + kafka) — commented note that Kafka's advertised listener is host-only.
+- [x] **Step 3: Commit** `build(docker): ship multi-binary image + worker service`.
 
 ---
 
@@ -100,16 +100,16 @@ func RunSeed(ctx context.Context, cfg *config.Config) error
 
 **Files:** `CLAUDE.md`, `docs/TRACKING.md`, spec status.
 
-- [ ] Mark Phase 5 ✅; update the project-structure tree (`cmd/{server,worker,migrate,seed}`), the "Running" section (worker/migrate/seed commands), and the roadmap line.
-- [ ] Update the TRACKING update-log + phase status; note the only remaining phase is Phase 6 (outbox/cache-aside).
-- [ ] Record spec §12.4 decision (worker headless).
+- [x] Mark Phase 5 ✅; update the project-structure tree (`cmd/{server,worker,migrate,seed}`), the "Running" section (worker/migrate/seed commands), and the roadmap line.
+- [x] Update the TRACKING update-log + phase status; note the only remaining phase is Phase 6 (outbox/cache-aside).
+- [x] Record spec §12.4 decision (worker headless).
 
 ## Self-Review Checkpoints
 
-- [ ] `go build ./...`, `go vet ./...`, `go test ./...` clean.
-- [ ] `cmd/server` defaults unchanged (API + worker + seed).
-- [ ] `cmd/worker` with `services.api=false` never resolves an `http.*` provider.
-- [ ] `cmd/migrate` applies migrations without starting any server.
-- [ ] `cmd/seed` seeds admin + demo without starting a server.
-- [ ] No DB migration change; integration tests still skip without `AI_FACTORY_DATABASE_URL`.
-- [ ] Role flags overridable by env (`AI_FACTORY_SERVICES_API`, `AI_FACTORY_SERVICES_WORKER`).
+- [x] `go build ./...`, `go vet ./...`, `go test ./...` clean.
+- [x] `cmd/server` defaults unchanged (API + worker + seed).
+- [x] `cmd/worker` with `services.api=false` never resolves an `http.*` provider.
+- [x] `cmd/migrate` applies migrations without starting any server.
+- [x] `cmd/seed` seeds admin + demo without starting a server.
+- [x] No DB migration change; integration tests still skip without `AI_FACTORY_DATABASE_URL`.
+- [x] Role flags overridable by env (`AI_FACTORY_SERVICES_API`, `AI_FACTORY_SERVICES_WORKER`).
