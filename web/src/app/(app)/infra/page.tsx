@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import CopyButton from "@/components/CopyButton";
 import DataTable, { Column, ShortId, Time } from "@/components/DataTable";
 import StatusBadge from "@/components/StatusBadge";
 import { apiFetch } from "@/lib/api";
@@ -21,6 +22,10 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "templates", label: "Serving Templates" },
   { id: "quotas", label: "Quotas" },
 ];
+
+// A deployment in one of these states is no longer moving; anything else means
+// the async worker is still transitioning it, so the list should refresh.
+const TERMINAL = new Set(["READY", "STOPPED", "FAILED", "DEGRADED"]);
 
 function Notice({ msg }: { msg: string | null }) {
   if (!msg) return null;
@@ -53,6 +58,16 @@ const inputCls =
   "rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[13px] outline-none focus:border-[var(--accent)]";
 const btnCls =
   "rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40";
+
+// IdCell renders a truncated id with a copy-to-clipboard affordance.
+function IdCell({ id }: { id: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <ShortId id={id} />
+      <CopyButton value={id} label="copy" />
+    </span>
+  );
+}
 
 export default function PlatformPage() {
   const [tab, setTab] = useState<Tab>("deployments");
@@ -120,9 +135,18 @@ function DeploymentsTab() {
   const [name, setName] = useState("");
   const [region, setRegion] = useState("us-east-1");
   const [replicas, setReplicas] = useState(1);
-  const [modelVersionId, setModelVersionId] = useState("");
-  const [templateVersionId, setTemplateVersionId] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Catalog selections replace the old free-text UUID inputs: pick a model →
+  // its versions, pick a template → its versions.
+  const [models, setModels] = useState<Model[]>([]);
+  const [templates, setTemplates] = useState<ServingTemplate[]>([]);
+  const [modelId, setModelId] = useState("");
+  const [modelVersions, setModelVersions] = useState<ModelVersion[]>([]);
+  const [modelVersionId, setModelVersionId] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [templateVersions, setTemplateVersions] = useState<TemplateVersion[]>([]);
+  const [templateVersionId, setTemplateVersionId] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -136,6 +160,55 @@ function DeploymentsTab() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch on mount
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      apiFetch<Model[]>("/api/v1/models").catch(() => [] as Model[]),
+      apiFetch<ServingTemplate[]>("/api/v1/templates").catch(() => [] as ServingTemplate[]),
+    ]).then(([ms, ts]) => {
+      if (cancelled) return;
+      setModels(ms);
+      setTemplates(ts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Poll while any deployment row is still transitioning (PENDING→READY etc.).
+  const hasPending = rows.some((r) => !TERMINAL.has(r.status));
+  useEffect(() => {
+    if (!hasPending) return;
+    const timer = setInterval(load, 3000);
+    return () => clearInterval(timer);
+  }, [hasPending, load]);
+
+  async function pickModel(id: string) {
+    setModelId(id);
+    setModelVersionId("");
+    setModelVersions([]);
+    if (!id) return;
+    try {
+      setModelVersions(await apiFetch<ModelVersion[]>(`/api/v1/models/${id}/versions`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tải được model versions");
+    }
+  }
+
+  async function pickTemplate(id: string) {
+    setTemplateId(id);
+    setTemplateVersionId("");
+    setTemplateVersions([]);
+    if (!id) return;
+    try {
+      setTemplateVersions(await apiFetch<TemplateVersion[]>(`/api/v1/templates/${id}/versions`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tải được template versions");
+    }
+  }
+
+  const canSubmit = !!name.trim() && !!modelVersionId && !!templateVersionId && !busy;
 
   async function createDeployment(e: React.FormEvent) {
     e.preventDefault();
@@ -155,7 +228,11 @@ function DeploymentsTab() {
       });
       setNotice(`Deployment "${created.name}" tạo thành công — trạng thái ${created.status} (async worker sẽ chuyển PENDING→READY).`);
       setName("");
+      setModelId("");
+      setModelVersions([]);
       setModelVersionId("");
+      setTemplateId("");
+      setTemplateVersions([]);
       setTemplateVersionId("");
       load();
     } catch (err) {
@@ -185,12 +262,12 @@ function DeploymentsTab() {
     {
       key: "model_version_id",
       label: "Model version",
-      render: (d) => <ShortId id={d.model_version_id} />,
+      render: (d) => <IdCell id={d.model_version_id} />,
     },
     {
       key: "template_version_id",
       label: "Template version",
-      render: (d) => <ShortId id={d.template_version_id} />,
+      render: (d) => <IdCell id={d.template_version_id} />,
     },
     { key: "workload_ref", label: "Workload", render: (d) => (d.workload_ref ? <ShortId id={d.workload_ref} /> : <span className="text-[var(--text2)]">—</span>) },
     { key: "updated_at", label: "Cập nhật", render: (d) => <Time iso={d.updated_at} /> },
@@ -216,32 +293,66 @@ function DeploymentsTab() {
               className={inputCls}
             />
           </Field>
-          <Field label="Model version ID">
-            <input
-              required
+          <Field label="Model">
+            <select value={modelId} onChange={(e) => pickModel(e.target.value)} className={inputCls}>
+              <option value="">— chọn model —</option>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Model version">
+            <select
               value={modelVersionId}
               onChange={(e) => setModelVersionId(e.target.value)}
-              placeholder="uuid…"
+              disabled={!modelId}
               className={inputCls}
-            />
+            >
+              <option value="">{modelId ? "— chọn version —" : "chọn model trước"}</option>
+              {modelVersions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.version} · {v.id.slice(0, 8)}
+                </option>
+              ))}
+            </select>
           </Field>
-          <Field label="Template version ID">
-            <input
-              required
+          <Field label="Template">
+            <select value={templateId} onChange={(e) => pickTemplate(e.target.value)} className={inputCls}>
+              <option value="">— chọn template —</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Template version">
+            <select
               value={templateVersionId}
               onChange={(e) => setTemplateVersionId(e.target.value)}
-              placeholder="uuid…"
+              disabled={!templateId}
               className={inputCls}
-            />
+            >
+              <option value="">{templateId ? "— chọn version —" : "chọn template trước"}</option>
+              {templateVersions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.version} · {v.id.slice(0, 8)}
+                </option>
+              ))}
+            </select>
           </Field>
           <div className="flex items-end md:col-span-5">
-            <button type="submit" disabled={busy} className={btnCls}>
+            <button type="submit" disabled={!canSubmit} className={btnCls}>
               {busy ? "Đang tạo…" : "+ Tạo deployment"}
             </button>
           </div>
         </form>
         <p className="mt-2 text-[11px] text-[var(--text2)]">
-          Model/Template version ID lấy từ tab Models / Serving Templates sau khi tạo version. Không có Kafka thì deployment ở trạng thái PENDING.
+          {models.length === 0 || templates.length === 0
+            ? "Chưa có model/template — tạo ở tab Models / Serving Templates trước (mỗi cái cần ít nhất 1 version)."
+            : "Chuyển PENDING→READY do worker async xử lý (cần Kafka)."}
         </p>
       </div>
 
@@ -350,7 +461,7 @@ function ModelsTab() {
     { key: "task", label: "Task" },
     { key: "framework", label: "Framework" },
     { key: "status", label: "Trạng thái", render: (m) => <StatusBadge status={m.status} /> },
-    { key: "id", label: "ID", render: (m) => <ShortId id={m.id} /> },
+    { key: "id", label: "ID", render: (m) => <IdCell id={m.id} /> },
     { key: "created_at", label: "Tạo lúc", render: (m) => <Time iso={m.created_at} /> },
   ];
 
@@ -501,7 +612,7 @@ function TemplatesTab() {
     { key: "name", label: "Tên", render: (t) => <span className="font-medium">{t.name}</span> },
     { key: "runtime", label: "Runtime" },
     { key: "status", label: "Trạng thái", render: (t) => <StatusBadge status={t.status} /> },
-    { key: "id", label: "ID", render: (t) => <ShortId id={t.id} /> },
+    { key: "id", label: "ID", render: (t) => <IdCell id={t.id} /> },
     { key: "updated_at", label: "Cập nhật", render: (t) => <Time iso={t.updated_at} /> },
   ];
 

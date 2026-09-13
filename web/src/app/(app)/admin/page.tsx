@@ -6,10 +6,12 @@ import StatusBadge from "@/components/StatusBadge";
 import { useAuth } from "@/context/AuthContext";
 import { isPlatformAdmin } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
-import type { Tenant } from "@/lib/types";
+import type { Tenant, User } from "@/lib/types";
 
 const inputCls =
   "rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[13px] outline-none focus:border-[var(--accent)]";
+
+const ROLES = ["TENANT_ADMIN", "TENANT_DEVELOPER", "TENANT_VIEWER"] as const;
 
 export default function AdminPage() {
   const { claims } = useAuth();
@@ -19,11 +21,32 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // --- users ---
+  const [tenantId, setTenantId] = useState("");
+  const [users, setUsers] = useState<User[]>([]);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState<string>("TENANT_ADMIN");
+  const [userBusy, setUserBusy] = useState(false);
+
   const load = useCallback(async () => {
     try {
       setRows(await apiFetch<Tenant[]>("/api/v1/tenants"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không tải được tenants");
+    }
+  }, []);
+
+  const loadUsers = useCallback(async (id: string) => {
+    if (!id) {
+      setUsers([]);
+      return;
+    }
+    try {
+      setUsers(await apiFetch<User[]>(`/api/v1/users?tenant_id=${encodeURIComponent(id)}`));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tải được users");
     }
   }, []);
 
@@ -33,6 +56,11 @@ export default function AdminPage() {
       load();
     }
   }, [claims, load]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch on tenant change
+    loadUsers(tenantId);
+  }, [tenantId, loadUsers]);
 
   if (!claims || !isPlatformAdmin(claims.role)) {
     return (
@@ -63,7 +91,30 @@ export default function AdminPage() {
     }
   }
 
-  const columns: Column<Tenant>[] = [
+  async function createUser(e: React.FormEvent) {
+    e.preventDefault();
+    if (!tenantId || !username.trim() || !password) return;
+    setUserBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const created = await apiFetch<User>("/api/v1/users", {
+        method: "POST",
+        body: { tenant_id: tenantId, username: username.trim(), email: email.trim(), password, role },
+      });
+      setNotice(`User "${created.username}" tạo thành công với role ${created.role}.`);
+      setUsername("");
+      setEmail("");
+      setPassword("");
+      loadUsers(tenantId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tạo user thất bại");
+    } finally {
+      setUserBusy(false);
+    }
+  }
+
+  const tenantColumns: Column<Tenant>[] = [
     { key: "name", label: "Tên", render: (t) => <span className="font-medium">{t.name}</span> },
     { key: "status", label: "Trạng thái", render: (t) => <StatusBadge status={t.status} /> },
     { key: "id", label: "ID", render: (t) => <code className="text-[12px] text-[var(--link)]">{t.id}</code> },
@@ -71,10 +122,18 @@ export default function AdminPage() {
     { key: "updated_at", label: "Cập nhật", render: (t) => <Time iso={t.updated_at} /> },
   ];
 
+  const userColumns: Column<User>[] = [
+    { key: "username", label: "Username", render: (u) => <span className="font-medium">{u.username}</span> },
+    { key: "email", label: "Email", render: (u) => u.email || <span className="text-[var(--text2)]">—</span> },
+    { key: "role", label: "Role" },
+    { key: "status", label: "Trạng thái", render: (u) => <StatusBadge status={u.status} /> },
+    { key: "id", label: "ID", render: (u) => <code className="text-[12px] text-[var(--link)]">{u.id.slice(0, 8)}…</code> },
+  ];
+
   return (
     <div className="mx-auto max-w-4xl px-6 py-6">
-      <h1 className="mb-1 text-lg font-semibold">Admin · Tenants</h1>
-      <p className="mb-5 text-[13px] text-[var(--text2)]">Quản lý tenant cấp platform (chỉ Platform Admin).</p>
+      <h1 className="mb-1 text-lg font-semibold">Admin · Tenants &amp; Users</h1>
+      <p className="mb-5 text-[13px] text-[var(--text2)]">Quản lý tenant và user cấp platform (chỉ Platform Admin).</p>
 
       <form onSubmit={createTenant} className="mb-6 flex items-center gap-2">
         <input
@@ -103,7 +162,72 @@ export default function AdminPage() {
         </div>
       )}
 
-      <DataTable columns={columns} rows={rows} empty="Chưa có tenant nào." />
+      <DataTable columns={tenantColumns} rows={rows} empty="Chưa có tenant nào." />
+
+      <h2 className="mb-1 mt-8 text-[15px] font-semibold">Users</h2>
+      <p className="mb-4 text-[13px] text-[var(--text2)]">
+        User đầu tiên của một tenant nên là <code className="text-[var(--link)]">TENANT_ADMIN</code> để đăng nhập và quản lý tenant đó.
+      </p>
+
+      <form onSubmit={createUser} className="mb-6 grid grid-cols-1 gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 md:grid-cols-2">
+        <label className="flex flex-col gap-1 text-[12px] text-[var(--text2)]">
+          <span>Tenant</span>
+          <select value={tenantId} onChange={(e) => setTenantId(e.target.value)} className={inputCls} required>
+            <option value="" disabled>
+              — chọn tenant —
+            </option>
+            {rows.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-[12px] text-[var(--text2)]">
+          <span>Role</span>
+          <select value={role} onChange={(e) => setRole(e.target.value)} className={inputCls}>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-[12px] text-[var(--text2)]">
+          <span>Username</span>
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="alice" className={inputCls} required />
+        </label>
+        <label className="flex flex-col gap-1 text-[12px] text-[var(--text2)]">
+          <span>Email</span>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="alice@example.com" className={inputCls} />
+        </label>
+        <label className="flex flex-col gap-1 text-[12px] text-[var(--text2)]">
+          <span>Password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            className={inputCls}
+            required
+          />
+        </label>
+        <div className="flex items-end md:col-span-2">
+          <button
+            type="submit"
+            disabled={userBusy || !tenantId || !username.trim() || !password}
+            className="rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          >
+            {userBusy ? "Đang tạo…" : "+ Tạo user"}
+          </button>
+        </div>
+      </form>
+
+      {tenantId ? (
+        <DataTable columns={userColumns} rows={users} empty="Tenant này chưa có user nào." />
+      ) : (
+        <p className="text-[13px] text-[var(--text2)]">Chọn tenant để xem danh sách user.</p>
+      )}
     </div>
   );
 }

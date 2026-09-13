@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import CopyButton from "@/components/CopyButton";
 import DataTable, { Column, Time } from "@/components/DataTable";
 import StatusBadge from "@/components/StatusBadge";
 import { apiFetch } from "@/lib/api";
@@ -11,7 +12,9 @@ export default function ApiKeysTab() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // The full key is returned exactly once by the server; keep it only until the
+  // user dismisses it. It is never persisted.
+  const [createdKey, setCreatedKey] = useState<{ name: string; key: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -31,13 +34,12 @@ export default function ApiKeysTab() {
     if (!name.trim()) return;
     setBusy(true);
     setError(null);
-    setNotice(null);
     try {
       const created = await apiFetch<{ id: string; name: string; key: string }>("/api/v1/api-keys", {
         method: "POST",
         body: { name: name.trim() },
       });
-      setNotice(`Đã tạo key "${created.name}". Chỉ hiển thị một lần: sk-…${created.key.slice(-8)}`);
+      setCreatedKey({ name: created.name, key: created.key });
       setName("");
       load();
     } catch (err) {
@@ -87,9 +89,24 @@ export default function ApiKeysTab() {
         </button>
       </form>
 
-      {notice && (
-        <div className="mb-4 rounded-md border border-[var(--ok)]/40 bg-[var(--ok)]/10 px-3 py-2 text-[13px] text-[var(--ok)]">
-          {notice}
+      {createdKey && (
+        <div className="mb-6 rounded-lg border border-[var(--ok)]/40 bg-[var(--ok)]/10 p-4">
+          <div className="mb-2 text-[13px] font-medium text-[var(--ok)]">
+            Key &quot;{createdKey.name}&quot; chỉ hiển thị một lần — copy ngay bây giờ.
+          </div>
+          <div className="flex items-start gap-2">
+            <code className="min-w-0 flex-1 select-all break-all rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[12px]">
+              {createdKey.key}
+            </code>
+            <CopyButton value={createdKey.key} />
+            <button
+              type="button"
+              onClick={() => setCreatedKey(null)}
+              className="shrink-0 rounded-md px-2 py-1 text-[12px] text-[var(--text2)] hover:text-[var(--text)]"
+            >
+              Đóng
+            </button>
+          </div>
         </div>
       )}
       {error && (

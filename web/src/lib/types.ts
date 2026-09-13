@@ -20,6 +20,15 @@ export interface Tenant {
   updated_at: string;
 }
 
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  role: Role;
+  tenant_id: string;
+  status: string;
+}
+
 export interface Model {
   id: string;
   name: string;

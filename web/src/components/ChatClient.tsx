@@ -60,8 +60,9 @@ export default function ChatClient() {
   const [input, setInput] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [showSystem, setShowSystem] = useState(false);
-  const [models, setModels] = useState<string[]>(["qwen3.5-9b"]);
-  const [model, setModel] = useState("qwen3.5-9b");
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState("");
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState<{ tokens: number; ms: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +116,7 @@ export default function ChatClient() {
     };
   }, [activeId]);
 
-  // Load model registry for the selector (fall back to the llama engine's model).
+  // Load model registry for the selector (prefer the seeded qwen-3b).
   useEffect(() => {
     let cancelled = false;
     apiFetch<Model[]>("/api/v1/models")
@@ -124,11 +125,14 @@ export default function ChatClient() {
         const names = ms.map((m) => m.name);
         if (names.length) {
           setModels(names);
-          setModel(names.find((n) => n === "qwen3.5-9b") || names[0]);
+          setModel(names.find((n) => n === "qwen-3b") || names.find((n) => n === "qwen3.5-9b") || names[0]);
         }
       })
       .catch(() => {
         /* no model.read permission or server down — keep default */
+      })
+      .finally(() => {
+        if (!cancelled) setModelsLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -175,7 +179,7 @@ export default function ChatClient() {
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || busy || !model) return;
     setInput("");
     setError(null);
     setStats(null);
@@ -220,6 +224,9 @@ export default function ChatClient() {
           msg = err?.error?.message || msg;
         } catch {
           /* non-JSON */
+        }
+        if (resp.status === 404) {
+          msg = "Model chưa có deployment READY — vào /infra tạo deployment và chờ trạng thái READY.";
         }
         throw new Error(msg);
       }
@@ -428,6 +435,16 @@ export default function ChatClient() {
             </button>
           </div>
 
+          {modelsLoaded && models.length === 0 && (
+            <div className="mb-2 rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-3 py-2 text-[13px] text-[var(--warn)]">
+              Chưa có model nào — vào{" "}
+              <a href="/infra" className="underline">
+                /infra
+              </a>{" "}
+              tạo model + deployment READY trước khi chat.
+            </div>
+          )}
+
           {showSystem && (
             <input
               value={systemPrompt}
@@ -476,7 +493,7 @@ export default function ChatClient() {
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim()}
+                disabled={!input.trim() || !model}
                 aria-label="Gửi"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-strong)] text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
