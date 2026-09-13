@@ -16,6 +16,7 @@ COPY --from=builder /out/server  /app/server
 COPY --from=builder /out/worker  /app/worker
 COPY --from=builder /out/migrate /app/migrate
 COPY --from=builder /out/seed    /app/seed
+COPY go-server/configs/ /app/configs/
 COPY ui/ /app/ui/
 EXPOSE 8080
 ENTRYPOINT ["/app/server"]
