@@ -76,6 +76,15 @@ func (h *Handler) handleCreateModelVersion(c *gin.Context) {
 	response.WriteJSON(c, http.StatusCreated, created)
 }
 
+func (h *Handler) handleListModelVersions(c *gin.Context) {
+	vs, err := h.svc.ListModelVersions(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, vs)
+}
+
 // --- templates ---
 
 func (h *Handler) handleCreateTemplate(c *gin.Context) {
@@ -125,6 +134,15 @@ func (h *Handler) handleCreateTemplateVersion(c *gin.Context) {
 		return
 	}
 	response.WriteJSON(c, http.StatusCreated, created)
+}
+
+func (h *Handler) handleListTemplateVersions(c *gin.Context) {
+	vs, err := h.svc.ListTemplateVersions(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, vs)
 }
 
 // --- deployments ---

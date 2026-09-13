@@ -12,11 +12,13 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 	e.GET("/api/v1/models", middleware.RequirePermission(h.auth, middleware.ActionModelRead), h.handleListModels)
 	e.GET("/api/v1/models/:id", middleware.RequirePermission(h.auth, middleware.ActionModelRead), h.handleGetModel)
 	e.POST("/api/v1/models/:id/versions", middleware.RequirePermission(h.auth, middleware.ActionModelWrite), h.handleCreateModelVersion)
+	e.GET("/api/v1/models/:id/versions", middleware.RequirePermission(h.auth, middleware.ActionModelRead), h.handleListModelVersions)
 
 	e.POST("/api/v1/templates", middleware.RequirePermission(h.auth, middleware.ActionTemplateWrite), h.handleCreateTemplate)
 	e.GET("/api/v1/templates", middleware.RequirePermission(h.auth, middleware.ActionTemplateRead), h.handleListTemplates)
 	e.GET("/api/v1/templates/:id", middleware.RequirePermission(h.auth, middleware.ActionTemplateRead), h.handleGetTemplate)
 	e.POST("/api/v1/templates/:id/versions", middleware.RequirePermission(h.auth, middleware.ActionTemplateWrite), h.handleCreateTemplateVersion)
+	e.GET("/api/v1/templates/:id/versions", middleware.RequirePermission(h.auth, middleware.ActionTemplateRead), h.handleListTemplateVersions)
 
 	e.POST("/api/v1/deployments", middleware.RequirePermission(h.auth, middleware.ActionDeployWrite), h.handleCreateDeployment)
 	e.GET("/api/v1/deployments", middleware.RequirePermission(h.auth, middleware.ActionDeployRead), h.handleListDeployments)

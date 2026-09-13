@@ -77,6 +77,21 @@ func (r *modelRepo) GetVersion(ctx context.Context, modelID, version string) (*M
 	return &mv, nil
 }
 
+func (r *modelRepo) ListVersions(ctx context.Context, modelID string) ([]ModelVersion, error) {
+	var rows []modelVersionRow
+	if err := r.db.WithContext(ctx).
+		Where("model_id = ?", modelID).
+		Order("created_at DESC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list model versions: %w", err)
+	}
+	out := make([]ModelVersion, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toModelVersion(row))
+	}
+	return out, nil
+}
+
 // --- templates + versions ---
 
 type templateRepo struct{ db *gorm.DB }
@@ -141,6 +156,21 @@ func (r *templateRepo) GetVersion(ctx context.Context, templateID, version strin
 	}
 	tv := toTemplateVersion(row)
 	return &tv, nil
+}
+
+func (r *templateRepo) ListVersions(ctx context.Context, templateID string) ([]TemplateVersion, error) {
+	var rows []templateVersionRow
+	if err := r.db.WithContext(ctx).
+		Where("template_id = ?", templateID).
+		Order("created_at DESC").
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("list template versions: %w", err)
+	}
+	out := make([]TemplateVersion, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toTemplateVersion(row))
+	}
+	return out, nil
 }
 
 // --- deployments ---

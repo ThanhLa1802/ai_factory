@@ -42,6 +42,11 @@ func (s *Service) GetModelVersion(ctx context.Context, modelID, version string) 
 	return s.repos.Models.GetVersion(ctx, modelID, version)
 }
 
+// ListModelVersions returns every version of a model, newest first.
+func (s *Service) ListModelVersions(ctx context.Context, modelID string) ([]ModelVersion, error) {
+	return s.repos.Models.ListVersions(ctx, modelID)
+}
+
 // --- serving templates ---
 
 func (s *Service) CreateTemplate(ctx context.Context, t ServingTemplate) (*ServingTemplate, error) {
@@ -81,4 +86,9 @@ func (s *Service) CreateTemplateVersion(ctx context.Context, tv TemplateVersion)
 // GetTemplateVersion returns the version of a template, or ErrNotFound.
 func (s *Service) GetTemplateVersion(ctx context.Context, templateID, version string) (*TemplateVersion, error) {
 	return s.repos.Templates.GetVersion(ctx, templateID, version)
+}
+
+// ListTemplateVersions returns every version of a template, newest first.
+func (s *Service) ListTemplateVersions(ctx context.Context, templateID string) ([]TemplateVersion, error) {
+	return s.repos.Templates.ListVersions(ctx, templateID)
 }
