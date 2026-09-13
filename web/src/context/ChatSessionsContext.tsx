@@ -2,18 +2,27 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import type { SessionSummary } from "@/lib/types";
 
-function newSessionId() {
+export function newSessionId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return "s-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+// The active session id lives in the URL (/chat/<id>), so refresh, back/forward,
+// and sharing a link all restore the same conversation instead of spawning a new
+// empty one on every mount.
+function sessionIdFromPath(pathname: string | null): string {
+  const match = pathname?.match(/^\/chat\/([^/?#]+)/);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
 interface ChatSessionsState {
   sessions: SessionSummary[];
   activeId: string;
+  loaded: boolean;
   select: (id: string) => void;
   newChat: () => void;
   refresh: () => void;
@@ -26,14 +35,19 @@ const ChatSessionsContext = createContext<ChatSessionsState | undefined>(undefin
 // page) and ChatClient can read the active id from the same source.
 export function ChatSessionsProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [activeId, setActiveId] = useState<string>(() => newSessionId());
+  const [loaded, setLoaded] = useState(false);
+
+  const activeId = useMemo(() => sessionIdFromPath(pathname), [pathname]);
 
   const refresh = useCallback(async () => {
     try {
-      setSessions(await apiFetch<SessionSummary[]>("/api/v1/sessions"));
+      setSessions((await apiFetch<SessionSummary[]>("/api/v1/sessions")) ?? []);
     } catch {
       /* server down — keep the current list */
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -44,20 +58,18 @@ export function ChatSessionsProvider({ children }: { children: ReactNode }) {
 
   const select = useCallback(
     (id: string) => {
-      setActiveId(id);
-      router.push("/chat");
+      if (id) router.push(`/chat/${id}`);
     },
     [router],
   );
 
   const newChat = useCallback(() => {
-    setActiveId(newSessionId());
-    router.push("/chat");
+    router.push(`/chat/${newSessionId()}`);
   }, [router]);
 
   const value = useMemo(
-    () => ({ sessions, activeId, select, newChat, refresh }),
-    [sessions, activeId, select, newChat, refresh],
+    () => ({ sessions, activeId, loaded, select, newChat, refresh }),
+    [sessions, activeId, loaded, select, newChat, refresh],
   );
 
   return <ChatSessionsContext.Provider value={value}>{children}</ChatSessionsContext.Provider>;

@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useMemo, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
 import { apiFetch } from "@/lib/api";
-import { clearToken, decodeToken, getToken, setToken as storeToken } from "@/lib/auth";
+import { clearToken, decodeToken, getToken, setToken, subscribe } from "@/lib/auth";
 import type { Claims } from "@/lib/types";
 
 interface AuthState {
@@ -19,22 +19,10 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 
-// Auth state lives in localStorage (an external store), so we sync it into React
-// with useSyncExternalStore instead of useState + effect. This is the sanctioned
-// pattern for localStorage-backed state and avoids the hydration mismatch that
-// plain lazy useState would cause under SSR.
-const listeners = new Set<() => void>();
-
-function subscribe(cb: () => void): () => void {
-  listeners.add(cb);
-  return () => {
-    listeners.delete(cb);
-  };
-}
-
-function emit() {
-  for (const l of listeners) l();
-}
+// Auth state lives in localStorage (an external store owned by lib/auth), so we
+// sync it into React with useSyncExternalStore instead of useState + effect. This
+// is the sanctioned pattern for localStorage-backed state and avoids the hydration
+// mismatch that plain lazy useState would cause under SSR.
 
 // Hydration signal as an external store: false on the server (localStorage is
 // unavailable), true on the client. Hoisted so the function identities are
@@ -65,13 +53,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: "POST",
       body: { username, password },
     });
-    storeToken(data.access_token);
-    emit();
+    // setToken emits to the lib/auth listeners, which re-renders this provider.
+    setToken(data.access_token);
   }, []);
 
   const logout = useCallback(() => {
     clearToken();
-    emit();
   }, []);
 
   const value = useMemo(

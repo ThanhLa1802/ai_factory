@@ -14,13 +14,29 @@ export default function DataTable<T>({
   columns,
   rows,
   actions,
-  empty = "Chưa có dữ liệu.",
+  empty = "No data yet.",
+  loading = false,
 }: {
   columns: Column<T>[];
   rows: T[];
   actions?: (row: T) => ReactNode;
   empty?: string;
+  loading?: boolean;
 }) {
+  if (loading && rows.length === 0) {
+    return (
+      <div
+        role="status"
+        aria-busy="true"
+        aria-label="Loading data"
+        className="space-y-2 rounded-lg border border-[var(--border)] p-3"
+      >
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-8 animate-pulse rounded bg-[var(--surface2)]" />
+        ))}
+      </div>
+    );
+  }
   if (rows.length === 0) {
     return <div className="px-4 py-6 text-center text-[13px] text-[var(--text2)]">{empty}</div>;
   }
@@ -34,7 +50,7 @@ export default function DataTable<T>({
                 {c.label}
               </th>
             ))}
-            {actions && <th className="px-3 py-2.5 font-medium">Hành động</th>}
+            {actions && <th className="px-3 py-2.5 font-medium">Actions</th>}
           </tr>
         </thead>
         <tbody>

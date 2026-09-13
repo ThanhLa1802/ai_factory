@@ -63,13 +63,15 @@ func (r *userRepo) Create(ctx context.Context, u *User, passwordHash string) err
 	})
 }
 
-func (r *userRepo) GetByUsername(ctx context.Context, username string) (*User, string, error) {
+// GetByUsername resolves an account by username OR email, so users can sign in
+// with either identifier.
+func (r *userRepo) GetByUsername(ctx context.Context, login string) (*User, string, error) {
 	var acc userAccount
 	err := r.db.WithContext(ctx).
 		Table("users AS u").
 		Select("u.id, u.username, u.email, u.password_hash, u.status, m.role, m.tenant_id").
 		Joins("JOIN tenant_memberships m ON m.user_id = u.id").
-		Where("u.username = ?", username).
+		Where("u.username = ? OR u.email = ?", login, login).
 		Take(&acc).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, "", fmt.Errorf("get user: %w", ErrNotFound)

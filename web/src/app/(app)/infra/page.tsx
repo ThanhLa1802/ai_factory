@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import CopyButton from "@/components/CopyButton";
 import DataTable, { Column, ShortId, Time } from "@/components/DataTable";
 import StatusBadge from "@/components/StatusBadge";
+import TabList from "@/components/TabList";
 import { apiFetch } from "@/lib/api";
 import type {
   Deployment,
@@ -30,7 +31,7 @@ const TERMINAL = new Set(["READY", "STOPPED", "FAILED", "DEGRADED"]);
 function Notice({ msg }: { msg: string | null }) {
   if (!msg) return null;
   return (
-    <div className="mb-4 rounded-md border border-[var(--ok)]/40 bg-[var(--ok)]/10 px-3 py-2 text-[13px] text-[var(--ok)]">
+    <div role="status" className="mb-4 rounded-md border border-[var(--ok)]/40 bg-[var(--ok)]/10 px-3 py-2 text-[13px] text-[var(--ok)]">
       {msg}
     </div>
   );
@@ -39,7 +40,7 @@ function Notice({ msg }: { msg: string | null }) {
 function ErrorBanner({ msg }: { msg: string | null }) {
   if (!msg) return null;
   return (
-    <div className="mb-4 rounded-md border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
+    <div role="alert" className="mb-4 rounded-md border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
       {msg}
     </div>
   );
@@ -55,7 +56,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 const inputCls =
-  "rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[13px] outline-none focus:border-[var(--accent)]";
+  "rounded-md border border-[var(--border)] bg-[var(--bg2)] px-3 py-2 text-[13px] focus:border-[var(--accent)]";
 const btnCls =
   "rounded-md bg-[var(--accent-strong)] px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40";
 
@@ -76,46 +77,28 @@ export default function PlatformPage() {
     <div className="mx-auto max-w-6xl px-6 py-6">
       <h1 className="mb-1 text-lg font-semibold">Infrastructure</h1>
       <p className="mb-5 text-[13px] text-[var(--text2)]">
-        Quản lý model, serving template, deployment và quota cho tenant.
+        Manage models, serving templates, deployments, and quotas for the tenant.
       </p>
 
-      <div role="tablist" aria-label="Infrastructure sections" className="mb-6 flex gap-1 border-b border-[var(--border)]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            id={`tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls={`panel-${t.id}`}
-            onClick={() => setTab(t.id)}
-            className={`rounded-t-md px-4 py-2 text-[13px] ${
-              tab === t.id
-                ? "border-b-2 border-[var(--accent)] text-[var(--text)]"
-                : "text-[var(--text2)] hover:text-[var(--text)]"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <TabList tabs={TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Infrastructure sections" />
 
       {tab === "deployments" && (
-        <div role="tabpanel" id="panel-deployments" aria-labelledby="tab-deployments">
+        <div role="tabpanel" tabIndex={0} id="panel-deployments" aria-labelledby="tab-deployments">
           <DeploymentsTab />
         </div>
       )}
       {tab === "models" && (
-        <div role="tabpanel" id="panel-models" aria-labelledby="tab-models">
+        <div role="tabpanel" tabIndex={0} id="panel-models" aria-labelledby="tab-models">
           <ModelsTab />
         </div>
       )}
       {tab === "templates" && (
-        <div role="tabpanel" id="panel-templates" aria-labelledby="tab-templates">
+        <div role="tabpanel" tabIndex={0} id="panel-templates" aria-labelledby="tab-templates">
           <TemplatesTab />
         </div>
       )}
       {tab === "quotas" && (
-        <div role="tabpanel" id="panel-quotas" aria-labelledby="tab-quotas">
+        <div role="tabpanel" tabIndex={0} id="panel-quotas" aria-labelledby="tab-quotas">
           <QuotasTab />
         </div>
       )}
@@ -129,6 +112,7 @@ export default function PlatformPage() {
 
 function DeploymentsTab() {
   const [rows, setRows] = useState<Deployment[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -150,9 +134,11 @@ function DeploymentsTab() {
 
   const load = useCallback(async () => {
     try {
-      setRows(await apiFetch<Deployment[]>("/api/v1/deployments"));
+      setRows((await apiFetch<Deployment[]>("/api/v1/deployments")) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được deployments");
+      setError(err instanceof Error ? err.message : "Failed to load deployments");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -190,9 +176,9 @@ function DeploymentsTab() {
     setModelVersions([]);
     if (!id) return;
     try {
-      setModelVersions(await apiFetch<ModelVersion[]>(`/api/v1/models/${id}/versions`));
+      setModelVersions((await apiFetch<ModelVersion[]>(`/api/v1/models/${id}/versions`)) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được model versions");
+      setError(err instanceof Error ? err.message : "Failed to load model versions");
     }
   }
 
@@ -202,9 +188,9 @@ function DeploymentsTab() {
     setTemplateVersions([]);
     if (!id) return;
     try {
-      setTemplateVersions(await apiFetch<TemplateVersion[]>(`/api/v1/templates/${id}/versions`));
+      setTemplateVersions((await apiFetch<TemplateVersion[]>(`/api/v1/templates/${id}/versions`)) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được template versions");
+      setError(err instanceof Error ? err.message : "Failed to load template versions");
     }
   }
 
@@ -226,7 +212,7 @@ function DeploymentsTab() {
           template_version_id: templateVersionId.trim(),
         },
       });
-      setNotice(`Deployment "${created.name}" tạo thành công — trạng thái ${created.status} (async worker sẽ chuyển PENDING→READY).`);
+      setNotice(`Deployment "${created.name}" created — status ${created.status} (the async worker moves it PENDING→READY).`);
       setName("");
       setModelId("");
       setModelVersions([]);
@@ -236,7 +222,7 @@ function DeploymentsTab() {
       setTemplateVersionId("");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo deployment thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create deployment");
     } finally {
       setBusy(false);
     }
@@ -247,16 +233,16 @@ function DeploymentsTab() {
     setNotice(null);
     try {
       await apiFetch<Deployment>(`/api/v1/deployments/${id}/${act}`, { method: "POST" });
-      setNotice(`Đã gửi yêu cầu ${act.toUpperCase()} (async).`);
+      setNotice(`${act.toUpperCase()} requested (async).`);
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Thao tác thất bại");
+      setError(err instanceof Error ? err.message : "Action failed");
     }
   }
 
   const columns: Column<Deployment>[] = [
-    { key: "name", label: "Tên", render: (d) => <span className="font-medium">{d.name}</span> },
-    { key: "status", label: "Trạng thái", render: (d) => <StatusBadge status={d.status} /> },
+    { key: "name", label: "Name", render: (d) => <span className="font-medium">{d.name}</span> },
+    { key: "status", label: "Status", render: (d) => <StatusBadge status={d.status} /> },
     { key: "region", label: "Region" },
     { key: "desired_replicas", label: "Replicas", render: (d) => String(d.desired_replicas) },
     {
@@ -270,15 +256,15 @@ function DeploymentsTab() {
       render: (d) => <IdCell id={d.template_version_id} />,
     },
     { key: "workload_ref", label: "Workload", render: (d) => (d.workload_ref ? <ShortId id={d.workload_ref} /> : <span className="text-[var(--text2)]">—</span>) },
-    { key: "updated_at", label: "Cập nhật", render: (d) => <Time iso={d.updated_at} /> },
+    { key: "updated_at", label: "Updated", render: (d) => <Time iso={d.updated_at} /> },
   ];
 
   return (
     <div>
       <div className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="mb-3 text-[13px] font-medium">Tạo deployment</div>
+        <div className="mb-3 text-[13px] font-medium">Create deployment</div>
         <form onSubmit={createDeployment} className="grid grid-cols-1 gap-3 md:grid-cols-5">
-          <Field label="Tên">
+          <Field label="Name">
             <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="chat-prod" className={inputCls} />
           </Field>
           <Field label="Region">
@@ -295,7 +281,7 @@ function DeploymentsTab() {
           </Field>
           <Field label="Model">
             <select value={modelId} onChange={(e) => pickModel(e.target.value)} className={inputCls}>
-              <option value="">— chọn model —</option>
+              <option value="">— select a model —</option>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.name}
@@ -310,7 +296,7 @@ function DeploymentsTab() {
               disabled={!modelId}
               className={inputCls}
             >
-              <option value="">{modelId ? "— chọn version —" : "chọn model trước"}</option>
+              <option value="">{modelId ? "— select a version —" : "select a model first"}</option>
               {modelVersions.map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.version} · {v.id.slice(0, 8)}
@@ -320,7 +306,7 @@ function DeploymentsTab() {
           </Field>
           <Field label="Template">
             <select value={templateId} onChange={(e) => pickTemplate(e.target.value)} className={inputCls}>
-              <option value="">— chọn template —</option>
+              <option value="">— select a template —</option>
               {templates.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
@@ -335,7 +321,7 @@ function DeploymentsTab() {
               disabled={!templateId}
               className={inputCls}
             >
-              <option value="">{templateId ? "— chọn version —" : "chọn template trước"}</option>
+              <option value="">{templateId ? "— select a version —" : "select a template first"}</option>
               {templateVersions.map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.version} · {v.id.slice(0, 8)}
@@ -345,14 +331,14 @@ function DeploymentsTab() {
           </Field>
           <div className="flex items-end md:col-span-5">
             <button type="submit" disabled={!canSubmit} className={btnCls}>
-              {busy ? "Đang tạo…" : "+ Tạo deployment"}
+              {busy ? "Creating…" : "+ Create deployment"}
             </button>
           </div>
         </form>
         <p className="mt-2 text-[11px] text-[var(--text2)]">
           {models.length === 0 || templates.length === 0
-            ? "Chưa có model/template — tạo ở tab Models / Serving Templates trước (mỗi cái cần ít nhất 1 version)."
-            : "Chuyển PENDING→READY do worker async xử lý (cần Kafka)."}
+            ? "No models/templates yet — create them under the Models / Serving Templates tabs first (each needs at least one version)."
+            : "PENDING→READY is handled by the async worker (requires Kafka)."}
         </p>
       </div>
 
@@ -362,7 +348,8 @@ function DeploymentsTab() {
       <DataTable
         columns={columns}
         rows={rows}
-        empty="Chưa có deployment nào."
+        loading={loading}
+        empty="No deployments yet."
         actions={(d) => (
           <div className="flex gap-2">
             {d.status === "STOPPED" || d.status === "FAILED" ? (
@@ -387,6 +374,7 @@ function DeploymentsTab() {
 
 function ModelsTab() {
   const [rows, setRows] = useState<Model[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -403,9 +391,11 @@ function ModelsTab() {
 
   const load = useCallback(async () => {
     try {
-      setRows(await apiFetch<Model[]>("/api/v1/models"));
+      setRows((await apiFetch<Model[]>("/api/v1/models")) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được models");
+      setError(err instanceof Error ? err.message : "Failed to load models");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -424,12 +414,12 @@ function ModelsTab() {
         method: "POST",
         body: { name: name.trim(), task, framework, description },
       });
-      setNotice(`Model "${created.name}" tạo thành công (id: ${created.id}).`);
+      setNotice(`Model "${created.name}" created (id: ${created.id}).`);
       setName("");
       setDescription("");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo model thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create model");
     } finally {
       setBusy(false);
     }
@@ -445,33 +435,33 @@ function ModelsTab() {
         method: "POST",
         body: { version: version.trim(), artifact_uri: artifactUri.trim() },
       });
-      setNotice(`Version "${created.version}" tạo thành công. Model version ID: ${created.id}`);
+      setNotice(`Version "${created.version}" created. Model version ID: ${created.id}`);
       setVersion("");
       setArtifactUri("");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo version thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create version");
     } finally {
       setVersionBusy(false);
     }
   }
 
   const columns: Column<Model>[] = [
-    { key: "name", label: "Tên", render: (m) => <span className="font-medium">{m.name}</span> },
+    { key: "name", label: "Name", render: (m) => <span className="font-medium">{m.name}</span> },
     { key: "task", label: "Task" },
     { key: "framework", label: "Framework" },
-    { key: "status", label: "Trạng thái", render: (m) => <StatusBadge status={m.status} /> },
+    { key: "status", label: "Status", render: (m) => <StatusBadge status={m.status} /> },
     { key: "id", label: "ID", render: (m) => <IdCell id={m.id} /> },
-    { key: "created_at", label: "Tạo lúc", render: (m) => <Time iso={m.created_at} /> },
+    { key: "created_at", label: "Created", render: (m) => <Time iso={m.created_at} /> },
   ];
 
   return (
     <div>
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="mb-3 text-[13px] font-medium">Tạo model</div>
+          <div className="mb-3 text-[13px] font-medium">Create model</div>
           <form onSubmit={createModel} className="flex flex-col gap-3">
-            <Field label="Tên">
+            <Field label="Name">
               <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="qwen-3b" className={inputCls} />
             </Field>
             <div className="grid grid-cols-2 gap-3">
@@ -489,22 +479,22 @@ function ModelsTab() {
                 </select>
               </Field>
             </div>
-            <Field label="Mô tả">
+            <Field label="Description">
               <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputCls} />
             </Field>
             <button type="submit" disabled={busy} className={btnCls}>
-              {busy ? "Đang tạo…" : "+ Tạo model"}
+              {busy ? "Creating…" : "+ Create model"}
             </button>
           </form>
         </div>
 
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="mb-3 text-[13px] font-medium">Thêm model version</div>
+          <div className="mb-3 text-[13px] font-medium">Add model version</div>
           <form onSubmit={createVersion} className="flex flex-col gap-3">
             <Field label="Model">
               <select value={modelId} onChange={(e) => setModelId(e.target.value)} className={inputCls} required>
                 <option value="" disabled>
-                  — chọn model —
+                  — select a model —
                 </option>
                 {rows.map((m) => (
                   <option key={m.id} value={m.id}>
@@ -520,7 +510,7 @@ function ModelsTab() {
               <input value={artifactUri} onChange={(e) => setArtifactUri(e.target.value)} placeholder="s3://bucket/model" className={inputCls} />
             </Field>
             <button type="submit" disabled={versionBusy || !modelId} className={btnCls}>
-              {versionBusy ? "Đang tạo…" : "+ Tạo version"}
+              {versionBusy ? "Creating…" : "+ Create version"}
             </button>
           </form>
         </div>
@@ -529,7 +519,7 @@ function ModelsTab() {
       <ErrorBanner msg={error} />
       <Notice msg={notice} />
 
-      <DataTable columns={columns} rows={rows} empty="Chưa có model nào." />
+      <DataTable columns={columns} rows={rows} loading={loading} empty="No models yet." />
     </div>
   );
 }
@@ -540,6 +530,7 @@ function ModelsTab() {
 
 function TemplatesTab() {
   const [rows, setRows] = useState<ServingTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -555,9 +546,11 @@ function TemplatesTab() {
 
   const load = useCallback(async () => {
     try {
-      setRows(await apiFetch<ServingTemplate[]>("/api/v1/templates"));
+      setRows((await apiFetch<ServingTemplate[]>("/api/v1/templates")) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được templates");
+      setError(err instanceof Error ? err.message : "Failed to load templates");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -576,12 +569,12 @@ function TemplatesTab() {
         method: "POST",
         body: { name: name.trim(), runtime, description },
       });
-      setNotice(`Template "${created.name}" tạo thành công (id: ${created.id}).`);
+      setNotice(`Template "${created.name}" created (id: ${created.id}).`);
       setName("");
       setDescription("");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo template thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create template");
     } finally {
       setBusy(false);
     }
@@ -597,32 +590,32 @@ function TemplatesTab() {
         method: "POST",
         body: { version: version.trim(), image: image.trim() },
       });
-      setNotice(`Template version "${created.version}" tạo thành công. Template version ID: ${created.id}`);
+      setNotice(`Template version "${created.version}" created. Template version ID: ${created.id}`);
       setVersion("");
       setImage("");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tạo version thất bại");
+      setError(err instanceof Error ? err.message : "Failed to create version");
     } finally {
       setVersionBusy(false);
     }
   }
 
   const columns: Column<ServingTemplate>[] = [
-    { key: "name", label: "Tên", render: (t) => <span className="font-medium">{t.name}</span> },
+    { key: "name", label: "Name", render: (t) => <span className="font-medium">{t.name}</span> },
     { key: "runtime", label: "Runtime" },
-    { key: "status", label: "Trạng thái", render: (t) => <StatusBadge status={t.status} /> },
+    { key: "status", label: "Status", render: (t) => <StatusBadge status={t.status} /> },
     { key: "id", label: "ID", render: (t) => <IdCell id={t.id} /> },
-    { key: "updated_at", label: "Cập nhật", render: (t) => <Time iso={t.updated_at} /> },
+    { key: "updated_at", label: "Updated", render: (t) => <Time iso={t.updated_at} /> },
   ];
 
   return (
     <div>
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="mb-3 text-[13px] font-medium">Tạo serving template</div>
+          <div className="mb-3 text-[13px] font-medium">Create serving template</div>
           <form onSubmit={createTemplate} className="flex flex-col gap-3">
-            <Field label="Tên">
+            <Field label="Name">
               <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="cpu-1slot" className={inputCls} />
             </Field>
             <Field label="Runtime">
@@ -631,22 +624,22 @@ function TemplatesTab() {
                 <option value="llama.cpp">llama.cpp</option>
               </select>
             </Field>
-            <Field label="Mô tả">
+            <Field label="Description">
               <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputCls} />
             </Field>
             <button type="submit" disabled={busy} className={btnCls}>
-              {busy ? "Đang tạo…" : "+ Tạo template"}
+              {busy ? "Creating…" : "+ Create template"}
             </button>
           </form>
         </div>
 
         <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="mb-3 text-[13px] font-medium">Thêm template version</div>
+          <div className="mb-3 text-[13px] font-medium">Add template version</div>
           <form onSubmit={createVersion} className="flex flex-col gap-3">
             <Field label="Template">
               <select value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputCls} required>
                 <option value="" disabled>
-                  — chọn template —
+                  — select a template —
                 </option>
                 {rows.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -662,7 +655,7 @@ function TemplatesTab() {
               <input value={image} onChange={(e) => setImage(e.target.value)} placeholder="ai-factory/worker:1.0" className={inputCls} />
             </Field>
             <button type="submit" disabled={versionBusy || !templateId} className={btnCls}>
-              {versionBusy ? "Đang tạo…" : "+ Tạo version"}
+              {versionBusy ? "Creating…" : "+ Create version"}
             </button>
           </form>
         </div>
@@ -671,7 +664,7 @@ function TemplatesTab() {
       <ErrorBanner msg={error} />
       <Notice msg={notice} />
 
-      <DataTable columns={columns} rows={rows} empty="Chưa có serving template nào." />
+      <DataTable columns={columns} rows={rows} loading={loading} empty="No serving templates yet." />
     </div>
   );
 }
@@ -682,6 +675,7 @@ function TemplatesTab() {
 
 function QuotasTab() {
   const [rows, setRows] = useState<Quota[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -692,9 +686,11 @@ function QuotasTab() {
 
   const load = useCallback(async () => {
     try {
-      setRows(await apiFetch<Quota[]>("/api/v1/quotas"));
+      setRows((await apiFetch<Quota[]>("/api/v1/quotas")) ?? []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được quotas");
+      setError(err instanceof Error ? err.message : "Failed to load quotas");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -713,19 +709,19 @@ function QuotasTab() {
         method: "POST",
         body: { quota_type: quotaType, limit_value: limitValue, period },
       });
-      setNotice("Quota đã lưu.");
+      setNotice("Quota saved.");
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Lưu quota thất bại");
+      setError(err instanceof Error ? err.message : "Failed to save quota");
     } finally {
       setBusy(false);
     }
   }
 
   const columns: Column<Quota>[] = [
-    { key: "quota_type", label: "Loại", render: (q) => <span className="font-medium">{q.quota_type}</span> },
-    { key: "limit_value", label: "Giới hạn", render: (q) => String(q.limit_value) },
-    { key: "period", label: "Chu kỳ" },
+    { key: "quota_type", label: "Type", render: (q) => <span className="font-medium">{q.quota_type}</span> },
+    { key: "limit_value", label: "Limit", render: (q) => String(q.limit_value) },
+    { key: "period", label: "Period" },
     { key: "id", label: "ID", render: (q) => <ShortId id={q.id} /> },
   ];
 
@@ -752,7 +748,7 @@ function QuotasTab() {
           </Field>
           <div className="flex items-end">
             <button type="submit" disabled={busy} className={btnCls}>
-              {busy ? "Đang lưu…" : "Lưu"}
+              {busy ? "Saving…" : "Save"}
             </button>
           </div>
         </form>
@@ -761,7 +757,7 @@ function QuotasTab() {
       <ErrorBanner msg={error} />
       <Notice msg={notice} />
 
-      <DataTable columns={columns} rows={rows} empty="Chưa có quota nào." />
+      <DataTable columns={columns} rows={rows} loading={loading} empty="No quotas yet." />
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import ApiKeysTab from "@/components/ApiKeysTab";
 import DataTable, { Column } from "@/components/DataTable";
+import TabList from "@/components/TabList";
 import { apiFetch } from "@/lib/api";
 import type { UsageByModel, UsageResponse } from "@/lib/types";
 
@@ -17,7 +18,7 @@ function fmt(n: number): string {
   return n.toLocaleString("vi-VN");
 }
 
-// YYYY-MM-DD theo UTC, khớp với cách server nhóm ngày (created_at AT TIME ZONE 'UTC').
+// YYYY-MM-DD in UTC, matching how the server groups days (created_at AT TIME ZONE 'UTC').
 function utcDay(daysAgo: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - daysAgo);
@@ -42,7 +43,7 @@ function UsageTab() {
     try {
       setData(await apiFetch<UsageResponse>(`/api/v1/usage?days=${days}`));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Không tải được usage");
+      setError(err instanceof Error ? err.message : "Failed to load usage");
     }
   }, [days]);
 
@@ -52,21 +53,29 @@ function UsageTab() {
   }, [load]);
 
   if (!data) {
-    return <div className="py-10 text-center text-[13px] text-[var(--text2)]">{error || "Đang tải…"}</div>;
+    return <div className="py-10 text-center text-[13px] text-[var(--text2)]">{error || "Loading…"}</div>;
   }
 
-  // Server chỉ trả về các ngày CÓ usage; điền các ngày trống (0 token) để biểu đồ
-  // thể hiện đúng chuỗi ngày liên tục của cửa sổ đã chọn, thay vì dồn các ngày có
-  // dữ liệu lại thành vài cột bự.
+  // The server only returns days that HAVE usage; fill the empty days (0 tokens)
+  // so the chart shows the selected window as a continuous day series instead of
+  // packing the days with data into a few fat bars.
   const byDate = new Map(data.daily.map((d) => [d.date, d] as const));
   const series = Array.from({ length: days }, (_, i) => {
-    const date = utcDay(days - 1 - i); // cũ → mới
+    const date = utcDay(days - 1 - i); // oldest → newest
     const p = byDate.get(date);
-    return { date, total: p ? p.prompt_tokens + p.completion_tokens : 0 };
+    return {
+      date,
+      prompt: p ? p.prompt_tokens : 0,
+      completion: p ? p.completion_tokens : 0,
+      total: p ? p.prompt_tokens + p.completion_tokens : 0,
+      requests: p ? p.requests : 0,
+    };
   });
   const maxTokens = Math.max(1, ...series.map((s) => s.total));
-  // Cứ mỗi labelEvery cột thì hiển thị 1 nhãn ngày (MM-DD) để biểu đồ đọc được
-  // mà không bị rối khi chọn 30 ngày.
+  const windowTotal = series.reduce((sum, s) => sum + s.total, 0);
+  const peak = series.reduce((a, s) => (s.total > a.total ? s : a), series[0]);
+  // Show one date label (MM-DD) every labelEvery bars so the chart stays readable
+  // without crowding when 30 days are selected.
   const labelEvery = days <= 14 ? 1 : Math.ceil(series.length / 8);
 
   const modelColumns: Column<UsageByModel>[] = [
@@ -74,25 +83,25 @@ function UsageTab() {
     { key: "requests", label: "Request", render: (m) => fmt(m.requests) },
     { key: "prompt_tokens", label: "Prompt tokens", render: (m) => fmt(m.prompt_tokens) },
     { key: "completion_tokens", label: "Completion tokens", render: (m) => fmt(m.completion_tokens) },
-    { key: "total_tokens", label: "Tổng tokens", render: (m) => <span className="font-medium">{fmt(m.total_tokens)}</span> },
+    { key: "total_tokens", label: "Total tokens", render: (m) => <span className="font-medium">{fmt(m.total_tokens)}</span> },
   ];
 
   return (
     <div>
       <div className="mb-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard label="Tokens hôm nay" value={fmt(data.today.total_tokens)} />
-        <StatCard label="Requests hôm nay" value={fmt(data.today.requests)} />
-        <StatCard label="Tokens 30 ngày" value={fmt(data.month.total_tokens)} />
-        <StatCard label="Requests 30 ngày" value={fmt(data.month.requests)} />
+        <StatCard label="Tokens today" value={fmt(data.today.total_tokens)} />
+        <StatCard label="Requests today" value={fmt(data.today.requests)} />
+        <StatCard label="Tokens (30 days)" value={fmt(data.month.total_tokens)} />
+        <StatCard label="Requests (30 days)" value={fmt(data.month.requests)} />
       </div>
 
       <div className="mb-6 grid grid-cols-2 gap-3">
-        <StatCard label="Prompt tokens (30 ngày)" value={fmt(data.month.prompt_tokens)} />
-        <StatCard label="Completion tokens (30 ngày)" value={fmt(data.month.completion_tokens)} />
+        <StatCard label="Prompt tokens (30 days)" value={fmt(data.month.prompt_tokens)} />
+        <StatCard label="Completion tokens (30 days)" value={fmt(data.month.completion_tokens)} />
       </div>
 
       <div className="mb-2 flex items-center gap-2">
-        <span className="text-[13px] text-[var(--text2)]">Biểu đồ token theo ngày</span>
+        <span className="text-[13px] text-[var(--text2)]">Daily token usage</span>
         <div className="ml-auto flex gap-1">
           {[7, 30].map((n) => (
             <button
@@ -102,39 +111,76 @@ function UsageTab() {
                 days === n ? "bg-[var(--surface2)] text-[var(--text)]" : "text-[var(--text2)] hover:text-[var(--text)]"
               }`}
             >
-              {n} ngày
+              {n} days
             </button>
           ))}
         </div>
       </div>
       <div className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
-        <div className="flex h-40 items-end gap-1">
-          {data.daily.length === 0 ? (
-            <div className="w-full text-center text-[12px] text-[var(--text2)]">Chưa có usage trong khoảng này.</div>
-          ) : (
-            series.map((s) => (
-              <div
-                key={s.date}
-                title={`${s.date}: ${fmt(s.total)} tokens`}
-                className="min-w-[6px] flex-1 rounded-t bg-[var(--accent)]"
-                style={{ height: `${Math.max(2, (s.total / maxTokens) * 100)}%` }}
-              />
-            ))
+        <div
+          role="img"
+          aria-label={`Daily token bar chart over the last ${days} days: ${fmt(windowTotal)} tokens total, peak on ${peak.date} with ${fmt(peak.total)} tokens.`}
+        >
+          <div aria-hidden="true" className="flex h-40 items-end gap-1">
+            {data.daily.length === 0 ? (
+              <div className="w-full text-center text-[12px] text-[var(--text2)]">No usage in this range.</div>
+            ) : (
+              series.map((s) => (
+                <div
+                  key={s.date}
+                  title={`${s.date}: ${fmt(s.total)} tokens`}
+                  className="min-w-[6px] flex-1 rounded-t bg-[var(--accent)]"
+                  style={{ height: `${Math.max(2, (s.total / maxTokens) * 100)}%` }}
+                />
+              ))
+            )}
+          </div>
+          {data.daily.length > 0 && (
+            <div aria-hidden="true" className="mt-1 flex gap-1">
+              {series.map((s, i) => (
+                <div key={s.date} className="min-w-[6px] flex-1 text-center text-[10px] leading-none text-[var(--text2)]">
+                  {i % labelEvery === 0 ? s.date.slice(5) : ""}
+                </div>
+              ))}
+            </div>
           )}
         </div>
+
         {data.daily.length > 0 && (
-          <div className="mt-1 flex gap-1">
-            {series.map((s, i) => (
-              <div key={s.date} className="min-w-[6px] flex-1 text-center text-[10px] leading-none text-[var(--text2)]">
-                {i % labelEvery === 0 ? s.date.slice(5) : ""}
-              </div>
-            ))}
-          </div>
+          <details className="mt-3">
+            <summary className="cursor-pointer text-[12px] text-[var(--text2)] hover:text-[var(--text)]">
+              View as table
+            </summary>
+            <div className="mt-2 max-h-64 overflow-y-auto">
+              <table className="w-full text-left text-[12px]">
+                <thead className="text-[var(--text2)]">
+                  <tr>
+                    <th className="py-1 font-medium">Date</th>
+                    <th className="py-1 font-medium">Prompt</th>
+                    <th className="py-1 font-medium">Completion</th>
+                    <th className="py-1 font-medium">Total</th>
+                    <th className="py-1 font-medium">Requests</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {series.map((s) => (
+                    <tr key={s.date} className="border-t border-[var(--border)]">
+                      <td className="mono py-1 text-[var(--text2)]">{s.date}</td>
+                      <td className="py-1">{fmt(s.prompt)}</td>
+                      <td className="py-1">{fmt(s.completion)}</td>
+                      <td className="py-1 font-medium">{fmt(s.total)}</td>
+                      <td className="py-1">{fmt(s.requests)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
         )}
       </div>
 
-      <div className="mb-3 text-[13px] font-medium">Theo model (30 ngày)</div>
-      <DataTable columns={modelColumns} rows={data.by_model} empty="Chưa có usage theo model." />
+      <div className="mb-3 text-[13px] font-medium">By model (30 days)</div>
+      <DataTable columns={modelColumns} rows={data.by_model} empty="No usage by model yet." />
     </div>
   );
 }
@@ -152,34 +198,18 @@ export default function PlatformPage() {
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="mb-1 text-lg font-semibold">Platform</h1>
       <p className="mb-5 text-[13px] text-[var(--text2)]">
-        Thống kê usage và quản lý API key cho tài khoản của bạn.
+        Usage statistics and API key management for your account.
       </p>
 
-      <div role="tablist" aria-label="Platform sections" className="mb-6 flex gap-1 border-b border-[var(--border)]">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            id={`tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls={`panel-${t.id}`}
-            onClick={() => setTab(t.id)}
-            className={`rounded-t-md px-4 py-2 text-[13px] ${
-              tab === t.id ? "border-b-2 border-[var(--accent)] text-[var(--text)]" : "text-[var(--text2)] hover:text-[var(--text)]"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <TabList tabs={TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Platform sections" />
 
       {tab === "usage" && (
-        <div role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
+        <div role="tabpanel" tabIndex={0} id="panel-usage" aria-labelledby="tab-usage">
           <UsageTab />
         </div>
       )}
       {tab === "keys" && (
-        <div role="tabpanel" id="panel-keys" aria-labelledby="tab-keys">
+        <div role="tabpanel" tabIndex={0} id="panel-keys" aria-labelledby="tab-keys">
           <ApiKeysTab />
         </div>
       )}

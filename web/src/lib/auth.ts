@@ -2,6 +2,23 @@ import type { Claims, Role } from "./types";
 
 const TOKEN_KEY = "aif_token";
 
+// The token lives in localStorage (an external store), so React reads it through
+// useSyncExternalStore. The listener set + emit live here (not in AuthContext) so
+// non-React code — notably apiFetch's 401 handling — can clear the token and
+// notify the UI without importing React.
+const listeners = new Set<() => void>();
+
+export function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
+function emit() {
+  for (const l of listeners) l();
+}
+
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(TOKEN_KEY);
@@ -9,10 +26,12 @@ export function getToken(): string | null {
 
 export function setToken(token: string) {
   window.localStorage.setItem(TOKEN_KEY, token);
+  emit();
 }
 
 export function clearToken() {
   window.localStorage.removeItem(TOKEN_KEY);
+  emit();
 }
 
 // decodeToken parses the JWT payload (base64) without verifying the signature —

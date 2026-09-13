@@ -114,6 +114,9 @@ func (h *Handler) handleListTenants(c *gin.Context) {
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
+	if tenants == nil {
+		tenants = []Tenant{} // encode as [] rather than null
+	}
 	response.WriteJSON(c, http.StatusOK, tenants)
 }
 
@@ -152,6 +155,9 @@ func (h *Handler) handleListUsers(c *gin.Context) {
 	if err != nil {
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
+	}
+	if us == nil {
+		us = []User{} // encode as [] rather than null
 	}
 	response.WriteJSON(c, http.StatusOK, us)
 }

@@ -91,6 +91,7 @@ export default function ChatClient() {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset messages when switching sessions
     setMessages([]);
+    if (!activeId) return;
     apiFetch<{ title: string; model: string; messages: Array<{ role: string; content: string; tool_result?: string; tool_calls?: Array<{ name: string; arguments: string }>; is_error?: boolean }> }>(
       `/api/v1/sessions/${activeId}`,
     )
@@ -101,7 +102,7 @@ export default function ChatClient() {
             return {
               id: newId(),
               role: "tool",
-              content: `🔧 Tool result: ${m.tool_result || "(empty)"}`,
+              content: `Tool result: ${m.tool_result || "(empty)"}`,
             };
           }
           return { id: newId(), role: m.role as ChatMessage["role"], content: m.content };
@@ -109,7 +110,7 @@ export default function ChatClient() {
         if (mapped.length) setMessages(mapped);
       })
       .catch(() => {
-        // 404 = chưa có session này — giữ chat trống.
+        // 404 = this session does not exist yet — keep the chat empty.
       });
     return () => {
       cancelled = true;
@@ -122,7 +123,7 @@ export default function ChatClient() {
     apiFetch<Model[]>("/api/v1/models")
       .then((ms) => {
         if (cancelled) return;
-        const names = ms.map((m) => m.name);
+        const names = (ms ?? []).map((m) => m.name);
         if (names.length) {
           setModels(names);
           setModel(names.find((n) => n === "qwen-3b") || names.find((n) => n === "qwen3.5-9b") || names[0]);
@@ -226,7 +227,7 @@ export default function ChatClient() {
           /* non-JSON */
         }
         if (resp.status === 404) {
-          msg = "Model chưa có deployment READY — vào /infra tạo deployment và chờ trạng thái READY.";
+          msg = "No READY deployment for this model — open /infra to create one and wait for READY.";
         }
         throw new Error(msg);
       }
@@ -259,7 +260,7 @@ export default function ChatClient() {
           // Server-side error frame.
           if (ev.type === "error") {
             const msg = ev?.error?.message || "inference error";
-            fullText += `\n\n> ⚠️ ${msg}`;
+            fullText += `\n\n> **Error:** ${msg}`;
             updateLastAssistant({ content: fullText });
             continue;
           }
@@ -283,7 +284,7 @@ export default function ChatClient() {
               const fn = tc?.function;
               if (fn?.name) {
                 const args = (fn.arguments || "").replace(/\s+/g, " ").slice(0, 120);
-                fullText += `\n\n> 🔧 \`${fn.name}(${args})\`\n\n`;
+                fullText += `\n\n> **Tool** \`${fn.name}(${args})\`\n\n`;
                 updateLastAssistant({ content: fullText });
               }
             }
@@ -294,12 +295,12 @@ export default function ChatClient() {
       if (abortRef.current === ac) setStats({ tokens: tokenCount, ms: Math.round(performance.now() - start) });
     } catch (err: unknown) {
       const name = err instanceof Error ? err.name : "";
-      const message = err instanceof Error ? err.message : "Lỗi không xác định";
+      const message = err instanceof Error ? err.message : "Unknown error";
       if (name === "AbortError") {
-        updateLastAssistant({ content: fullText + "\n\n> ⏹️ Đã dừng." });
+        updateLastAssistant({ content: fullText + "\n\n> **Stopped.**" });
       } else {
         setError(message);
-        updateLastAssistant({ content: fullText + `\n\n> ❌ ${message}` });
+        updateLastAssistant({ content: fullText + `\n\n> **Error:** ${message}` });
       }
     } finally {
       if (abortRef.current === ac) {
@@ -323,9 +324,9 @@ export default function ChatClient() {
           {messages.length === 0 ? (
             <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center">
               <BrandMark size={44} />
-              <h1 className="text-2xl font-semibold tracking-tight">Bạn muốn hỏi gì hôm nay?</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">What would you like to ask today?</h1>
               <p className="max-w-sm text-[14px] leading-relaxed text-[var(--text2)]">
-                Chat với model qua giao diện OpenAI-compatible. Server giữ lịch sử theo phiên.
+                Chat with the model over an OpenAI-compatible API. The server keeps history per session.
               </p>
             </div>
           ) : (
@@ -381,7 +382,7 @@ export default function ChatClient() {
                           className="flex items-center gap-1.5 text-[12px] font-medium text-[var(--text2)] hover:text-[var(--text)]"
                         >
                           <span className="inline-block w-3 text-center leading-none">{m.thinkingOpen ? "▾" : "▸"}</span>
-                          Suy nghĩ
+                          Thinking
                         </button>
                         {m.thinkingOpen ? (
                           <div className="mt-2 border-l-2 border-[var(--border)] pl-3 text-[13px] leading-relaxed text-[var(--text2)]">
@@ -396,7 +397,7 @@ export default function ChatClient() {
                         <Markdown content={m.content} />
                       </div>
                     ) : busy && isLast ? (
-                      <div className="pulse text-[14px] text-[var(--text2)]">Đang suy nghĩ…</div>
+                      <div className="pulse text-[14px] text-[var(--text2)]">Thinking…</div>
                     ) : null}
                   </div>
                 </div>
@@ -425,6 +426,8 @@ export default function ChatClient() {
               type="button"
               onClick={() => setShowSystem((v) => !v)}
               title="System prompt"
+              aria-label="System prompt"
+              aria-pressed={showSystem}
               className={`flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)] ${
                 showSystem ? "text-[var(--text)]" : ""
               }`}
@@ -437,11 +440,11 @@ export default function ChatClient() {
 
           {modelsLoaded && models.length === 0 && (
             <div className="mb-2 rounded-lg border border-[var(--warn)]/40 bg-[var(--warn)]/10 px-3 py-2 text-[13px] text-[var(--warn)]">
-              Chưa có model nào — vào{" "}
+              No models yet — go to{" "}
               <a href="/infra" className="underline">
                 /infra
               </a>{" "}
-              tạo model + deployment READY trước khi chat.
+              to create a model + READY deployment before chatting.
             </div>
           )}
 
@@ -449,13 +452,13 @@ export default function ChatClient() {
             <input
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="System prompt (tuỳ chọn) — định nghĩa cách model trả lời"
+              placeholder="System prompt (optional) — define how the model should respond"
               className="mb-2 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--text2)] focus:border-[var(--accent)]"
             />
           )}
 
           {error && (
-            <div className="mb-2 rounded-lg border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
+            <div role="alert" className="mb-2 rounded-lg border border-[var(--err)]/40 bg-[var(--err)]/10 px-3 py-2 text-[13px] text-[var(--err)]">
               {error}
             </div>
           )}
@@ -478,14 +481,14 @@ export default function ChatClient() {
                 }
               }}
               rows={1}
-              placeholder="Nhắn tin cho AI Factory…"
+              placeholder="Message AI Factory…"
               className="max-h-[200px] min-h-[24px] flex-1 resize-none bg-transparent px-3 py-2 text-[15px] leading-relaxed outline-none placeholder:text-[var(--text2)]"
             />
             {busy ? (
               <button
                 type="button"
                 onClick={stop}
-                aria-label="Dừng"
+                aria-label="Stop"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface2)] text-[var(--text)] hover:bg-[var(--surface)]"
               >
                 <span className="h-3 w-3 rounded-[2px] bg-current" />
@@ -494,7 +497,7 @@ export default function ChatClient() {
               <button
                 type="submit"
                 disabled={!input.trim() || !model}
-                aria-label="Gửi"
+                aria-label="Send"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-strong)] text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
@@ -505,7 +508,7 @@ export default function ChatClient() {
           </form>
 
           <div className="mt-1.5 text-center text-[11px] text-[var(--text2)]">
-            AI Factory có thể mắc lỗi. Hãy kiểm tra các thông tin quan trọng.
+            AI Factory can make mistakes. Check important information.
           </div>
         </div>
       </div>

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-// CopyButton copies `value` to the clipboard and flashes "Đã copy" briefly.
+// CopyButton copies `value` to the clipboard and flashes "Copied" briefly.
 // Falls back to a hidden textarea + execCommand when the Clipboard API is
 // unavailable (non-secure contexts).
 export default function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
@@ -35,7 +35,7 @@ export default function CopyButton({ value, label = "Copy" }: { value: string; l
       onClick={copy}
       className="shrink-0 rounded-md border border-[var(--border)] px-2.5 py-1 text-[12px] text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)]"
     >
-      {copied ? "Đã copy" : label}
+      {copied ? "Copied" : label}
     </button>
   );
 }

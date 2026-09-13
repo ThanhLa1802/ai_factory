@@ -165,7 +165,7 @@ body {
   }
 }
 
-/* "Đang suy nghĩ…" breathing text. */
+/* "Thinking…" breathing text. */
 .pulse {
   animation: pulse 1.4s ease-in-out infinite;
 }

@@ -1,4 +1,4 @@
-import { getToken } from "./auth";
+import { clearToken, getToken } from "./auth";
 
 export class ApiError extends Error {
   status: number;
@@ -35,6 +35,11 @@ export async function apiFetch<T>(
   });
 
   if (!resp.ok) {
+    // An expired/invalid JWT is a dead session: clear it so the auth gate sends
+    // the user back to /login. Only when a token was attached — the login call
+    // itself has no token, so a wrong password still renders its own error.
+    if (resp.status === 401 && token) clearToken();
+
     let code = "ERROR";
     let message = resp.statusText;
     try {
