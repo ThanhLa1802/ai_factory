@@ -49,6 +49,7 @@ services:
       AI_FACTORY_DATABASE_URL: postgres://ai_factory:ai_factory@postgres:5432/ai_factory?sslmode=disable
       AI_FACTORY_JWT_SECRET: ${AI_FACTORY_JWT_SECRET:-dev-secret-change-me-0123456789}
       AI_FACTORY_LOG_LEVEL: info
+      AI_FACTORY_REDIS_ADDR: redis:6379
       # NOTE: kafka advertises localhost:9092 (host-only), so the containerized
       # server cannot reach it; it warns and runs with a memory event bus
       # (deployments stay PENDING). Async deploy in Docker needs a dual
@@ -63,7 +64,12 @@ services:
     # with "network is unreachable". (On Linux add it back via host-gateway.)
     # NOTE: no /app/server prefix — Dockerfile ENTRYPOINT already runs the binary;
     # compose `command` is appended as args (pre-scan bug fix).
-    command: ["--port", "8080", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/app"]
+    # The agent's file tools operate relative to the container cwd: mount a host
+    # workspace so files the model writes are visible on the host repo.
+    working_dir: /workspace
+    volumes:
+      - ../workspace:/workspace
+    command: ["--port", "8080", "--config", "/app/configs/config.yaml", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/workspace"]
 
   # Deployment worker node (Phase 5): same image, headless, runs only when
   # explicitly requested — it is behind a profile, so `docker compose up` does
