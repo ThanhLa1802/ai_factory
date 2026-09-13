@@ -63,6 +63,21 @@ Spec: `docs/superpowers/specs/2026-08-16-chat-history-usage-platform-design.md` 
 
 ---
 
+## ✅ UI usability fixes
+
+Trạng thái: **✅ Xong** (2026-09-13) — vá 5 blocker khiến `web/` không dùng được end-to-end.
+
+- **API key:** hiện full giá trị một lần + nút copy (`CopyButton`); trước đây chỉ in 8 ký tự cuối nên không dùng được key.
+- **Tạo user:** `POST /api/v1/users` (+ `GET` list theo tenant) gated `tenant.manage`; section Users trên `/admin` (chọn tenant + role) — user mới login được.
+- **Tạo deployment:** bỏ nhập UUID tay; dropdown cascading model→version, template→version (thêm `GET /api/v1/models/:id/versions`, `GET /api/v1/templates/:id/versions`); ID trong bảng có nút copy.
+- **Trạng thái deploy:** tab Deployments poll 3s khi còn PENDING/PROVISIONING/STARTING/STOPPING.
+- **Chat:** default model lấy từ registry (ưu tiên `qwen-3b`), hint khi chưa có model/deployment READY.
+- **Docker:** sửa `go-server/Dockerfile` copy `configs/` vào image (trước đó server container exit vì thiếu `configs/config.yaml`).
+
+Plan: `docs/superpowers/plans/2026-09-13-ui-usability-fixes.md`. Còn hoãn: 401 auto-logout, session id trên URL, copy/regenerate message, bỏ prefill password.
+
+---
+
 ## 🏗️ Kiến trúc lại theo production blueprint (Phase 6 ✅)
 
 Trạng thái: **Phase 6 xong** (2026-09-13) — reliability patterns: transactional outbox (6a) + cache-aside/distributed lock/usage aggregate (6b). (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository; Phase 3 ✅ HTTP layer Gin; Phase 4 ✅ tách `services/*` + dời infrastructure; Phase 5 ✅ multi-binary.)
@@ -170,6 +185,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-13 | UI usability fixes ✅ — API key hiện full + copy; `POST/GET /api/v1/users` + section Users trên `/admin`; deployment form dropdown cascading (thêm `GET /models/:id/versions`, `GET /templates/:id/versions`); poll status 3s; chat default model theo registry; Dockerfile copy `configs/`. Verify: `go test ./...` (có DB) xanh, `npm run lint/build` sạch, smoke E2E trong Docker. Plan `docs/superpowers/plans/2026-09-13-ui-usability-fixes.md`. |
 | 2026-09-13 | Phase 6b kiến trúc lại ✅ — reliability còn lại: `cache.Lock` (SET NX + WATCH release), `cache.KV`, `cache.UsageCounter`; cache-aside API key (TTL 5', invalidate khi xoá); bảng `usage_daily` (migration `0009_usage_daily`) + `usage.Flusher` (drain counter → upsert, khoá `lock:usage:flush`). Reads usage chuyển sang `usage_daily` khi bật counter. Test miniredis + Postgres xanh. Plan `docs/superpowers/plans/2026-09-13-phase6b-cache-lock-usage.md`. |
 | 2026-09-13 | Phase 6a kiến trúc lại ✅ — transactional outbox: migration `0008_outbox` + `internal/infrastructure/outbox` (Record/Store/Publisher). Serving `DeploymentRepository.CreateWithEvent` ghi deployment + outbox row trong **cùng `db.Transaction`**; `deployment_created`/`deployment_stop_requested` không còn publish thủ công trong handler. Publisher nền (500ms, batch 100) drain → bus → stamp `published_at`, lỗi thì tăng `attempts`/`last_error` và giữ row (at-least-once). `outbox.store`/`outbox.publisher` chỉ đăng ký cho API node; `cmd/worker` không có. Test: outbox integration (tx commit/rollback, drain, failure) + e2e điều chỉnh drain publisher. Plan `docs/superpowers/plans/2026-09-13-phase6-outbox.md`. |
 | 2026-09-12 | Phase 5 kiến trúc lại ✅ — multi-binary: 4 binary `cmd/{server,worker,migrate,seed}` + role flags `services.api`/`services.worker` (env `AI_FACTORY_SERVICES_API`/`AI_FACTORY_SERVICES_WORKER`, default true). `RegisterAll` gate provider API-only + worker provider; `App.Run` seed/serve/worker theo role; `app.RunMigrate`/`app.RunSeed`; `cmd/worker` chạy headless không HTTP (log + graceful shutdown). Docker build cả 4 binary, compose service `worker` sau `profiles: [worker]` (không tự bật). Test role-gating + `go build/vet/test` xanh. Plan `docs/superpowers/plans/2026-09-12-phase5-multi-binary.md`. |
