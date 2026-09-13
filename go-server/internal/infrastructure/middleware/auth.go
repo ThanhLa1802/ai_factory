@@ -46,8 +46,9 @@ const (
 	ActionKeyManage     = "key.manage"
 	ActionQuotaManage   = "quota.manage"
 	ActionUsageRead     = "usage.read"
-	ActionBillingRead   = "billing.read"
-	ActionBillingManage = "billing.manage"
+	ActionBillingRead    = "billing.read"
+	ActionBillingManage  = "billing.manage"
+	ActionBillingPricing = "billing.pricing"
 )
 
 // RequireAuth validates a Bearer JWT and stores the principal on the context.

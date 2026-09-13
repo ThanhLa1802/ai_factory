@@ -80,19 +80,20 @@ Plan: `docs/superpowers/plans/2026-09-13-ui-usability-fixes.md`. Còn hoãn: 401
 
 ## ✅ Prepaid billing (wallet + ledger + tính tiền /1M token)
 
-Trạng thái: **✅ Xong (Go control plane)** (2026-09-13) — ví credit prepaid, bảng giá theo 1M token input/output, nạp tiền (mock provider, idempotent), và gate ở `/v1/chat/completions` theo authorize → capture → release.
+Trạng thái: **✅ Xong (control plane + UI)** (2026-09-13) — ví credit prepaid, bảng giá theo 1M token input/output, nạp tiền (mock provider, idempotent), gate ở `/v1/chat/completions` theo authorize → capture → release, và tab Billing trên `/platform`.
 
 - **Schema:** migration `0012_model_pricing` + `0013_wallet_ledger` (`model_pricing`, `wallets`, `ledger_entries`, `wallet_reservations`, `topup_transactions`).
 - **Tiền:** integer micro-credit (`int64`, 1 credit = 10^6 µcr), round-half-up; giá = µcr / 1M token (input và output riêng).
 - **Service:** `internal/services/billing` (pricing + wallet + ledger + reservation + reaper); port `inference.BillingGate` + adapter `internal/app/adapters.go` (dịch sentinel error).
 - **Gate:** `inference.Handler` reserve (hold ước lượng) sau rate limit → cộng dồn usage → settle cuối request (charge đúng, nhả dư); hết tiền → `402 INSUFFICIENT_CREDITS`. Mode `off|shadow|enforce` (default `shadow`); thiếu giá → fail-open (cost 0, log).
 - **Crash-safe:** reaper nền nhả hold hết hạn; settle idempotent theo reservation; ledger `sum(amount) == balance`.
-- **API:** `GET /api/v1/billing/{wallet,ledger,pricing}`, `POST /api/v1/billing/topup` (`Idempotency-Key`), `PUT /api/v1/billing/pricing`; RBAC `billing.read`/`billing.manage`.
+- **API:** `GET /api/v1/billing/{wallet,ledger,pricing}`, `POST /api/v1/billing/topup` (`Idempotency-Key`), `PUT /api/v1/billing/pricing`; RBAC `billing.read` (all roles), `billing.manage` (top-up: tenant/platform admin), `billing.pricing` (sửa giá: **chỉ platform admin**).
 - **Seed:** giá `qwen3.5-9b`/`qwen-3b` + credit demo tenant (`AI_FACTORY_DEMO_CREDITS`, default 10 credit).
 - **Tests:** cost unit + repo Postgres-gated (idempotency, reserve/settle/release/reap, ledger==balance, fail-open) + handler gate (402/shadow/off).
+- **UI:** tab **Billing** trên `/platform` (`web/src/components/BillingTab.tsx`) — thẻ số dư (`balance/reserved/available`), top-up (admin, nhập USD→µcr, idempotent), bảng ledger, bảng giá per model (admin sửa inline); deep-link `?tab=billing`.
 
 Spec: [`docs/superpowers/specs/2026-09-13-prepaid-billing-wallet-design.md`](superpowers/specs/2026-09-13-prepaid-billing-wallet-design.md) · Plan: [`docs/superpowers/plans/2026-09-13-prepaid-billing-wallet.md`](superpowers/plans/2026-09-13-prepaid-billing-wallet.md).
-Còn hoãn: UI tab Billing, postpaid/invoice, cổng thanh toán thật.
+Còn hoãn: postpaid/invoice, cổng thanh toán thật (ngoài MockProvider).
 
 ---
 

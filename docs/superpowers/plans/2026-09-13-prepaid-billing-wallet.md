@@ -84,7 +84,7 @@
   - insert `topup_transactions` (unique `idempotency_key`; nếu đã tồn tại cùng amount → trả bản ghi cũ, **không** cộng lại; khác amount → `409`).
   - `provider.Charge` → success: `wallets.balance += amount`, `ledger_entries(kind='topup', amount=+, balance_after=…)`, `idempotency_key='topup:'+idemKey`.
 - [x] **`Adjust`** (internal, cho admin/reconciliation): ghi ledger `kind='adjust'` ± và cập nhật balance.
-- [x] **Handlers** — `POST /api/v1/billing/topup` (header `Idempotency-Key`) — body `{amount, currency?}` (amount µcr; UI đổi USD→µcr); `PUT /api/v1/billing/pricing` (upsert). Gate `billing.manage`.
+- [x] **Handlers** — `POST /api/v1/billing/topup` (header `Idempotency-Key`) — body `{amount, currency?}` (amount µcr; UI đổi USD→µcr); `PUT /api/v1/billing/pricing` (upsert). Gate top-up `billing.manage` (tenant/platform admin); gate sửa giá `billing.pricing` (**chỉ platform admin**).
 - [x] **Tests** — idempotency: gọi topup 2 lần cùng key → 1 `topup_transactions`, balance cộng 1 lần; key khác amount → 409; ledger `sum(amount)==balance` sau chuỗi thao tác.
 
 ## Task B3: Inference gate — reserve / settle / release + reaper + 402
@@ -126,7 +126,7 @@
 
 **Files:** `web/src/app/(app)/platform/**`; `docs/TRACKING.md`; `CLAUDE.md`; `CONTEXT.md`.
 
-- [ ] UI `/platform` tab **Billing**: thẻ số dư (`balance/reserved/available`), form top-up (admin), bảng ledger; bảng giá per model. **Hoãn — chưa làm; đã ghi rõ trong `docs/TRACKING.md`.**
+- [x] UI `/platform` tab **Billing** (`web/src/components/BillingTab.tsx`): thẻ số dư (`balance/reserved/available`), form top-up (admin, nhập USD→µcr), bảng ledger, bảng giá per model (admin sửa inline). Tab deep-link `?tab=billing`.
 - [x] `docs/TRACKING.md` + `CLAUDE.md` — cập nhật trạng thái prepaid billing (Key Decisions + milestone); `CONTEXT.md` — glossary `Wallet`, `Ledger`, `Reservation`, `µcr`, `Billing Gate`.
 
 ## Self-Review Checkpoints

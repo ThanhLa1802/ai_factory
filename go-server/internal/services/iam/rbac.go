@@ -20,8 +20,9 @@ const (
 	ActionKeyManage     = "key.manage"
 	ActionQuotaManage   = "quota.manage"
 	ActionUsageRead     = "usage.read"
-	ActionBillingRead   = "billing.read"
-	ActionBillingManage = "billing.manage"
+	ActionBillingRead    = "billing.read"
+	ActionBillingManage  = "billing.manage"
+	ActionBillingPricing = "billing.pricing"
 )
 
 var rolePermissions = map[string]map[string]bool{
@@ -31,7 +32,7 @@ var rolePermissions = map[string]map[string]bool{
 		ActionTemplateWrite: true, ActionTemplateRead: true,
 		ActionDeployWrite: true, ActionDeployRead: true,
 		ActionKeyManage: true, ActionQuotaManage: true, ActionUsageRead: true,
-		ActionBillingRead: true, ActionBillingManage: true,
+		ActionBillingRead: true, ActionBillingManage: true, ActionBillingPricing: true,
 	},
 	RoleTenantAdmin: {
 		ActionTenantRead: true, ActionModelRead: true, ActionTemplateRead: true,

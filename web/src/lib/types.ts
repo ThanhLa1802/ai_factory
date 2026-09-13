@@ -153,3 +153,42 @@ export interface UsageResponse {
   daily: UsageDailyPoint[];
   by_model: UsageByModel[];
 }
+
+// Prepaid billing. Money is integer micro-credits (µcr); 1 credit = 1 currency
+// unit = 1,000,000 µcr (see CONTEXT.md). Prices are µcr per 1M tokens.
+export interface BillingWallet {
+  tenant_id: string;
+  currency: string;
+  balance: number;
+  reserved: number;
+  available: number;
+}
+
+export interface LedgerEntry {
+  id: number;
+  kind: string;
+  amount: number;
+  balance_after: number;
+  currency: string;
+  ref_type: string;
+  ref_id: string;
+  created_at: string;
+}
+
+export interface ModelPrice {
+  model: string;
+  currency: string;
+  price_per_million_input_tokens: number;
+  price_per_million_output_tokens: number;
+}
+
+export interface TopupTransaction {
+  id: string;
+  tenant_id: string;
+  amount: number;
+  currency: string;
+  provider: string;
+  provider_ref: string;
+  status: string;
+  created_at: string;
+}

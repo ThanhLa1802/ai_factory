@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import ApiKeysTab from "@/components/ApiKeysTab";
+import BillingTab from "@/components/BillingTab";
 import DataTable, { Column } from "@/components/DataTable";
 import TabList from "@/components/TabList";
 import { apiFetch } from "@/lib/api";
 import type { UsageByModel, UsageResponse } from "@/lib/types";
 
-type Tab = "usage" | "keys";
+type Tab = "usage" | "billing" | "keys";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "usage", label: "Usage" },
+  { id: "billing", label: "Billing" },
   { id: "keys", label: "API Keys" },
 ];
 
@@ -188,17 +190,18 @@ function UsageTab() {
 export default function PlatformPage() {
   const [tab, setTab] = useState<Tab>("usage");
 
-  // Deep link: /platform?tab=keys (and the /keys redirect) opens the API Keys tab.
+  // Deep link: /platform?tab=keys|billing (and the /keys redirect) opens the tab.
   useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot deep link
-    if (new URLSearchParams(window.location.search).get("tab") === "keys") setTab("keys");
+    if (t === "keys" || t === "billing") setTab(t);
   }, []);
 
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="mb-1 text-lg font-semibold">Platform</h1>
       <p className="mb-5 text-[13px] text-[var(--text2)]">
-        Usage statistics and API key management for your account.
+        Usage statistics, billing (wallet + pricing), and API key management for your account.
       </p>
 
       <TabList tabs={TABS} active={tab} onChange={(id) => setTab(id as Tab)} label="Platform sections" />
@@ -206,6 +209,11 @@ export default function PlatformPage() {
       {tab === "usage" && (
         <div role="tabpanel" tabIndex={0} id="panel-usage" aria-labelledby="tab-usage">
           <UsageTab />
+        </div>
+      )}
+      {tab === "billing" && (
+        <div role="tabpanel" tabIndex={0} id="panel-billing" aria-labelledby="tab-billing">
+          <BillingTab />
         </div>
       )}
       {tab === "keys" && (

@@ -287,11 +287,12 @@ Base `/api/v1/billing`, dùng envelope hiện có (`response.WriteAPIError`).
 | `GET /ledger?limit=` | `billing.read` | ledger gần đây (mặc định 50, ≤200) |
 | `POST /topup` | `billing.manage` | body `{amount, currency}`; header `Idempotency-Key` |
 | `GET /pricing` | `billing.read` | danh sách giá per model |
-| `PUT /pricing` | `billing.manage` | upsert giá per `(model, currency)` |
+| `PUT /pricing` | `billing.pricing` | upsert giá per `(model, currency)` — **chỉ platform admin** |
 
-RBAC: thêm 2 action const (`billing.read`, `billing.manage`) vào **cả** `infrastructure/middleware/auth.go` và `iam/rbac.go`, cập nhật `rolePermissions`:
+RBAC: thêm action const (`billing.read`, `billing.manage`, `billing.pricing`) vào **cả** `infrastructure/middleware/auth.go` và `iam/rbac.go`, cập nhật `rolePermissions`:
 - `billing.read`: PlatformAdmin, TenantAdmin, TenantDeveloper, TenantViewer.
-- `billing.manage`: PlatformAdmin, TenantAdmin (nạp tiền + sửa giá).
+- `billing.manage`: PlatformAdmin, TenantAdmin (nạp tiền).
+- `billing.pricing`: PlatformAdmin (sửa bảng giá token; tenant admin chỉ xem).
 
 Error model:
 - Thiếu tiền (enforce): **`402`** `{"error":{"code":"INSUFFICIENT_CREDITS","message":"insufficient credits"}}`.
@@ -363,7 +364,7 @@ Semantics mode:
 ## 10. UI (tối thiểu)
 
 - `/platform` thêm tab **Billing**: thẻ số dư (`balance/reserved/available`), form top-up (admin, nhập USD → gửi µcr), bảng ledger gần đây.
-- `/infra` (hoặc tab Billing): bảng giá per model (admin sửa).
+- `/infra` (hoặc tab Billing): bảng giá per model (**chỉ platform admin sửa**; user khác chỉ xem).
 - `/chat`: hiển thị số dư + cảnh báo khi thấp gần ngưỡng (không bắt buộc trong đợt đầu).
 - UI deferred (giữ pattern hiện có): auto-refresh số dư sau mỗi lượt, biểu đồ chi phí theo ngày.
 
