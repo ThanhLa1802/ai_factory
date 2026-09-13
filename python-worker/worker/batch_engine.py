@@ -9,6 +9,7 @@ model.generate() batch → stream token từng request NGAY KHI SINH RA
 Hiện tại dùng HF model.generate() với batched inputs + custom streamer.
 """
 
+import asyncio
 import queue as stdlib_queue
 import time
 from threading import Thread
@@ -240,7 +241,9 @@ class BatchEngine:
         try:
             while remaining > 0:
                 try:
-                    item = out_queue.get(timeout=0.2)
+                    # out_queue.get là call đồng bộ/blocking — đẩy sang thread để
+                    # không chặn asyncio event loop (RPC khác vẫn chạy được).
+                    item = await asyncio.to_thread(out_queue.get, True, 0.2)
                 except stdlib_queue.Empty:
                     if gen_error:
                         raise gen_error[0]

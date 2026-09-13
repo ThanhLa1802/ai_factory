@@ -6,6 +6,14 @@ kafka_addr: "localhost:9092"
 redis_addr: "localhost:6379"
 rate_limit_rpm: 60
 rate_limit_concurrency: 4
+# Resource budgets (C4). Bound the Postgres pool and HTTP idle/read timeouts.
+# http_write_timeout is intentionally unset (0) — SSE streams must not be killed.
+database_max_open_conns: 25
+database_max_idle_conns: 25
+database_conn_max_lifetime: "30m"
+database_conn_max_idle_time: "5m"
+http_read_header_timeout: "10s"
+http_idle_timeout: "120s"
 # Roles this process runs. cmd/server defaults to both; cmd/worker forces
 # api=false. Override with AI_FACTORY_SERVICES_API / AI_FACTORY_SERVICES_WORKER.
 services:

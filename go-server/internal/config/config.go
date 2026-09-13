@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -20,6 +21,15 @@ type Config struct {
 	RateLimitRPM         int
 	RateLimitConcurrency int
 	Services             ServicesConfig
+
+	// Resource budgets (C4) — declared in one place so the process cannot
+	// silently run on database/sql defaults.
+	DBMaxOpenConns        int
+	DBMaxIdleConns        int
+	DBConnMaxLifetime     time.Duration
+	DBConnMaxIdleTime     time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPIdleTimeout       time.Duration
 }
 
 // ServicesConfig selects which roles a process runs. Both default to true, so
@@ -42,6 +52,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("rate_limit_concurrency", 4)
 	v.SetDefault("services.api", true)
 	v.SetDefault("services.worker", true)
+	v.SetDefault("database_max_open_conns", 25)
+	v.SetDefault("database_max_idle_conns", 25)
+	v.SetDefault("database_conn_max_lifetime", "30m")
+	v.SetDefault("database_conn_max_idle_time", "5m")
+	v.SetDefault("http_read_header_timeout", "10s")
+	v.SetDefault("http_idle_timeout", "120s")
 
 	v.SetEnvPrefix("AI_FACTORY")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -68,13 +84,19 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &Config{
-		DatabaseURL:          v.GetString("database_url"),
-		JWTSecret:            secret,
-		LogLevel:             v.GetString("log_level"),
-		KafkaAddr:            v.GetString("kafka_addr"),
-		RedisAddr:            v.GetString("redis_addr"),
-		RateLimitRPM:         v.GetInt("rate_limit_rpm"),
-		RateLimitConcurrency: v.GetInt("rate_limit_concurrency"),
+		DatabaseURL:           v.GetString("database_url"),
+		JWTSecret:             secret,
+		LogLevel:              v.GetString("log_level"),
+		KafkaAddr:             v.GetString("kafka_addr"),
+		RedisAddr:             v.GetString("redis_addr"),
+		RateLimitRPM:          v.GetInt("rate_limit_rpm"),
+		RateLimitConcurrency:  v.GetInt("rate_limit_concurrency"),
+		DBMaxOpenConns:        v.GetInt("database_max_open_conns"),
+		DBMaxIdleConns:        v.GetInt("database_max_idle_conns"),
+		DBConnMaxLifetime:     v.GetDuration("database_conn_max_lifetime"),
+		DBConnMaxIdleTime:     v.GetDuration("database_conn_max_idle_time"),
+		HTTPReadHeaderTimeout: v.GetDuration("http_read_header_timeout"),
+		HTTPIdleTimeout:       v.GetDuration("http_idle_timeout"),
 		Services: ServicesConfig{
 			API:    v.GetBool("services.api"),
 			Worker: v.GetBool("services.worker"),

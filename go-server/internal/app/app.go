@@ -87,7 +87,15 @@ func (a *App) Run() error {
 
 	var server *http.Server
 	if a.cfg.Services.API {
-		server = &http.Server{Addr: fmt.Sprintf(":%d", a.port), Handler: NewHTTPHandler(a.container)}
+		server = &http.Server{
+			Addr:              fmt.Sprintf(":%d", a.port),
+			Handler:           NewHTTPHandler(a.container),
+			ReadHeaderTimeout: a.cfg.HTTPReadHeaderTimeout,
+			IdleTimeout:       a.cfg.HTTPIdleTimeout,
+			MaxHeaderBytes:    1 << 20,
+			// WriteTimeout stays 0: SSE responses are long-lived streams and a
+			// wall-clock write deadline would sever them mid-generation.
+		}
 	}
 
 	shutdownDone := make(chan struct{})

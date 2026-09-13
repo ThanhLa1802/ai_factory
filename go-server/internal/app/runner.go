@@ -14,7 +14,12 @@ import (
 // RunMigrate opens the database and applies pending gormigrate migrations, then
 // returns. It starts no server and no worker (cmd/migrate).
 func RunMigrate(cfg *config.Config) error {
-	d, err := database.Open(cfg.DatabaseURL)
+	d, err := database.Open(cfg.DatabaseURL, database.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+	})
 	if err != nil {
 		return err
 	}

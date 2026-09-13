@@ -59,6 +59,7 @@ def build_openai_request(messages, sampling_params, tools=None):
 
 class LlamaBackend(EngineBackend):
     def __init__(self, gguf, port=8081, bin="llama-server", gpu_layers=-1):
+        super().__init__()
         self.server = LlamaServer(gguf, port=port, bin=bin, gpu_layers=gpu_layers)
         self.client = LlamaClient(base_url=self.server.base_url)
 
@@ -69,6 +70,10 @@ class LlamaBackend(EngineBackend):
         self.server.stop()
 
     async def generate(self, messages, sampling_params, tools=None, cancel_event=None):
+        async for event in self._guard(self._generate(messages, sampling_params, tools, cancel_event)):
+            yield event
+
+    async def _generate(self, messages, sampling_params, tools=None, cancel_event=None):
         body = build_openai_request(messages, sampling_params, tools)
         tool_acc = {}
         usage = {}
@@ -123,7 +128,7 @@ class LlamaBackend(EngineBackend):
                     msgs = list(req.get("messages", []))
                     if req.get("system_prompt"):
                         msgs = [{"role": "system", "content": req["system_prompt"]}] + msgs
-                    async for ev in self.generate(
+                    async for ev in self._generate(
                         msgs, req.get("sampling_params", {}), req.get("tools")
                     ):
                         await q.put((req.get("request_id", ""), ev))
@@ -146,7 +151,9 @@ class LlamaBackend(EngineBackend):
             for t in tasks:
                 await t
 
-        return _gen()
+        # Guarded as one unit: workers call the unguarded _generate, so the lock
+        # is acquired once for the whole batch.
+        return self._guard(_gen())
 
 
 def _usage_dict(u):

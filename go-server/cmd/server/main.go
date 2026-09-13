@@ -17,7 +17,7 @@ func main() {
 		configPath    = flag.String("config", "configs/config.yaml", "Path to YAML config (empty to skip)")
 		inferenceAddr = flag.String("inference-addr", "localhost:50051", "Python inference worker gRPC address")
 		workDir       = flag.String("workdir", ".", "Working directory for tool execution")
-		maxConcurrent = flag.Int("max-concurrent", 1, "Max concurrent inference requests")
+		maxConcurrent = flag.Int("max-concurrent", 0, "Batch size for inference (0 = default 4)")
 		uiDir         = flag.String("ui-dir", "", "Directory with standalone UI HTML (default: auto-detect)")
 	)
 	flag.Parse()

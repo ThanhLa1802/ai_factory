@@ -37,7 +37,12 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("db", func(*di.Container) (any, error) {
-		d, err := database.Open(cfg.DatabaseURL)
+		d, err := database.Open(cfg.DatabaseURL, database.PoolConfig{
+			MaxOpenConns:    cfg.DBMaxOpenConns,
+			MaxIdleConns:    cfg.DBMaxIdleConns,
+			ConnMaxLifetime: cfg.DBConnMaxLifetime,
+			ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +89,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
 			ic := cc.MustResolve("inference.client").(*infrainf.Client)
 			s := infrainf.NewBatchScheduler(ic)
-			if opts.MaxConcurrent > 1 {
+			if opts.MaxConcurrent > 0 {
 				s.SetMaxBatchSize(opts.MaxConcurrent)
 			}
 			return s, nil

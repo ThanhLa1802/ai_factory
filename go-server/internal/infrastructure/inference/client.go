@@ -99,9 +99,15 @@ type Usage struct {
 	TotalTokens      int32
 }
 
+// batchStream is the receive side of a batch RPC. The generated gRPC client
+// stream satisfies it; tests provide a scripted fake.
+type batchStream interface {
+	Recv() (*pb.BatchGenerateResponse, error)
+}
+
 // BatchGenerate sends a batch of requests to the Python worker.
 // Returns a stream of batch responses keyed by request_id for routing.
-func (c *Client) BatchGenerate(ctx context.Context, req *pb.BatchGenerateRequest) (pb.BatchInferenceService_BatchGenerateClient, error) {
+func (c *Client) BatchGenerate(ctx context.Context, req *pb.BatchGenerateRequest) (batchStream, error) {
 	return c.batchClient.BatchGenerate(ctx, req)
 }
 

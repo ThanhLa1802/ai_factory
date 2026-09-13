@@ -104,6 +104,12 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `AI_FACTORY_REDIS_ADDR` | `localhost:6379` | Redis cho rate limit |
 | `AI_FACTORY_RATE_LIMIT_RPM` | `60` | RPM mỗi tenant |
 | `AI_FACTORY_RATE_LIMIT_CONCURRENCY` | `4` | Concurrency mỗi deployment |
+| `AI_FACTORY_DATABASE_MAX_OPEN_CONNS` | `25` | Pool: kết nối tối đa (C4) |
+| `AI_FACTORY_DATABASE_MAX_IDLE_CONNS` | `25` | Pool: kết nối idle tối đa (C4) |
+| `AI_FACTORY_DATABASE_CONN_MAX_LIFETIME` | `30m` | Pool: vòng đời kết nối (C4) |
+| `AI_FACTORY_DATABASE_CONN_MAX_IDLE_TIME` | `5m` | Pool: thời gian idle tối đa (C4) |
+| `AI_FACTORY_HTTP_READ_HEADER_TIMEOUT` | `10s` | HTTP read-header timeout (C4) |
+| `AI_FACTORY_HTTP_IDLE_TIMEOUT` | `120s` | HTTP keep-alive idle timeout (C4) |
 | `AI_FACTORY_SKIP_SEED` | — | `1` để bỏ qua seeding |
 | `AI_FACTORY_ADMIN_USER/PASSWORD` | `admin` / `admin1234` | Tài khoản admin seed |
 | `AI_FACTORY_DEMO_TENANT` | `acme` | Tenant demo seed |
@@ -205,7 +211,7 @@ READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
 
 ### 2.4 Session Manager — `internal/services/inference/`
 
-- Session **bền trong Postgres** (`sessions`, `messages` qua `store.go`/`PGStore`), không còn chỉ in-memory. `Manager` cache in-memory + ghi DB.
+- Session **bền trong Postgres** (`sessions`, `messages` qua `store.go`/`PGStore`), không còn chỉ in-memory. `Manager` cache in-memory + ghi DB. Cache là **LRU có biên** (mặc định 10 000 session — evict an toàn vì Postgres là source-of-truth, miss thì lazy reload); `GetOrCreate` đi fast-path (chỉ lock ngắn, không I/O), còn đường tạo/lazy-load dùng `singleflight` gom các request đồng thời cùng `(session, owner)` và chỉ chạm DB **ngoài** lock.
 - `GetOrCreate(sessionID, tenantID, userID)`, `ListSessions`, `GetPersisted`, `RenameSession`, `DeleteSession`; tự đặt tiêu đề từ tin nhắn user đầu tiên (cắt 40 rune).
 - `Session` lưu message history, `MaxTokens` (mặc định **8192**), `SystemPrompt`, title, model, timestamps.
 - `EstimatedTokens()`: heuristic **chars/4**; con số chính xác do Python cung cấp qua `Usage`.
@@ -273,9 +279,11 @@ Handler 3 ──┘        │                        │
                  events channels ◄─────────────┘  route theo request_id
 ```
 
-**`collectorLoop`:** block chờ request đầu; gom thêm trong `batchWindow` (**100ms**) hoặc đến `maxBatchSize` (**4**); dispatch batch trong goroutine mới.
+**`collectorLoop`:** block chờ request đầu; gom thêm trong `batchWindow` (**100ms**) hoặc đến `maxBatchSize` (**4**); rồi **acquire một Batch Slot** trước khi dispatch batch trong goroutine mới.
 
-**`dispatchBatch`:** build `BatchGenerateRequest` + index `request_id → batchItem`; mở gRPC stream; route event về đúng channel; `final` → đóng channel; lỗi stream → `STOP_ERROR` cho request dở dang.
+**`Batch Slot` (C1):** `BatchScheduler` giữ đúng K slot (`DefaultMaxInFlightBatches = 1`) — collector block khi hết slot, khiến `submitCh` (cap 100) đầy dần và `TrySubmit` shed load. Nhờ vậy số batch in-flight bị chặn tại seam Go↔worker, khớp sức chứa thật (một forward pass ≤ 4 request / số slot llama-server), thay vì chỉ đếm hàng chờ.
+
+**`dispatchBatch`:** build `BatchGenerateRequest` + index `request_id → batchItem`; suy **ctx batch từ các request** (cancel khi mọi request trong batch đã huỷ, hoặc khi shutdown — C7); mở gRPC stream; route event về đúng channel; `final` → đóng channel. **Mọi nhánh thoát đều đóng channel** bằng một event kết thúc (kể cả stream kết thúc mà thiếu `final`), tránh treo goroutine. Lỗi stream → `STOP_ERROR` cho request dở dang.
 
 **Backpressure (A5):** `TrySubmit` trả `ErrOverloaded` khi queue đầy → handler trả 503 (non-stream) hoặc frame `OVERLOADED` (SSE), tăng metric `serving_overloaded_total`.
 
@@ -332,6 +340,7 @@ Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 ### 2.14 DB + migrations — `internal/infrastructure/database/`
 
 - `database.Open` mở GORM (Postgres driver) + `Ping`; `database.Migrate` chạy gormigrate `Up` (bảng `schema_migrations`).
+- **Pool budget (C4):** `database.Open(dsn, PoolConfig)` đặt `MaxOpenConns`/`MaxIdleConns`/`ConnMaxLifetime`/`ConnMaxIdleTime` (mặc định 25/25/30m/5m, từ `configs/config.yaml`), và bật `SkipDefaultTransaction` để bỏ `BEGIN/COMMIT` thừa quanh write một câu lệnh (rollup/outbox vẫn dùng `db.Transaction` tường minh). HTTP server đặt `ReadHeaderTimeout`/`IdleTimeout` nhưng giữ `WriteTimeout = 0` cho SSE.
 - **goose adoption:** DB đã migrate bằng goose trước đây (`goose_db_version`) được đánh dấu tương đương rồi bỏ qua — không chạy lại DDL trên dữ liệu hiện hữu.
 - Migrations: `internal/migrations/NNNN_*.go` (chuyển 1:1 từ goose, giữ nguyên tên bảng/cột).
 - Data access qua repository interface (`controlplane.Repositories`, `session.Store`); service không thấy `*gorm.DB`.
@@ -491,8 +500,9 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 |---|---|
 | Đơn vị dispatch | Batch tĩnh: gom trong 100ms hoặc đủ 4 request |
 | GPU thực thi | `model.generate()` với batched inputs (padding + attention mask) |
+| In-flight batches | **Có biên (C1)** — K Batch Slot (`DefaultMaxInFlightBatches = 1`); collector block khi hết slot |
 | Routing | Go giữ `request_id → channel` map, route từng event |
-| Backpressure | `submitCh` cap 100; `TrySubmit` → `ErrOverloaded` → 503/OVERLOADED |
+| Backpressure | `submitCh` cap 100; hết slot → queue đầy → `TrySubmit` → `ErrOverloaded` → 503/OVERLOADED |
 | Dynamic batching | **Chưa** — không chèn/xoá sequence giữa các decode step (Tuần 7-8) |
 | Multi-user | Session bền theo tenant/user + auth |
 | Channel buffer | Loop events: 64; gRPC events: 100 |
@@ -549,9 +559,10 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 - `adapters.go` có `ToolsToInternal` / `OpenAIToolsToInternal`, handler parse `req.Tools`, nhưng **không truyền xuống loop**.
 - Loop luôn dùng `l.tools.ListTools()` — **4 built-in tools** của `LocalToolExecutor`, không phải tool client khai báo.
 
-### 10.3 Flag `--max-concurrent` không tác dụng khi ≤ 1
+### 10.3 Flag `--max-concurrent` (đã sửa — C1)
 
-- `main.go`: `SetMaxBatchSize` chỉ gọi khi `maxConcurrent > 1`; mặc định flag `1`. Batch size thực tế luôn là `DefaultMaxBatchSize = 4` cho tới khi override. Log cũng in `max_batch` sai khi flag = 1.
+- Trước đây: `SetMaxBatchSize` chỉ gọi khi `maxConcurrent > 1`; mặc định flag `1` nên batch size luôn là `DefaultMaxBatchSize = 4`.
+- Nay: flag mặc định `0` nghĩa là dùng default (4); giá trị `> 0` **luôn** set batch size (kể cả `1`). Chạy `cmd/server` không kèm flag giữ nguyên batch 4.
 
 ### 10.4 Inconsistency trong comment (model)
 
