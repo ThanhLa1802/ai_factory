@@ -57,8 +57,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    # host.docker.internal is provided by Docker Desktop (IPv4 192.168.65.254).
+    # Do NOT add an extra_hosts "host-gateway" override here: on Windows it maps
+    # to an unreachable IPv6 ULA, so the gRPC dial to the Python worker fails
+    # with "network is unreachable". (On Linux add it back via host-gateway.)
     # NOTE: no /app/server prefix — Dockerfile ENTRYPOINT already runs the binary;
     # compose `command` is appended as args (pre-scan bug fix).
     command: ["--port", "8080", "--inference-addr", "host.docker.internal:50051", "--ui-dir", "/app/ui", "--workdir", "/app"]
@@ -80,8 +82,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     command: ["--inference-addr", "host.docker.internal:50051"]
 
 volumes:
