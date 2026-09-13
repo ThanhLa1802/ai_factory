@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"gorm.io/gorm"
 )
 
@@ -130,6 +132,27 @@ func (r *deploymentRepo) Create(ctx context.Context, d *Deployment) error {
 	}
 	d.CreatedAt, d.UpdatedAt = row.CreatedAt, row.UpdatedAt
 	return nil
+}
+
+// CreateWithEvent inserts the deployment and its outbox event in one
+// transaction: the event is never lost even if the process dies before the
+// publisher runs (Phase 6).
+func (r *deploymentRepo) CreateWithEvent(ctx context.Context, d *Deployment, topic string, ev message.Event) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		row := deploymentRow{
+			ID: d.ID, TenantID: d.TenantID, ModelVersionID: d.ModelVersionID,
+			TemplateVersionID: d.TemplateVersionID, Name: d.Name, Region: d.Region,
+			DesiredReplicas: d.DesiredReplicas, Status: d.Status,
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return fmt.Errorf("create deployment: %w", err)
+		}
+		if err := outbox.EnqueueTx(tx, topic, ev); err != nil {
+			return err
+		}
+		d.CreatedAt, d.UpdatedAt = row.CreatedAt, row.UpdatedAt
+		return nil
+	})
 }
 
 func (r *deploymentRepo) Get(ctx context.Context, id string) (*Deployment, error) {

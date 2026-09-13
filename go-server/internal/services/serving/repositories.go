@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"gorm.io/gorm"
 )
 
@@ -26,6 +27,7 @@ type TemplateRepository interface {
 
 type DeploymentRepository interface {
 	Create(ctx context.Context, d *Deployment) error
+	CreateWithEvent(ctx context.Context, d *Deployment, topic string, ev message.Event) error
 	Get(ctx context.Context, id string) (*Deployment, error)
 	List(ctx context.Context, tenantID string) ([]Deployment, error)
 	Resolve(ctx context.Context, tenantID, modelName string) (*Deployment, error)
@@ -39,6 +41,13 @@ type DeploymentRepository interface {
 type IdempotencyRepository interface {
 	Save(ctx context.Context, tenantID, key, resourceType, resourceID string) error
 	Resolve(ctx context.Context, tenantID, key, resourceType string) (string, error)
+}
+
+// EventSink durably enqueues a domain event (transactional outbox). Implemented
+// by outbox.Store; kept consumer-defined so serving never imports the outbox
+// package.
+type EventSink interface {
+	Enqueue(ctx context.Context, topic string, ev message.Event) error
 }
 
 // Repositories bundles every repository the serving service needs.

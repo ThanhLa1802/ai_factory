@@ -10,6 +10,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
@@ -132,6 +133,19 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		}); err != nil {
 			return err
 		}
+		// Transactional outbox (Phase 6): API nodes write outbox rows and run the
+		// publisher; worker nodes neither write nor drain it.
+		if err := c.RegisterSingleton("outbox.store", func(cc *di.Container) (any, error) {
+			return outbox.NewStore(cc.MustResolve("db").(*database.DB).Gorm()), nil
+		}); err != nil {
+			return err
+		}
+		if err := c.RegisterSingleton("outbox.publisher", func(cc *di.Container) (any, error) {
+			b := cc.MustResolve("bus").(*busBundle)
+			return outbox.NewPublisher(cc.MustResolve("outbox.store").(*outbox.Store), b.Producer, slog.Default()), nil
+		}); err != nil {
+			return err
+		}
 	}
 
 	// 3. Workers (started conditionally by App.Run)
@@ -179,11 +193,10 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("http.serving", func(cc *di.Container) (any, error) {
-		b := cc.MustResolve("bus").(*busBundle)
 		return serving.NewHandler(
 			cc.MustResolve("serving").(*serving.Service),
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
-			b.Producer,
+			cc.MustResolve("outbox.store").(*outbox.Store),
 		), nil
 	}); err != nil {
 		return err

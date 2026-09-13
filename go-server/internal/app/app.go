@@ -12,6 +12,7 @@ import (
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
+	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/pkg/di"
@@ -36,6 +37,7 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 		names = append(names,
 			"iam", "iam.auth", "iam.authenticator", "usage",
 			"inference.manager", "inference.loop",
+			"outbox.store", "outbox.publisher",
 			"http.handler", "http.iam", "http.serving", "http.usage",
 		)
 	}
@@ -73,6 +75,7 @@ func (a *App) Run() error {
 		if err := a.seed(ctx); err != nil {
 			return err
 		}
+		a.container.MustResolve("outbox.publisher").(*outbox.Publisher).Start(ctx)
 	}
 	if a.cfg.Services.Worker {
 		if err := a.startWorker(ctx); err != nil {

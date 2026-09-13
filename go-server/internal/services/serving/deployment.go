@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/google/uuid"
 )
 
@@ -47,6 +48,26 @@ func (s *Service) CreateDeployment(ctx context.Context, d Deployment) (*Deployme
 	d.ID = uuid.NewString()
 	d.Status = DeploymentPending
 	if err := s.repos.Deployments.Create(ctx, &d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// CreateDeploymentWithEvent persists the deployment and its deployment_created
+// event atomically (transactional outbox): if the event cannot be written, the
+// deployment insert rolls back.
+func (s *Service) CreateDeploymentWithEvent(ctx context.Context, d Deployment, createdBy string) (*Deployment, error) {
+	d.ID = uuid.NewString()
+	d.Status = DeploymentPending
+	ev := message.NewEvent(message.TypeDeploymentCreated, d.TenantID, d.ID, map[string]any{
+		"name":                d.Name,
+		"region":              d.Region,
+		"desired_replicas":    d.DesiredReplicas,
+		"model_version_id":    d.ModelVersionID,
+		"template_version_id": d.TemplateVersionID,
+		"created_by":          createdBy,
+	})
+	if err := s.repos.Deployments.CreateWithEvent(ctx, &d, message.TopicDeploymentEvents, ev); err != nil {
 		return nil, err
 	}
 	return &d, nil

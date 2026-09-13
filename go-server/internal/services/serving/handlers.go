@@ -12,13 +12,13 @@ import (
 
 // Handler mounts the serving routes: models, templates, deployments.
 type Handler struct {
-	svc      *Service
-	auth     middleware.Authenticator
-	producer message.Producer
+	svc    *Service
+	auth   middleware.Authenticator
+	events EventSink
 }
 
-func NewHandler(svc *Service, auth middleware.Authenticator, producer message.Producer) *Handler {
-	return &Handler{svc: svc, auth: auth, producer: producer}
+func NewHandler(svc *Service, auth middleware.Authenticator, events EventSink) *Handler {
+	return &Handler{svc: svc, auth: auth, events: events}
 }
 
 // --- models ---
@@ -149,7 +149,7 @@ func (h *Handler) handleCreateDeployment(c *gin.Context) {
 		}
 	}
 
-	created, err := h.svc.CreateDeployment(c.Request.Context(), d)
+	created, err := h.svc.CreateDeploymentWithEvent(c.Request.Context(), d, p.UserID)
 	if err != nil {
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
@@ -159,22 +159,6 @@ func (h *Handler) handleCreateDeployment(c *gin.Context) {
 		if err := h.svc.SaveIdempotencyKey(c.Request.Context(), p.TenantID, key, "deployment", created.ID); err != nil {
 			slog.Warn("save idempotency key", "err", err) // non-fatal: replay safety is best-effort
 		}
-	}
-
-	ev := message.NewEvent(message.TypeDeploymentCreated, p.TenantID, created.ID, map[string]any{
-		"name":                created.Name,
-		"region":              created.Region,
-		"desired_replicas":    created.DesiredReplicas,
-		"model_version_id":    created.ModelVersionID,
-		"template_version_id": created.TemplateVersionID,
-		"created_by":          p.UserID,
-	})
-	if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
-		// The deployment is persisted but not queued. Mark it FAILED so it is not
-		// left stuck in PENDING (best-effort), then surface the error loudly.
-		_, _ = h.svc.TransitionDeployment(c.Request.Context(), created.ID, DeploymentFailed)
-		response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", "deployment persisted but event publish failed")
-		return
 	}
 	response.WriteJSON(c, http.StatusAccepted, created)
 }
@@ -232,14 +216,14 @@ func (h *Handler) handleDeploymentAction(c *gin.Context) {
 			"model_version_id": d.ModelVersionID, "template_version_id": d.TemplateVersionID,
 			"created_by": p.UserID,
 		})
-		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
+		if err := h.events.Enqueue(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
 			response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}
 		response.WriteJSON(c, http.StatusAccepted, d)
 	case "stop":
 		ev := message.NewEvent(message.TypeDeploymentStopRequested, p.TenantID, id, nil)
-		if err := h.producer.Publish(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
+		if err := h.events.Enqueue(c.Request.Context(), message.TopicDeploymentEvents, ev); err != nil {
 			response.WriteAPIError(c, http.StatusServiceUnavailable, "EVENT_PUBLISH_FAILED", err.Error())
 			return
 		}

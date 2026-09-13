@@ -15,6 +15,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
 	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
+	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
@@ -55,8 +56,8 @@ func (ts *testServices) mountIAM(mux *gin.Engine) {
 	iam.NewHandler(ts.iam, ts.authSvc, ts.authn).RegisterRoutes(mux)
 }
 
-func (ts *testServices) mountServing(mux *gin.Engine, producer message.Producer) {
-	serving.NewHandler(ts.serving, ts.authn, producer).RegisterRoutes(mux)
+func (ts *testServices) mountServing(mux *gin.Engine, events serving.EventSink) {
+	serving.NewHandler(ts.serving, ts.authn, events).RegisterRoutes(mux)
 }
 
 func (ts *testServices) mountControlPlane(mux *gin.Engine) {
@@ -115,6 +116,11 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
 	ts := newTestServices(t, d)
+	// Drain determinism: start from an empty outbox so only this test's event
+	// is visible to the publisher.
+	if err := d.Gorm().Exec("DELETE FROM outbox").Error; err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
 
 	tenant, _ := ts.iam.CreateTenant(ctx, "pub-ev-"+uuid.NewString()[:8])
 	hash, _ := iam.HashPassword("admin-pass")
@@ -129,9 +135,12 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
+	store := outbox.NewStore(d.Gorm())
+	pub := outbox.NewPublisher(store, bus, nil)
+
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountServing(mux, bus)
+	ts.mountServing(mux, store)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	// deployments has FKs to model_versions / serving_template_versions, so
@@ -165,6 +174,11 @@ func TestCreateDeploymentPublishesEvent(t *testing.T) {
 		t.Fatalf("create deployment code = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
+	// The event is committed to the outbox with the deployment; the publisher
+	// drains it to the bus (at-least-once).
+	if _, err := pub.DrainOnce(ctx); err != nil {
+		t.Fatalf("drain outbox: %v", err)
+	}
 	if len(published) != 1 || published[0].Type != message.TypeDeploymentCreated {
 		t.Fatalf("published = %+v, want exactly one deployment_created", published)
 	}
@@ -176,6 +190,9 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	ctx := context.Background()
 	d := dbConnOrSkip(t)
 	ts := newTestServices(t, d)
+	if err := d.Gorm().Exec("DELETE FROM outbox").Error; err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
 
 	tenant, _ := ts.iam.CreateTenant(ctx, "idem-api-"+uuid.NewString()[:8])
 	hash, _ := iam.HashPassword("admin-pass")
@@ -183,10 +200,10 @@ func TestCreateDeploymentIdempotencyKey(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, tenant.ID) })
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
-	bus := message.NewMemoryEventBus()
+	store := outbox.NewStore(d.Gorm())
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountServing(mux, bus)
+	ts.mountServing(mux, store)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	model, err := ts.serving.CreateModel(ctx, serving.Model{Name: "qwen-" + uuid.NewString()[:8], Task: "text-generation", Framework: "transformers"})
@@ -280,6 +297,9 @@ func TestAsyncDeployE2E(t *testing.T) {
 	d := dbConnOrSkip(t)
 	ctx := context.Background()
 	ts := newTestServices(t, d)
+	if err := d.Gorm().Exec("DELETE FROM outbox").Error; err != nil {
+		t.Fatalf("clear outbox: %v", err)
+	}
 
 	suffix := uuid.NewString()[:8]
 	tenant, err := ts.iam.CreateTenant(ctx, "async-"+suffix)
@@ -304,9 +324,12 @@ func TestAsyncDeployE2E(t *testing.T) {
 		t.Fatalf("worker run: %v", err)
 	}
 
+	store := outbox.NewStore(d.Gorm())
+	pub := outbox.NewPublisher(store, bus, nil)
+
 	mux := newTestEngine()
 	ts.mountIAM(mux)
-	ts.mountServing(mux, bus)
+	ts.mountServing(mux, store)
 	token := loginHelper(t, mux, user.Username, "admin-pass")
 
 	post := func(path string, body any, want int) map[string]any {
@@ -356,7 +379,11 @@ func TestAsyncDeployE2E(t *testing.T) {
 	}, http.StatusAccepted)
 	depID := dep["id"].(string)
 
-	// Memory bus dispatch is synchronous: the worker finished before 202 returned.
+	// The deployment + outbox row committed together; draining the outbox runs
+	// the worker synchronously over the memory bus.
+	if _, err := pub.DrainOnce(ctx); err != nil {
+		t.Fatalf("drain outbox: %v", err)
+	}
 	got := get("/api/v1/deployments/"+depID, http.StatusOK)
 	if got["status"] != "READY" {
 		t.Fatalf("deployment status = %v, want READY", got["status"])
