@@ -31,6 +31,20 @@ type usageRow struct {
 
 func (usageRow) TableName() string { return "usage_events" }
 
+// usageDailyRow is the flushed aggregate (Phase 6b): one row per tenant, model
+// and UTC day.
+type usageDailyRow struct {
+	TenantID         string    `gorm:"column:tenant_id;type:uuid;primaryKey"`
+	Model            string    `gorm:"column:model;primaryKey"`
+	Day              time.Time `gorm:"column:day;type:date;primaryKey"`
+	PromptTokens     int64     `gorm:"column:prompt_tokens"`
+	CompletionTokens int64     `gorm:"column:completion_tokens"`
+	Requests         int64     `gorm:"column:requests"`
+	UpdatedAt        time.Time `gorm:"column:updated_at"`
+}
+
+func (usageDailyRow) TableName() string { return "usage_daily" }
+
 // --- mappers (row → domain) ---
 
 func toQuota(r quotaRow) Quota {

@@ -15,5 +15,6 @@ func All() []*gormigrate.Migration {
 		M0006UsageEvents(),
 		M0007SessionTitle(),
 		M0008Outbox(),
+		M0009UsageDaily(),
 	}
 }

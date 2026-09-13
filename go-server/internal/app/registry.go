@@ -127,8 +127,15 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("usage.counter", func(cc *di.Container) (any, error) {
+		return cache.NewUsageCounter(cc.MustResolve("redis").(*redis.Client)), nil
+	}); err != nil {
+		return err
+	}
 	if err := c.RegisterSingleton("usage", func(cc *di.Container) (any, error) {
-		return usage.NewServiceFromGorm(cc.MustResolve("db").(*database.DB).Gorm()), nil
+		g := cc.MustResolve("db").(*database.DB).Gorm()
+		return usage.NewServiceWithCounter(usage.NewRepositories(g),
+			cc.MustResolve("usage.counter").(*cache.UsageCounter)), nil
 	}); err != nil {
 		return err
 	}
@@ -149,6 +156,20 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		if err := c.RegisterSingleton("outbox.publisher", func(cc *di.Container) (any, error) {
 			b := cc.MustResolve("bus").(*busBundle)
 			return outbox.NewPublisher(cc.MustResolve("outbox.store").(*outbox.Store), b.Producer, slog.Default()), nil
+		}); err != nil {
+			return err
+		}
+		// Usage aggregate flush (Phase 6b): API nodes buffer usage in Redis and
+		// periodically flush it to the aggregate table, guarded by a lock so only
+		// one replica flushes per cycle.
+		if err := c.RegisterSingleton("usage.flusher", func(cc *di.Container) (any, error) {
+			g := cc.MustResolve("db").(*database.DB).Gorm()
+			return usage.NewFlusher(
+				cc.MustResolve("usage.counter").(*cache.UsageCounter),
+				usage.NewRepositories(g).Aggregates,
+				cache.NewLock(cc.MustResolve("redis").(*redis.Client)),
+				slog.Default(),
+			), nil
 		}); err != nil {
 			return err
 		}

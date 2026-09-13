@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -115,6 +116,91 @@ func (r *usageRepo) ByModel(ctx context.Context, tenantID string, from, to time.
 		Scan(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("usage by model: %w", err)
+	}
+	if rows == nil {
+		rows = []UsageByModel{}
+	}
+	return rows, nil
+}
+
+// --- usage aggregate (flushed from Redis counters) ---
+
+type aggregateRepo struct{ db *gorm.DB }
+
+func (r *aggregateRepo) Upsert(ctx context.Context, b cache.UsageBucket) error {
+	day, err := time.Parse("2006-01-02", b.Day)
+	if err != nil {
+		return fmt.Errorf("parse usage day %q: %w", b.Day, err)
+	}
+	row := usageDailyRow{
+		TenantID: b.TenantID, Model: b.Model, Day: day,
+		PromptTokens: b.PromptTokens, CompletionTokens: b.CompletionTokens, Requests: b.Requests,
+	}
+	// Accumulate: a later flush for the same (tenant, model, day) adds to the
+	// existing row instead of overwriting it.
+	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "tenant_id"}, {Name: "model"}, {Name: "day"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"prompt_tokens":     gorm.Expr("usage_daily.prompt_tokens + EXCLUDED.prompt_tokens"),
+			"completion_tokens": gorm.Expr("usage_daily.completion_tokens + EXCLUDED.completion_tokens"),
+			"requests":          gorm.Expr("usage_daily.requests + EXCLUDED.requests"),
+			"updated_at":        time.Now().UTC(),
+		}),
+	}).Create(&row).Error; err != nil {
+		return fmt.Errorf("upsert usage daily: %w", err)
+	}
+	return nil
+}
+
+func (r *aggregateRepo) Summary(ctx context.Context, tenantID string, from, to time.Time) (UsageSummary, error) {
+	var out UsageSummary
+	err := r.db.WithContext(ctx).Model(&usageDailyRow{}).
+		Select(`COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
+		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
+		        COALESCE(SUM(prompt_tokens + completion_tokens),0)::int8 AS total_tokens,
+		        COALESCE(SUM(requests),0)::int8 AS requests`).
+		Where("tenant_id = ? AND day >= ?::date AND day <= ?::date", tenantID, from, to).
+		Scan(&out).Error
+	if err != nil {
+		return out, fmt.Errorf("usage daily summary: %w", err)
+	}
+	return out, nil
+}
+
+func (r *aggregateRepo) Daily(ctx context.Context, tenantID string, from, to time.Time) ([]UsageDailyPoint, error) {
+	var rows []UsageDailyPoint
+	err := r.db.WithContext(ctx).Model(&usageDailyRow{}).
+		Select(`to_char(day, 'YYYY-MM-DD') AS date,
+		        COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
+		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
+		        COALESCE(SUM(requests),0)::int8 AS requests`).
+		Where("tenant_id = ? AND day >= ?::date AND day <= ?::date", tenantID, from, to).
+		Group("day").
+		Order("day").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("usage daily chart: %w", err)
+	}
+	if rows == nil {
+		rows = []UsageDailyPoint{}
+	}
+	return rows, nil
+}
+
+func (r *aggregateRepo) ByModel(ctx context.Context, tenantID string, from, to time.Time) ([]UsageByModel, error) {
+	var rows []UsageByModel
+	err := r.db.WithContext(ctx).Model(&usageDailyRow{}).
+		Select(`model,
+		        COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
+		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
+		        COALESCE(SUM(prompt_tokens + completion_tokens),0)::int8 AS total_tokens,
+		        COALESCE(SUM(requests),0)::int8 AS requests`).
+		Where("tenant_id = ? AND day >= ?::date AND day <= ?::date", tenantID, from, to).
+		Group("model").
+		Order("COALESCE(SUM(prompt_tokens + completion_tokens),0) DESC").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("usage daily by model: %w", err)
 	}
 	if rows == nil {
 		rows = []UsageByModel{}
