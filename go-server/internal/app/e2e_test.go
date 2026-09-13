@@ -496,7 +496,7 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	te := inferencesvc.NewLocalToolExecutor(t.TempDir())
 	loop := inferencesvc.NewLoop(bs, te)
 	sess := inferencesvc.NewManager()
-	h := inferencesvc.NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, 60, 4)
+	h := inferencesvc.NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)

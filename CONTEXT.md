@@ -63,6 +63,15 @@ Handler 3 ──┘                                     │
 - **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Hai implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers) và `LlamaBackend` (Qwen3.5-9B, llama-server proxy). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface".
 - **LlamaProxyEngine**: `LlamaBackend` — spawn `llama-server` subprocess, proxy gRPC → OpenAI-compatible `/v1/chat/completions` (SSE). Tool calling native (structured output) → nhánh tool-use của agentic loop hoạt động thật trên engine này (vá §9.1).
 
+### Billing (Prepaid)
+
+- **Wallet**: Ví credit của tenant (bảng `wallets`: `balance`, `reserved`); `available = balance − reserved`. Tiền là **integer micro-credit (`int64`)** — `1 credit = 10^6 µcr` (1 µcr = 1e-6 đơn vị tiền) — không dùng float.
+- **Ledger**: Sổ cái append-only, signed (`ledger_entries`: `kind` = topup/charge/grant/refund/adjust, `amount` có dấu, `balance_after`). `wallets.balance` là cache của ledger; đối soát `sum(amount) == balance`.
+- **Reservation (authorize → capture → release)**: Hold tiền trước khi chạy inference (`wallet_reservations`, `status` = held/settled/released, `expires_at`). Reserve giữ `estInput×giá_in + maxOutput×giá_out`; Settle trừ đúng usage thật và nhả phần dư; Release nhả hold chưa dùng. Khoá `wallets FOR UPDATE` nên request đồng thời không overdraw.
+- **Billing Gate**: Port `inference.BillingGate` (Reserve/Settle/Release) do `services/inference` định nghĩa, `services/billing` implement qua adapter ở `internal/app`. Inference **không biết giá** — chỉ truyền ước lượng token.
+- **Billing mode**: `off` (tắt) | `shadow` (ghi nhưng không chặn) | `enforce` (hết tiền → `402 INSUFFICIENT_CREDITS`). Default `shadow`; model thiếu giá → fail-open (cost 0).
+- **Reaper**: Vòng nền nhả các hold quá `expires_at` (process chết giữa reserve và settle) — crash-safety.
+
 ### Technology Decisions
 
 - **Model**: Default Qwen2.5-Coder-7B-Instruct (transformers, 4-bit quantized via bitsandbytes NF4), chạy trên RTX 3060 12GB VRAM. Ungated — không cần HuggingFace login. Tùy chọn Qwen3.5-9B (GGUF Q4_K_M) qua engine llama. Docs cũ ghi "Qwen 2.5 3B" — code chạy 7B từ trước.

@@ -13,6 +13,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
 	"github.com/ai-factory/go-server/internal/infrastructure/observability"
 	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
+	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
@@ -36,11 +37,14 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 	names := []string{"db", "bus", "serving"}
 	if cfg.Services.API {
 		names = append(names,
-			"iam", "iam.auth", "iam.authenticator", "usage",
+			"iam", "iam.auth", "iam.authenticator", "usage", "billing",
 			"inference.manager", "inference.loop",
 			"outbox.store", "outbox.publisher", "usage.roller",
 			"http.handler", "http.iam", "http.serving", "http.usage",
 		)
+		if cfg.Services.Billing {
+			names = append(names, "billing.reaper", "http.billing")
+		}
 	}
 	if cfg.Services.Worker {
 		names = append(names, "deployment.worker")
@@ -63,6 +67,9 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 	c.MustResolve("http.iam").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	c.MustResolve("http.serving").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	c.MustResolve("http.usage").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	if _, err := c.Resolve("http.billing"); err == nil {
+		c.MustResolve("http.billing").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	}
 	e.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
 	return e
 }
@@ -78,6 +85,9 @@ func (a *App) Run() error {
 		}
 		a.container.MustResolve("outbox.publisher").(*outbox.Publisher).Start(ctx)
 		a.container.MustResolve("usage.roller").(*usage.Roller).Start(ctx)
+		if _, err := a.container.Resolve("billing.reaper"); err == nil {
+			a.container.MustResolve("billing.reaper").(*billing.Reaper).Start(ctx)
+		}
 	}
 	if a.cfg.Services.Worker {
 		if err := a.startWorker(ctx); err != nil {
@@ -134,6 +144,12 @@ func (a *App) seed(ctx context.Context) error {
 	}
 	if err := seedDemo(ctx, iamSvc, servingSvc); err != nil {
 		a.log.Warn("seed demo deployment", "err", err)
+	}
+	if a.cfg.Services.Billing {
+		billingSvc := a.container.MustResolve("billing").(*billing.Service)
+		if err := seedBilling(ctx, iamSvc, billingSvc); err != nil {
+			a.log.Warn("seed billing", "err", err)
+		}
 	}
 	return nil
 }

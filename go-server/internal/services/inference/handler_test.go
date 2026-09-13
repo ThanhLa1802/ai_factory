@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	infra "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/gin-gonic/gin"
 )
 
@@ -73,8 +74,10 @@ type fakeLimiter struct {
 func (f *fakeLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	return f.allow, f.allowErr
 }
-func (f *fakeLimiter) Acquire(ctx context.Context, key string, limit int) (bool, error) { return f.acquire, nil }
-func (f *fakeLimiter) Release(ctx context.Context, key string) error                     { return nil }
+func (f *fakeLimiter) Acquire(ctx context.Context, key string, limit int) (bool, error) {
+	return f.acquire, nil
+}
+func (f *fakeLimiter) Release(ctx context.Context, key string) error { return nil }
 
 func TestResolveForTenantNotFound(t *testing.T) {
 	h := &Handler{resolver: &fakeResolver{err: errors.New("not found")}, limiter: &fakeLimiter{}, rpmLimit: 60, concLimit: 4}
@@ -112,5 +115,60 @@ func TestResolveForTenantFailOpen(t *testing.T) {
 	d, release, ok := h.resolveForTenant(context.Background(), c, "t1", "qwen-3b")
 	if !ok || d == nil || release == nil {
 		t.Fatal("want ok=true on fail-open (redis error)")
+	}
+}
+
+type fakeGate struct {
+	reserveID  string
+	reserveErr error
+	settles    int
+	releases   int
+}
+
+func (f *fakeGate) Reserve(ctx context.Context, tenantID, model string, estInput, maxOutput int) (string, error) {
+	return f.reserveID, f.reserveErr
+}
+func (f *fakeGate) Settle(ctx context.Context, reservationID string, prompt, completion int) error {
+	f.settles++
+	return nil
+}
+func (f *fakeGate) Release(ctx context.Context, reservationID string) error {
+	f.releases++
+	return nil
+}
+
+func TestReserveBillingInsufficient(t *testing.T) {
+	h := &Handler{billing: &fakeGate{reserveErr: ErrInsufficientCredits}}
+	c, rec := testContext()
+	if _, ok := h.reserveBilling(context.Background(), c, "t1", "qwen-3b", nil, infra.DefaultSamplingParams()); ok {
+		t.Fatal("want ok=false on insufficient credits")
+	}
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("code = %d, want 402", rec.Code)
+	}
+}
+
+func TestReserveBillingDisabled(t *testing.T) {
+	h := &Handler{} // nil gate disables billing
+	id, ok := h.reserveBilling(context.Background(), nil, "t1", "qwen-3b", nil, infra.DefaultSamplingParams())
+	if !ok || id != "" {
+		t.Fatalf("disabled gate = (%q,%v), want (\"\",true)", id, ok)
+	}
+}
+
+func TestSettleReleaseBilling(t *testing.T) {
+	g := &fakeGate{}
+	h := &Handler{billing: g}
+	h.settleBilling("r1", 10, 5)
+	h.releaseBilling("r2")
+	if g.settles != 1 || g.releases != 1 {
+		t.Fatalf("settles=%d releases=%d, want 1/1", g.settles, g.releases)
+	}
+	// Empty reservation id (billing off) is a no-op.
+	h2 := &Handler{billing: g}
+	h2.settleBilling("", 1, 1)
+	h2.releaseBilling("")
+	if g.settles != 1 || g.releases != 1 {
+		t.Fatalf("empty id changed counters: settles=%d releases=%d", g.settles, g.releases)
 	}
 }

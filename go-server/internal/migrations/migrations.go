@@ -18,5 +18,7 @@ func All() []*gormigrate.Migration {
 		M0009UsageDaily(),
 		M0010BackfillUsageDaily(),
 		M0011UsageRollupState(),
+		M0012ModelPricing(),
+		M0013WalletLedger(),
 	}
 }

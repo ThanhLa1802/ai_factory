@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 
+	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	"github.com/ai-factory/go-server/internal/services/serving"
 )
@@ -177,4 +179,51 @@ func findOrCreateTemplateVersion(ctx context.Context, cp *serving.Service, templ
 	}
 	want.TemplateID = templateID
 	return cp.CreateTemplateVersion(ctx, want)
+}
+
+// seedBilling seeds demo model prices and credits the demo tenant's wallet.
+// Idempotent: prices upsert; the top-up uses a fixed idempotency key per tenant
+// so a repeated seed never credits twice.
+func seedBilling(ctx context.Context, iamSvc *iam.Service, billingSvc *billing.Service) error {
+	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
+		return nil
+	}
+	tenantName := envOr("AI_FACTORY_DEMO_TENANT", "acme")
+	tenants, err := iamSvc.ListTenants(ctx)
+	if err != nil {
+		return err
+	}
+	var tenantID string
+	for _, t := range tenants {
+		if t.Name == tenantName {
+			tenantID = t.ID
+			break
+		}
+	}
+	if tenantID == "" {
+		return nil // no demo tenant yet; nothing to seed
+	}
+
+	for _, p := range []billing.Price{
+		{Model: "qwen3.5-9b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
+		{Model: "qwen-3b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
+	} {
+		if _, err := billingSvc.UpsertPrice(ctx, p); err != nil {
+			return fmt.Errorf("seed price %s: %w", p.Model, err)
+		}
+	}
+
+	credits := int64(10)
+	if v := os.Getenv("AI_FACTORY_DEMO_CREDITS"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			credits = n
+		}
+	}
+	if credits > 0 {
+		if _, err := billingSvc.TopUp(ctx, tenantID, credits*1_000_000, "seed-demo-"+tenantID); err != nil {
+			return fmt.Errorf("seed credits: %w", err)
+		}
+	}
+	slog.Info("seeded billing pricing + demo credits", "tenant", tenantID, "credits", credits)
+	return nil
 }

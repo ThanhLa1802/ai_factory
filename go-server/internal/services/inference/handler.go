@@ -42,6 +42,19 @@ type UsageRecorder interface {
 	RecordUsage(ctx context.Context, tenantID, model string, promptTokens, completionTokens int) error
 }
 
+// ErrInsufficientCredits is returned by the billing gate when the tenant's
+// available balance cannot cover the estimated cost of a request.
+var ErrInsufficientCredits = errors.New("insufficient credits")
+
+// BillingGate is the inference service's view of prepaid billing. Satisfied by
+// an adapter over *billing.Service, wired in the composition root (the adapter
+// translates the billing sentinel error). A nil gate disables billing.
+type BillingGate interface {
+	Reserve(ctx context.Context, tenantID, model string, estInput, maxOutput int) (string, error)
+	Settle(ctx context.Context, reservationID string, promptTokens, completionTokens int) error
+	Release(ctx context.Context, reservationID string) error
+}
+
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	sessionMgr *Manager
@@ -50,16 +63,17 @@ type Handler struct {
 	auth       middleware.Authenticator
 	resolver   DeploymentResolver
 	usage      UsageRecorder
+	billing    BillingGate
 	limiter    cache.Limiter
 	rpmLimit   int
 	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, billing BillingGate, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, auth: auth,
-		resolver: resolver, usage: usage, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
+		resolver: resolver, usage: usage, billing: billing, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
@@ -105,6 +119,54 @@ func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
 		return true
 	}
 	return ok
+}
+
+// reserveBilling places a prepaid hold for the request. It returns ok=false
+// (having written the error response) when billing rejects the request.
+func (h *Handler) reserveBilling(ctx context.Context, c *gin.Context, tenantID, model string, msgs []Message, params infra.SamplingParams) (string, bool) {
+	if h.billing == nil {
+		return "", true
+	}
+	estInput := 0
+	for _, m := range msgs {
+		estInput += estimateMessageTokens(m)
+	}
+	id, err := h.billing.Reserve(ctx, tenantID, model, estInput, int(params.MaxTokens))
+	if err != nil {
+		if errors.Is(err, ErrInsufficientCredits) {
+			response.WriteOpenAIError(c, http.StatusPaymentRequired, "INSUFFICIENT_CREDITS", "insufficient credits")
+			return "", false
+		}
+		slog.Error("billing reserve", "err", err)
+		response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", "billing error")
+		return "", false
+	}
+	return id, true
+}
+
+// settleBilling captures real usage against the hold on a detached context so a
+// cancelled request still settles. Best-effort: failures are logged.
+func (h *Handler) settleBilling(reservationID string, promptTokens, completionTokens int) {
+	if h.billing == nil || reservationID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.billing.Settle(ctx, reservationID, promptTokens, completionTokens); err != nil {
+		slog.Warn("billing settle", "err", err, "reservation", reservationID)
+	}
+}
+
+// releaseBilling frees an unused hold (no charge). Best-effort.
+func (h *Handler) releaseBilling(reservationID string) {
+	if h.billing == nil || reservationID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.billing.Release(ctx, reservationID); err != nil {
+		slog.Warn("billing release", "err", err, "reservation", reservationID)
+	}
 }
 
 func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
@@ -169,14 +231,19 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		cancel()
 	}()
 
+	reservationID, ok := h.reserveBilling(ctx, c, p.TenantID, req.Model, msgs, params)
+	if !ok {
+		return
+	}
+
 	if req.Stream {
-		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, p.TenantID)
+		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, p.TenantID, reservationID)
 	} else {
-		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, p.TenantID)
+		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, p.TenantID, reservationID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID, reservationID string) {
 	sse, err := NewSSEWriter(c.Writer)
 	if err != nil {
 		response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
@@ -185,6 +252,15 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 
 	completionID := "chatcmpl-" + uuid.New().String()[:8]
 	created := int32(0)
+
+	promptTotal, completionTotal := 0, 0
+	defer func() {
+		if promptTotal == 0 && completionTotal == 0 {
+			h.releaseBilling(reservationID)
+			return
+		}
+		h.settleBilling(reservationID, promptTotal, completionTotal)
+	}()
 
 	for _, userMsg := range msgs {
 		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
@@ -256,6 +332,8 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 			case LoopEventFinal:
 				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
+					promptTotal += int(event.Usage.PromptTokens)
+					completionTotal += int(event.Usage.CompletionTokens)
 					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
 					if h.usage != nil {
 						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
@@ -300,11 +378,20 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID, reservationID string) {
 	var (
 		content string
 		usage   *infra.Usage
 	)
+
+	promptTotal, completionTotal := 0, 0
+	defer func() {
+		if promptTotal == 0 && completionTotal == 0 {
+			h.releaseBilling(reservationID)
+			return
+		}
+		h.settleBilling(reservationID, promptTotal, completionTotal)
+	}()
 
 	for _, userMsg := range msgs {
 		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
@@ -317,6 +404,8 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 				usage = event.Usage
 				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
+					promptTotal += int(event.Usage.PromptTokens)
+					completionTotal += int(event.Usage.CompletionTokens)
 					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
 					if h.usage != nil {
 						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {

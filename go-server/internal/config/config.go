@@ -21,6 +21,7 @@ type Config struct {
 	RateLimitRPM         int
 	RateLimitConcurrency int
 	Services             ServicesConfig
+	Billing              BillingConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -35,8 +36,19 @@ type Config struct {
 // ServicesConfig selects which roles a process runs. Both default to true, so
 // cmd/server keeps running API + in-process deployment worker.
 type ServicesConfig struct {
-	API    bool
-	Worker bool
+	API     bool
+	Worker  bool
+	Billing bool
+}
+
+// BillingConfig configures prepaid billing. Mode is off|shadow|enforce;
+// money amounts are integer micro-credits (1 credit = 1,000,000 µcr).
+type BillingConfig struct {
+	Mode             string
+	Currency         string
+	InitialAllowance int64
+	ReservationTTL   time.Duration
+	ReaperInterval   time.Duration
 }
 
 // Load reads configuration from an optional YAML file plus AI_FACTORY_* env
@@ -52,6 +64,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("rate_limit_concurrency", 4)
 	v.SetDefault("services.api", true)
 	v.SetDefault("services.worker", true)
+	v.SetDefault("services.billing", true)
+	v.SetDefault("billing.mode", "shadow")
+	v.SetDefault("billing.currency", "USD")
+	v.SetDefault("billing.initial_allowance", 0)
+	v.SetDefault("billing.reservation_ttl", "15m")
+	v.SetDefault("billing.reaper_interval", "1m")
 	v.SetDefault("database_max_open_conns", 25)
 	v.SetDefault("database_max_idle_conns", 25)
 	v.SetDefault("database_conn_max_lifetime", "30m")
@@ -98,8 +116,16 @@ func Load(path string) (*Config, error) {
 		HTTPReadHeaderTimeout: v.GetDuration("http_read_header_timeout"),
 		HTTPIdleTimeout:       v.GetDuration("http_idle_timeout"),
 		Services: ServicesConfig{
-			API:    v.GetBool("services.api"),
-			Worker: v.GetBool("services.worker"),
+			API:     v.GetBool("services.api"),
+			Worker:  v.GetBool("services.worker"),
+			Billing: v.GetBool("services.billing"),
+		},
+		Billing: BillingConfig{
+			Mode:             v.GetString("billing.mode"),
+			Currency:         v.GetString("billing.currency"),
+			InitialAllowance: v.GetInt64("billing.initial_allowance"),
+			ReservationTTL:   v.GetDuration("billing.reservation_ttl"),
+			ReaperInterval:   v.GetDuration("billing.reaper_interval"),
 		},
 	}, nil
 }

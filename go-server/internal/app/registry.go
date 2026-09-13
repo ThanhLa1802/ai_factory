@@ -11,6 +11,7 @@ import (
 	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
+	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/iam"
 	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
@@ -138,6 +139,18 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("billing", func(cc *di.Container) (any, error) {
+		g := cc.MustResolve("db").(*database.DB).Gorm()
+		return billing.NewService(billing.NewRepositories(g), billing.Config{
+			Mode:             cfg.Billing.Mode,
+			Currency:         cfg.Billing.Currency,
+			InitialAllowance: cfg.Billing.InitialAllowance,
+			ReservationTTL:   cfg.Billing.ReservationTTL,
+			Log:              slog.Default(),
+		}, billing.MockProvider{}), nil
+	}); err != nil {
+		return err
+	}
 	if cfg.Services.API {
 		if err := c.RegisterSingleton("inference.manager", func(cc *di.Container) (any, error) {
 			g := cc.MustResolve("db").(*database.DB).Gorm()
@@ -165,6 +178,14 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			return usage.NewRoller(usage.NewRepositories(g).Aggregates, slog.Default()), nil
 		}); err != nil {
 			return err
+		}
+		// Billing reaper: releases holds whose lease lapsed (crash safety).
+		if cfg.Services.Billing {
+			if err := c.RegisterSingleton("billing.reaper", func(cc *di.Container) (any, error) {
+				return billing.NewReaper(cc.MustResolve("billing").(*billing.Service), slog.Default(), cfg.Billing.ReaperInterval), nil
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -197,6 +218,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			cc.MustResolve("iam.authenticator").(*iam.Authenticator),
 			deploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},
 			cc.MustResolve("usage").(*usage.Service),
+			billingGateArg(cc, cfg),
 			cc.MustResolve("limiter").(*cache.RedisLimiter),
 			cfg.RateLimitRPM, cfg.RateLimitConcurrency,
 		), nil
@@ -229,7 +251,26 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if cfg.Services.Billing {
+		if err := c.RegisterSingleton("http.billing", func(cc *di.Container) (any, error) {
+			return billing.NewHandler(
+				cc.MustResolve("billing").(*billing.Service),
+				cc.MustResolve("iam.authenticator").(*iam.Authenticator),
+			), nil
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// billingGateArg returns the inference billing gate, or nil when billing is
+// disabled or in off mode.
+func billingGateArg(c *di.Container, cfg *config.Config) inferencesvc.BillingGate {
+	if !cfg.Services.Billing || cfg.Billing.Mode == billing.ModeOff {
+		return nil
+	}
+	return billingGate{svc: c.MustResolve("billing").(*billing.Service)}
 }
 
 // resolveUIDir reproduces the current auto-detect (ui/ then ../ui).

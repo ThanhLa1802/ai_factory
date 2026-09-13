@@ -56,10 +56,33 @@ var (
 		},
 		[]string{"tenant", "model"},
 	)
+
+	// Billing: prepaid wallet holds, credits charged, and rejections.
+	BillingReservationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "billing_reservations_total",
+			Help: "Prepaid wallet holds (reservations) placed.",
+		},
+		[]string{"model"},
+	)
+	BillingChargeMicroTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "billing_charge_micro_total",
+			Help: "Micro-credits charged for inference.",
+		},
+	)
+	BillingInsufficientTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "billing_insufficient_total",
+			Help: "Requests rejected because the tenant ran out of credits.",
+		},
+		[]string{"tenant"},
+	)
 )
 
 func init() {
-	registry.MustRegister(HTTPRequestsTotal, RequestDurationSeconds, TokensTotal, InflightRequests, OverloadedTotal)
+	registry.MustRegister(HTTPRequestsTotal, RequestDurationSeconds, TokensTotal, InflightRequests, OverloadedTotal,
+		BillingReservationsTotal, BillingChargeMicroTotal, BillingInsufficientTotal)
 }
 
 // Registry exposes the app Prometheus registry.
@@ -99,3 +122,16 @@ func IncOverloaded(tenant, model string) {
 // middleware: Inc before ServeHTTP, Dec after it returns).
 func IncInflight() { InflightRequests.Inc() }
 func DecInflight() { InflightRequests.Dec() }
+
+// RecordBillingReservation counts a wallet hold placed for a model.
+func RecordBillingReservation(model string) { BillingReservationsTotal.WithLabelValues(model).Inc() }
+
+// RecordBillingChargeMicro adds charged micro-credits; zero is skipped.
+func RecordBillingChargeMicro(micro int64) {
+	if micro > 0 {
+		BillingChargeMicroTotal.Add(float64(micro))
+	}
+}
+
+// IncBillingInsufficient counts a request rejected for insufficient credits.
+func IncBillingInsufficient(tenant string) { BillingInsufficientTotal.WithLabelValues(tenant).Inc() }

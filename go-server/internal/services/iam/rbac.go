@@ -9,17 +9,19 @@ const (
 
 // Action constants used by RequirePermission middleware.
 const (
-	ActionTenantManage   = "tenant.manage"
-	ActionTenantRead     = "tenant.read"
-	ActionModelWrite     = "model.write"
-	ActionModelRead      = "model.read"
-	ActionTemplateWrite  = "template.write"
-	ActionTemplateRead   = "template.read"
-	ActionDeployWrite    = "deployment.write"
-	ActionDeployRead     = "deployment.read"
-	ActionKeyManage      = "key.manage"
-	ActionQuotaManage    = "quota.manage"
-	ActionUsageRead      = "usage.read"
+	ActionTenantManage  = "tenant.manage"
+	ActionTenantRead    = "tenant.read"
+	ActionModelWrite    = "model.write"
+	ActionModelRead     = "model.read"
+	ActionTemplateWrite = "template.write"
+	ActionTemplateRead  = "template.read"
+	ActionDeployWrite   = "deployment.write"
+	ActionDeployRead    = "deployment.read"
+	ActionKeyManage     = "key.manage"
+	ActionQuotaManage   = "quota.manage"
+	ActionUsageRead     = "usage.read"
+	ActionBillingRead   = "billing.read"
+	ActionBillingManage = "billing.manage"
 )
 
 var rolePermissions = map[string]map[string]bool{
@@ -29,20 +31,22 @@ var rolePermissions = map[string]map[string]bool{
 		ActionTemplateWrite: true, ActionTemplateRead: true,
 		ActionDeployWrite: true, ActionDeployRead: true,
 		ActionKeyManage: true, ActionQuotaManage: true, ActionUsageRead: true,
+		ActionBillingRead: true, ActionBillingManage: true,
 	},
 	RoleTenantAdmin: {
 		ActionTenantRead: true, ActionModelRead: true, ActionTemplateRead: true,
 		ActionDeployWrite: true, ActionDeployRead: true,
 		ActionKeyManage: true, ActionQuotaManage: true, ActionUsageRead: true,
+		ActionBillingRead: true, ActionBillingManage: true,
 	},
 	RoleTenantDeveloper: {
 		ActionModelRead: true, ActionTemplateRead: true,
 		ActionDeployWrite: true, ActionDeployRead: true,
-		ActionUsageRead: true,
+		ActionUsageRead: true, ActionBillingRead: true,
 	},
 	RoleTenantViewer: {
 		ActionModelRead: true, ActionTemplateRead: true,
-		ActionDeployRead: true, ActionUsageRead: true,
+		ActionDeployRead: true, ActionUsageRead: true, ActionBillingRead: true,
 	},
 }
 

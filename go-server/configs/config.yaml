@@ -19,3 +19,12 @@ http_idle_timeout: "120s"
 services:
   api: true
   worker: true
+  billing: true
+# Prepaid billing. mode: off | shadow | enforce. Money is integer micro-credits
+# (1 currency unit = 1,000,000 µcr); model_pricing stores µcr per 1M tokens.
+billing:
+  mode: "shadow"
+  currency: "USD"
+  initial_allowance: 0
+  reservation_ttl: "15m"
+  reaper_interval: "1m"

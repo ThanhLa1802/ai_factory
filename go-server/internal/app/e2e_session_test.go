@@ -26,7 +26,7 @@ func TestSessionEndpointsE2E(t *testing.T) {
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM users WHERE id = $1`, user.ID) })
 
 	mgr := inferencesvc.NewManagerWithStore(inferencesvc.NewGormStore(d.Gorm()))
-	h := inferencesvc.NewHandler(mgr, nil, t.TempDir(), ts.authn, nil, nil, nil, 60, 4)
+	h := inferencesvc.NewHandler(mgr, nil, t.TempDir(), ts.authn, nil, nil, nil, nil, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)
