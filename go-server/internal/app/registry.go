@@ -127,15 +127,9 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	if err := c.RegisterSingleton("usage.counter", func(cc *di.Container) (any, error) {
-		return cache.NewUsageCounter(cc.MustResolve("redis").(*redis.Client)), nil
-	}); err != nil {
-		return err
-	}
 	if err := c.RegisterSingleton("usage", func(cc *di.Container) (any, error) {
 		g := cc.MustResolve("db").(*database.DB).Gorm()
-		return usage.NewServiceWithCounter(usage.NewRepositories(g),
-			cc.MustResolve("usage.counter").(*cache.UsageCounter)), nil
+		return usage.NewService(usage.NewRepositories(g)), nil
 	}); err != nil {
 		return err
 	}
@@ -159,17 +153,11 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		}); err != nil {
 			return err
 		}
-		// Usage aggregate flush (Phase 6b): API nodes buffer usage in Redis and
-		// periodically flush it to the aggregate table, guarded by a lock so only
-		// one replica flushes per cycle.
-		if err := c.RegisterSingleton("usage.flusher", func(cc *di.Container) (any, error) {
+		// Usage rollup: API nodes fold new usage_events into usage_daily. The
+		// watermark row serialises concurrent rollers, so every replica is safe.
+		if err := c.RegisterSingleton("usage.roller", func(cc *di.Container) (any, error) {
 			g := cc.MustResolve("db").(*database.DB).Gorm()
-			return usage.NewFlusher(
-				cc.MustResolve("usage.counter").(*cache.UsageCounter),
-				usage.NewRepositories(g).Aggregates,
-				cache.NewLock(cc.MustResolve("redis").(*redis.Client)),
-				slog.Default(),
-			), nil
+			return usage.NewRoller(usage.NewRepositories(g).Aggregates, slog.Default()), nil
 		}); err != nil {
 			return err
 		}

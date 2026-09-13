@@ -30,6 +30,10 @@ func TestUsageEndpointE2E(t *testing.T) {
 	if err := ts.usage.RecordUsage(ctx, tenant.ID, "qwen-3b", 20, 10); err != nil {
 		t.Fatalf("record: %v", err)
 	}
+	// Reads are served from the usage_daily rollup; fold the events first.
+	if _, err := ts.usage.Rollup(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
 
 	mux := newTestEngine()
 	ts.mountIAM(mux)

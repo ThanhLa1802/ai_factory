@@ -44,6 +44,10 @@ func TestRecordAndQueryUsage(t *testing.T) {
 	if err := svc.RecordUsage(ctx, tenantID, "qwen3.5-9b", 100, 50); err != nil {
 		t.Fatalf("record #3: %v", err)
 	}
+	// Reads come from the usage_daily rollup, so fold the events first.
+	if _, err := svc.Rollup(ctx); err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
 
 	from := now.Add(-time.Hour)
 	to := now.Add(time.Hour)

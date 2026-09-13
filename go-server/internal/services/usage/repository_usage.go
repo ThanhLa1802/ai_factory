@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -67,89 +66,79 @@ func (r *usageRepo) Record(ctx context.Context, tenantID, model string, promptTo
 	return nil
 }
 
-func (r *usageRepo) Summary(ctx context.Context, tenantID string, from, to time.Time) (UsageSummary, error) {
-	var out UsageSummary
-	err := r.db.WithContext(ctx).Model(&usageRow{}).
-		Select(`COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
-		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
-		        COALESCE(SUM(prompt_tokens + completion_tokens),0)::int8 AS total_tokens,
-		        COUNT(*)::int8 AS requests`).
-		Where("tenant_id = ? AND created_at >= ? AND created_at < ?", tenantID, from, to).
-		Scan(&out).Error
-	if err != nil {
-		return out, fmt.Errorf("usage summary: %w", err)
-	}
-	return out, nil
-}
-
-func (r *usageRepo) Daily(ctx context.Context, tenantID string, from, to time.Time) ([]UsageDailyPoint, error) {
-	var rows []UsageDailyPoint
-	err := r.db.WithContext(ctx).Model(&usageRow{}).
-		Select(`(created_at AT TIME ZONE 'UTC')::date::text AS date,
-		        COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
-		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
-		        COUNT(*)::int8 AS requests`).
-		Where("tenant_id = ? AND created_at >= ? AND created_at < ?", tenantID, from, to).
-		Group("(created_at AT TIME ZONE 'UTC')::date").
-		Order("date").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("usage daily: %w", err)
-	}
-	if rows == nil {
-		rows = []UsageDailyPoint{}
-	}
-	return rows, nil
-}
-
-func (r *usageRepo) ByModel(ctx context.Context, tenantID string, from, to time.Time) ([]UsageByModel, error) {
-	var rows []UsageByModel
-	err := r.db.WithContext(ctx).Model(&usageRow{}).
-		Select(`model,
-		        COALESCE(SUM(prompt_tokens),0)::int8 AS prompt_tokens,
-		        COALESCE(SUM(completion_tokens),0)::int8 AS completion_tokens,
-		        COALESCE(SUM(prompt_tokens + completion_tokens),0)::int8 AS total_tokens,
-		        COUNT(*)::int8 AS requests`).
-		Where("tenant_id = ? AND created_at >= ? AND created_at < ?", tenantID, from, to).
-		Group("model").
-		Order("COALESCE(SUM(prompt_tokens + completion_tokens),0) DESC").
-		Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("usage by model: %w", err)
-	}
-	if rows == nil {
-		rows = []UsageByModel{}
-	}
-	return rows, nil
-}
-
-// --- usage aggregate (flushed from Redis counters) ---
+// --- usage aggregate (derived rollup of usage_events) ---
 
 type aggregateRepo struct{ db *gorm.DB }
 
-func (r *aggregateRepo) Upsert(ctx context.Context, b cache.UsageBucket) error {
-	day, err := time.Parse("2006-01-02", b.Day)
+// Rollup folds usage_events newer than the stored watermark into usage_daily,
+// then advances the watermark, in a single transaction. The state row is locked
+// with SELECT ... FOR UPDATE so concurrent rollers serialise, and the watermark
+// only moves after every upsert succeeds — a crash re-processes the same batch
+// without double counting.
+func (r *aggregateRepo) Rollup(ctx context.Context) (int, error) {
+	rolled := 0
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var lastID int64
+		if err := tx.Raw(`SELECT last_event_id FROM usage_rollup_state WHERE id = 1 FOR UPDATE`).Scan(&lastID).Error; err != nil {
+			return fmt.Errorf("lock usage rollup state: %w", err)
+		}
+		var maxID int64
+		if err := tx.Raw(`SELECT COALESCE(MAX(id), 0) FROM usage_events`).Scan(&maxID).Error; err != nil {
+			return fmt.Errorf("max usage event id: %w", err)
+		}
+		if maxID <= lastID {
+			return nil
+		}
+
+		var rows []struct {
+			TenantID         string
+			Model            string
+			Day              time.Time
+			PromptTokens     int64
+			CompletionTokens int64
+			Requests         int64
+		}
+		if err := tx.Raw(`
+			SELECT tenant_id, model,
+			       (created_at AT TIME ZONE 'UTC')::date AS day,
+			       COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens,
+			       COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens,
+			       COUNT(*)::bigint AS requests
+			FROM usage_events
+			WHERE id > ? AND id <= ?
+			GROUP BY tenant_id, model, (created_at AT TIME ZONE 'UTC')::date`,
+			lastID, maxID).Scan(&rows).Error; err != nil {
+			return fmt.Errorf("aggregate usage events: %w", err)
+		}
+
+		for _, a := range rows {
+			row := usageDailyRow{
+				TenantID: a.TenantID, Model: a.Model, Day: a.Day,
+				PromptTokens: a.PromptTokens, CompletionTokens: a.CompletionTokens, Requests: a.Requests,
+			}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "tenant_id"}, {Name: "model"}, {Name: "day"}},
+				DoUpdates: clause.Assignments(map[string]any{
+					"prompt_tokens":     gorm.Expr("usage_daily.prompt_tokens + EXCLUDED.prompt_tokens"),
+					"completion_tokens": gorm.Expr("usage_daily.completion_tokens + EXCLUDED.completion_tokens"),
+					"requests":          gorm.Expr("usage_daily.requests + EXCLUDED.requests"),
+					"updated_at":        time.Now().UTC(),
+				}),
+			}).Create(&row).Error; err != nil {
+				return fmt.Errorf("upsert usage daily: %w", err)
+			}
+		}
+
+		if err := tx.Exec(`UPDATE usage_rollup_state SET last_event_id = ?, updated_at = now() WHERE id = 1`, maxID).Error; err != nil {
+			return fmt.Errorf("advance usage rollup state: %w", err)
+		}
+		rolled = len(rows)
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("parse usage day %q: %w", b.Day, err)
+		return 0, err
 	}
-	row := usageDailyRow{
-		TenantID: b.TenantID, Model: b.Model, Day: day,
-		PromptTokens: b.PromptTokens, CompletionTokens: b.CompletionTokens, Requests: b.Requests,
-	}
-	// Accumulate: a later flush for the same (tenant, model, day) adds to the
-	// existing row instead of overwriting it.
-	if err := r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "tenant_id"}, {Name: "model"}, {Name: "day"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"prompt_tokens":     gorm.Expr("usage_daily.prompt_tokens + EXCLUDED.prompt_tokens"),
-			"completion_tokens": gorm.Expr("usage_daily.completion_tokens + EXCLUDED.completion_tokens"),
-			"requests":          gorm.Expr("usage_daily.requests + EXCLUDED.requests"),
-			"updated_at":        time.Now().UTC(),
-		}),
-	}).Create(&row).Error; err != nil {
-		return fmt.Errorf("upsert usage daily: %w", err)
-	}
-	return nil
+	return rolled, nil
 }
 
 func (r *aggregateRepo) Summary(ctx context.Context, tenantID string, from, to time.Time) (UsageSummary, error) {

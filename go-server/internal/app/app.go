@@ -38,7 +38,7 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 		names = append(names,
 			"iam", "iam.auth", "iam.authenticator", "usage",
 			"inference.manager", "inference.loop",
-			"outbox.store", "outbox.publisher", "usage.flusher",
+			"outbox.store", "outbox.publisher", "usage.roller",
 			"http.handler", "http.iam", "http.serving", "http.usage",
 		)
 	}
@@ -77,7 +77,7 @@ func (a *App) Run() error {
 			return err
 		}
 		a.container.MustResolve("outbox.publisher").(*outbox.Publisher).Start(ctx)
-		a.container.MustResolve("usage.flusher").(*usage.Flusher).Start(ctx)
+		a.container.MustResolve("usage.roller").(*usage.Roller).Start(ctx)
 	}
 	if a.cfg.Services.Worker {
 		if err := a.startWorker(ctx); err != nil {
