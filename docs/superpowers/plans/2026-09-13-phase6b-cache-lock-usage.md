@@ -12,7 +12,7 @@
 
 ## Decisions (locked before Phase 6b)
 
-- **D-P6b-1 — Lock is SET NX + owner token.** `Acquire` sets a random token with `SET NX PX ttl`; `Release` deletes only if the token still matches (Lua compare-and-delete), so a holder never releases another holder's lock.
+- **D-P6b-1 — Lock is SET NX + owner token.** `Acquire` sets a random token with `SET NX PX ttl`; `Release` deletes only if the token still matches (WATCH compare-and-delete), so a holder never releases another holder's lock.
 - **D-P6b-2 — Cache-aside at API-key authentication.** `AuthService.AuthenticateAPIKey` caches the resolved `APIKey` (JSON) under `apikey:<sha256>` for 5 minutes. Inactive/expired keys are never cached. `DeleteAPIKey` returns the deleted hash so the handler invalidates `apikey:<hash>`.
 - **D-P6b-3 — Cache is best-effort.** A Redis error on get/set/delete is logged/ignored and falls back to the DB; the cache never fails authentication.
 - **D-P6b-4 — Usage write path buffers.** When a counter is configured, `RecordUsage` increments Redis counters keyed by `usage:<tenant>:<model>:<day>` (TTL 48h); the DB `usage_events` row is no longer written on that path. Without a counter (tests, seeder) the legacy direct insert is kept.
@@ -33,41 +33,41 @@
 
 **Files:** `internal/infrastructure/cache/lock.go`, `lock_test.go`.
 
-- [ ] `Lock.Acquire(ctx, key, ttl) (token string, ok bool, err error)` via `SET NX PX` with a random token.
-- [ ] `Lock.Release(ctx, key, token)` via a Lua compare-and-delete; releasing a lock you don't own is a no-op.
-- [ ] miniredis tests: mutual exclusion, wrong-token release is a no-op, TTL expiry lets a new holder in.
+- [x] `Lock.Acquire(ctx, key, ttl) (token string, ok bool, err error)` via `SET NX PX` with a random token.
+- [x] `Lock.Release(ctx, key, token)` via a Lua compare-and-delete; releasing a lock you don't own is a no-op.
+- [x] miniredis tests: mutual exclusion, wrong-token release is a no-op, TTL expiry lets a new holder in.
 
 ### Task 2: Cache-aside API keys
 
 **Files:** `internal/infrastructure/cache/kv.go` (+test); `internal/services/iam/{auth,service,users,repositories,repository_iam,handlers}.go`.
 
-- [ ] `cache.KV`: `Get`/`Set`/`Delete` over `[]byte` with TTL.
-- [ ] `iam.ByteCache` port + `NewAuthServiceWithCache`; `AuthenticateAPIKey` checks cache → DB → populate; skips caching inactive/expired.
-- [ ] `DeleteAPIKey` returns the deleted `key_hash` (`DELETE ... RETURNING`); handler calls `authSvc.InvalidateAPIKey(ctx, hash)`.
-- [ ] Tests: cache hit avoids the store; invalidation forces a DB read; Redis error falls back to the store.
+- [x] `cache.KV`: `Get`/`Set`/`Delete` over `[]byte` with TTL.
+- [x] `iam.ByteCache` port + `NewAuthServiceWithCache`; `AuthenticateAPIKey` checks cache → DB → populate; skips caching inactive/expired.
+- [x] `DeleteAPIKey` returns the deleted `key_hash` (`DELETE ... RETURNING`); handler calls `authSvc.InvalidateAPIKey(ctx, hash)`.
+- [x] Tests: cache hit avoids the store; invalidation forces a DB read; Redis error falls back to the store.
 
 ### Task 3: Usage aggregate
 
 **Files:** `internal/migrations/0009_usage_daily.go` (+`migrations.go`); `internal/infrastructure/cache/usage_counter.go` (+test); `internal/services/usage/{models,repositories,repository_usage,service,usage,flusher}.go` (+tests).
 
-- [ ] Migration `usage_daily` + unique `(tenant_id, model, day)`.
-- [ ] `cache.UsageCounter`: `Incr` (HINCRBY + EXPIRE) and `Drain` (HGETALL + DEL, per key) returning buckets; `Snapshot` not required.
-- [ ] `usage.Counter`/`usage.Locker` ports; `AggregateRepository` (`Upsert`, `Summary`, `Daily`, `ByModel` over `usage_daily`).
-- [ ] `Service`: optional counter switches the write path (buffered) and read path (`usage_daily`).
-- [ ] `usage.Flusher`: `Start`/`FlushOnce`/`Close`; `FlushOnce` takes `usage:flush`, drains, upserts; no-op on lock miss.
-- [ ] Tests: counter increments/drains; flusher upserts and is idempotent under a held lock; service buffer→flush→aggregate read end to end.
+- [x] Migration `usage_daily` + unique `(tenant_id, model, day)`.
+- [x] `cache.UsageCounter`: `Incr` (HINCRBY + EXPIRE) and `Drain` (HGETALL + DEL, per key) returning buckets; `Snapshot` not required.
+- [x] `usage.Counter`/`usage.Locker` ports; `AggregateRepository` (`Upsert`, `Summary`, `Daily`, `ByModel` over `usage_daily`).
+- [x] `Service`: optional counter switches the write path (buffered) and read path (`usage_daily`).
+- [x] `usage.Flusher`: `Start`/`FlushOnce`/`Close`; `FlushOnce` takes `usage:flush`, drains, upserts; no-op on lock miss.
+- [x] Tests: counter increments/drains; flusher upserts and is idempotent under a held lock; service buffer→flush→aggregate read end to end.
 
 ### Task 4: Wiring + docs
 
 **Files:** `internal/app/registry.go`, `app.go`; `docs/TRACKING.md`, `CLAUDE.md`.
 
-- [ ] Register `cache.kv`, `cache.lock`, `usage.counter`; build `iam.auth` with the KV cache; build `usage` with the counter; register + start `usage.flusher` for API nodes only.
-- [ ] `go build ./...`, `go vet ./...`, `go test ./...` clean.
-- [ ] Record Phase 6b; note that Phase 6 is now complete.
+- [x] Register `cache.kv`, `cache.lock`, `usage.counter`; build `iam.auth` with the KV cache; build `usage` with the counter; register + start `usage.flusher` for API nodes only.
+- [x] `go build ./...`, `go vet ./...`, `go test ./...` clean.
+- [x] Record Phase 6b; note that Phase 6 is now complete.
 
 ## Self-Review Checkpoints
 
-- [ ] Lock: two holders cannot hold the same key; wrong-token release does not free it.
-- [ ] API-key cache hit avoids Postgres; delete invalidates immediately.
-- [ ] Usage counters flush into `usage_daily`; a second flusher skips while the lock is held.
-- [ ] `cmd/worker` registers no flusher/HTTP; no route change.
+- [x] Lock: two holders cannot hold the same key; wrong-token release does not free it.
+- [x] API-key cache hit avoids Postgres; delete invalidates immediately.
+- [x] Usage counters flush into `usage_daily`; a second flusher skips while the lock is held.
+- [x] `cmd/worker` registers no flusher/HTTP; no route change.
