@@ -2,6 +2,7 @@ package iam
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -74,13 +75,17 @@ func (h *Handler) handleListAPIKeys(c *gin.Context) {
 func (h *Handler) handleDeleteAPIKey(c *gin.Context) {
 	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
-	if err := h.svc.DeleteAPIKey(c.Request.Context(), id, p.TenantID); err != nil {
+	hash, err := h.svc.DeleteAPIKey(c.Request.Context(), id, p.TenantID)
+	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "api key not found")
 			return
 		}
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
+	}
+	if err := h.authSvc.InvalidateAPIKey(c.Request.Context(), hash); err != nil {
+		slog.Warn("invalidate api key cache", "err", err) // best-effort
 	}
 	c.Status(http.StatusNoContent)
 }

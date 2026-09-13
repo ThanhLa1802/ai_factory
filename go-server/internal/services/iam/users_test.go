@@ -126,12 +126,12 @@ func TestListDeleteAPIKeyIntegration(t *testing.T) {
 		t.Fatalf("CreateTenant other: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
-	if err := svc.DeleteAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
+	if _, err := svc.DeleteAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
 		t.Errorf("delete with wrong tenant = %v, want ErrNotFound", err)
 	}
 
 	// xoá thật (tenant đúng)
-	if err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != nil {
+	if _, err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != nil {
 		t.Fatalf("DeleteAPIKey: %v", err)
 	}
 	keys, _ = svc.ListAPIKeys(ctx, tenant.ID)
@@ -139,7 +139,7 @@ func TestListDeleteAPIKeyIntegration(t *testing.T) {
 		t.Errorf("after delete list = %+v, want empty", keys)
 	}
 	// xoá lần 2 → ErrNotFound
-	if err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != ErrNotFound {
+	if _, err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != ErrNotFound {
 		t.Errorf("delete again = %v, want ErrNotFound", err)
 	}
 }

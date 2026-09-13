@@ -55,7 +55,8 @@ func (s *Service) ListAPIKeys(ctx context.Context, tenantID string) ([]APIKey, e
 	return s.repos.APIKeys.ListByTenant(ctx, tenantID)
 }
 
-// DeleteAPIKey xoá key theo id + tenant (scoping an toàn). ErrNotFound nếu không khớp.
-func (s *Service) DeleteAPIKey(ctx context.Context, id, tenantID string) error {
+// DeleteAPIKey xoá key theo id + tenant (scoping an toàn). Trả về key_hash đã
+// xoá để caller invalidate cache-aside. ErrNotFound nếu không khớp.
+func (s *Service) DeleteAPIKey(ctx context.Context, id, tenantID string) (string, error) {
 	return s.repos.APIKeys.Delete(ctx, id, tenantID)
 }

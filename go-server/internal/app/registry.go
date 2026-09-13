@@ -58,6 +58,11 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("cache.kv", func(cc *di.Container) (any, error) {
+		return cache.NewKV(cc.MustResolve("redis").(*redis.Client)), nil
+	}); err != nil {
+		return err
+	}
 	if err := c.RegisterSingleton("bus", func(*di.Container) (any, error) {
 		if kafkaBus, err := message.NewKafkaEventBus(cfg.KafkaAddr); err == nil {
 			return &busBundle{Producer: kafkaBus, Consumer: kafkaBus, Kafka: true}, nil
@@ -106,8 +111,9 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		return err
 	}
 	if err := c.RegisterSingleton("iam.auth", func(cc *di.Container) (any, error) {
-		return iam.NewAuthService(cc.MustResolve("iam").(*iam.Service),
-			[]byte(cfg.JWTSecret), 8*time.Hour), nil
+		return iam.NewAuthServiceWithCache(cc.MustResolve("iam").(*iam.Service),
+			[]byte(cfg.JWTSecret), 8*time.Hour,
+			cc.MustResolve("cache.kv").(*cache.KV)), nil
 	}); err != nil {
 		return err
 	}
