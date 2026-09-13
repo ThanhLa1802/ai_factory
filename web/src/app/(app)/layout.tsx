@@ -8,15 +8,17 @@ import { ChatSessionsProvider } from "@/context/ChatSessionsContext";
 
 // AuthGate: all /chat, /platform, /infra, /admin routes require a signed-in JWT.
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth();
+  const { token, hydrated } = useAuth();
   const router = useRouter();
   const [navOpen, setNavOpen] = useState(false);
 
   useEffect(() => {
-    if (!token) router.replace("/login");
-  }, [token, router]);
+    // Wait for hydration: before it, token is always null (no localStorage on the
+    // server) and redirecting here would bounce every refresh to /login.
+    if (hydrated && !token) router.replace("/login");
+  }, [hydrated, token, router]);
 
-  if (!token) {
+  if (!hydrated || !token) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[var(--bg)] text-[var(--text2)]">
         Loading…

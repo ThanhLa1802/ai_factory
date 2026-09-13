@@ -142,6 +142,12 @@ function UsageTab() {
 export default function PlatformPage() {
   const [tab, setTab] = useState<Tab>("usage");
 
+  // Deep link: /platform?tab=keys (and the /keys redirect) opens the API Keys tab.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot deep link
+    if (new URLSearchParams(window.location.search).get("tab") === "keys") setTab("keys");
+  }, []);
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
       <h1 className="mb-1 text-lg font-semibold">Platform</h1>

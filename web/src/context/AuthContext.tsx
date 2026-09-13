@@ -9,6 +9,10 @@ import type { Claims } from "@/lib/types";
 interface AuthState {
   token: string | null;
   claims: Claims | null;
+  // hydrated is false during SSR/first render and true once the client has read
+  // localStorage. Guards must wait for it, or they redirect on the server's null
+  // token before the real value is available (this broke F5 refresh).
+  hydrated: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -32,12 +36,27 @@ function emit() {
   for (const l of listeners) l();
 }
 
+// Hydration signal as an external store: false on the server (localStorage is
+// unavailable), true on the client. Hoisted so the function identities are
+// stable across renders.
+const subscribeHydration = () => () => {};
+const clientHydrated = () => true;
+const serverHydrated = () => false;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const token = useSyncExternalStore(
     subscribe,
     () => getToken(), // client snapshot
     () => null, // server snapshot (no localStorage during SSR)
   );
+
+  // hydrated is false during SSR/first render and true on the client. The
+  // localStorage snapshot can't be read on the server, so an auth guard that
+  // redirects on a null token must wait for hydration — otherwise every refresh
+  // bounces to /login before the client token is read. Model it as an external
+  // store (true on client, false on server) so it flips after hydration without
+  // setting state in an effect.
+  const hydrated = useSyncExternalStore(subscribeHydration, clientHydrated, serverHydrated);
 
   const claims = useMemo(() => (token ? decodeToken(token) : null), [token]);
 
@@ -56,8 +75,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ token, claims, login, logout }),
-    [token, claims, login, logout],
+    () => ({ token, claims, hydrated, login, logout }),
+    [token, claims, hydrated, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

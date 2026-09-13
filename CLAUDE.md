@@ -146,7 +146,7 @@ ai_factory/
 │       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
 ├── (models → G:\models)         # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
-├── web/                         # NextJS UI (App Router): /login /chat /keys /platform /admin
+├── web/                         # NextJS UI (App Router): /login /chat /platform (Usage + API Keys) /infra /admin
 ├── docs/                        # ARCHITECTURE.md, BENCHMARK.md, superpowers/specs/
 ├── scripts/                     # setup.sh, setup.ps1
 ├── CONTEXT.md                   # Domain glossary
