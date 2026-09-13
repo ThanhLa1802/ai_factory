@@ -17,6 +17,7 @@ type TenantRepository interface {
 type UserRepository interface {
 	Create(ctx context.Context, u *User, passwordHash string) error
 	GetByUsername(ctx context.Context, username string) (*User, string, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]User, error)
 }
 
 type APIKeyRepository interface {

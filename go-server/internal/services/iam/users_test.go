@@ -83,6 +83,55 @@ func TestTenantUserAPIKeyIntegration(t *testing.T) {
 	})
 }
 
+// TestCreateListUsersIntegration runs against a live Postgres (set
+// AI_FACTORY_DATABASE_URL): create with hashed password → login verifies →
+// list members of the tenant.
+func TestCreateListUsersIntegration(t *testing.T) {
+	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
+	}
+	ctx := context.Background()
+	d, err := database.Open(dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if err := database.Migrate(d.Gorm()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	svc := NewServiceFromGorm(d.Gorm())
+
+	tenant, err := svc.CreateTenant(ctx, "ul-"+uuid.NewString()[:8])
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Gorm().Exec(`DELETE FROM tenants WHERE id = $1`, tenant.ID) })
+
+	username := "ul-user-" + uuid.NewString()[:8]
+	u, err := svc.CreateUserWithPassword(ctx, username, "ul@example.com", "secret123", RoleTenantAdmin, tenant.ID)
+	if err != nil {
+		t.Fatalf("CreateUserWithPassword: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Gorm().Exec(`DELETE FROM users WHERE id = $1`, u.ID) })
+
+	_, hash, err := svc.GetUserByUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if !VerifyPassword(hash, "secret123") {
+		t.Errorf("stored hash does not verify the password")
+	}
+
+	users, err := svc.ListUsers(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != username || users[0].Role != RoleTenantAdmin {
+		t.Fatalf("ListUsers = %+v, want 1 %s/TENANT_ADMIN", users, username)
+	}
+}
+
 // TestListDeleteAPIKeyIntegration chạy với Postgres thật (set AI_FACTORY_DATABASE_URL).
 func TestListDeleteAPIKeyIntegration(t *testing.T) {
 	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")

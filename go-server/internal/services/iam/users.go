@@ -36,6 +36,20 @@ func (s *Service) GetUserByUsername(ctx context.Context, username string) (*User
 	return s.repos.Users.GetByUsername(ctx, username)
 }
 
+// CreateUserWithPassword hashes the password then creates the user + membership.
+func (s *Service) CreateUserWithPassword(ctx context.Context, username, email, password, role, tenantID string) (*User, error) {
+	hash, err := HashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	return s.CreateUser(ctx, username, email, hash, role, tenantID)
+}
+
+// ListUsers returns the members of a tenant.
+func (s *Service) ListUsers(ctx context.Context, tenantID string) ([]User, error) {
+	return s.repos.Users.ListByTenant(ctx, tenantID)
+}
+
 // --- api keys ---
 
 func (s *Service) CreateAPIKey(ctx context.Context, tenantID, name, keyHash string, expiresAt *time.Time) (*APIKey, error) {

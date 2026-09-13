@@ -116,3 +116,42 @@ func (h *Handler) handleListTenants(c *gin.Context) {
 	}
 	response.WriteJSON(c, http.StatusOK, tenants)
 }
+
+// --- users ---
+
+func (h *Handler) handleCreateUser(c *gin.Context) {
+	var req struct {
+		Username string `json:"username"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+		TenantID string `json:"tenant_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Username == "" || req.Password == "" || req.TenantID == "" {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "username, password and tenant_id required")
+		return
+	}
+	if req.Role == "" {
+		req.Role = RoleTenantViewer
+	}
+	u, err := h.svc.CreateUserWithPassword(c.Request.Context(), req.Username, req.Email, req.Password, req.Role, req.TenantID)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusCreated, u)
+}
+
+func (h *Handler) handleListUsers(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	if tenantID == "" {
+		response.WriteAPIError(c, http.StatusBadRequest, "INVALID_REQUEST", "tenant_id required")
+		return
+	}
+	us, err := h.svc.ListUsers(c.Request.Context(), tenantID)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	response.WriteJSON(c, http.StatusOK, us)
+}

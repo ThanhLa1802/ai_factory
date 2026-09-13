@@ -18,4 +18,8 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 	tenants := e.Group("/api/v1/tenants")
 	tenants.POST("", middleware.RequirePermission(h.auth, middleware.ActionTenantManage), h.handleCreateTenant)
 	tenants.GET("", middleware.RequirePermission(h.auth, middleware.ActionTenantRead), h.handleListTenants)
+
+	users := e.Group("/api/v1/users", middleware.RequirePermission(h.auth, middleware.ActionTenantManage))
+	users.POST("", h.handleCreateUser)
+	users.GET("", h.handleListUsers)
 }

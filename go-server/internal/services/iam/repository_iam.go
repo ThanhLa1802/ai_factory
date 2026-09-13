@@ -84,6 +84,23 @@ func (r *userRepo) GetByUsername(ctx context.Context, username string) (*User, s
 	return u, acc.PasswordHash, nil
 }
 
+// ListByTenant returns the members of a tenant (users joined with their
+// membership), oldest first.
+func (r *userRepo) ListByTenant(ctx context.Context, tenantID string) ([]User, error) {
+	var out []User
+	err := r.db.WithContext(ctx).
+		Table("users AS u").
+		Select("u.id, u.username, u.email, u.status, m.role, m.tenant_id").
+		Joins("JOIN tenant_memberships m ON m.user_id = u.id").
+		Where("m.tenant_id = ?", tenantID).
+		Order("u.created_at").
+		Scan(&out).Error
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return out, nil
+}
+
 // --- api keys ---
 
 type apiKeyRepo struct{ db *gorm.DB }
