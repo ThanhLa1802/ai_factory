@@ -64,6 +64,19 @@ func (r *modelRepo) CreateVersion(ctx context.Context, mv *ModelVersion) error {
 	return nil
 }
 
+func (r *modelRepo) GetVersion(ctx context.Context, modelID, version string) (*ModelVersion, error) {
+	var row modelVersionRow
+	err := r.db.WithContext(ctx).Where("model_id = ? AND version = ?", modelID, version).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("get model version %s/%s: %w", modelID, version, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get model version %s/%s: %w", modelID, version, err)
+	}
+	mv := toModelVersion(row)
+	return &mv, nil
+}
+
 // --- templates + versions ---
 
 type templateRepo struct{ db *gorm.DB }
@@ -115,6 +128,19 @@ func (r *templateRepo) CreateVersion(ctx context.Context, tv *TemplateVersion) e
 	}
 	tv.CreatedAt = row.CreatedAt
 	return nil
+}
+
+func (r *templateRepo) GetVersion(ctx context.Context, templateID, version string) (*TemplateVersion, error) {
+	var row templateVersionRow
+	err := r.db.WithContext(ctx).Where("template_id = ? AND version = ?", templateID, version).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("get template version %s/%s: %w", templateID, version, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get template version %s/%s: %w", templateID, version, err)
+	}
+	tv := toTemplateVersion(row)
+	return &tv, nil
 }
 
 // --- deployments ---

@@ -16,6 +16,7 @@ type ModelRepository interface {
 	ListModels(ctx context.Context) ([]Model, error)
 	GetModel(ctx context.Context, id string) (*Model, error)
 	CreateVersion(ctx context.Context, mv *ModelVersion) error
+	GetVersion(ctx context.Context, modelID, version string) (*ModelVersion, error)
 }
 
 type TemplateRepository interface {
@@ -23,6 +24,7 @@ type TemplateRepository interface {
 	List(ctx context.Context) ([]ServingTemplate, error)
 	Get(ctx context.Context, id string) (*ServingTemplate, error)
 	CreateVersion(ctx context.Context, tv *TemplateVersion) error
+	GetVersion(ctx context.Context, templateID, version string) (*TemplateVersion, error)
 }
 
 type DeploymentRepository interface {

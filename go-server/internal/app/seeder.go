@@ -96,19 +96,19 @@ func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) err
 		return fmt.Errorf("resolve for seed: %w", err)
 	}
 
-	model, err := cp.CreateModel(ctx, serving.Model{Name: "qwen3.5-9b", Task: "text-generation", Framework: "llama.cpp"})
+	model, err := findOrCreateModel(ctx, cp, serving.Model{Name: "qwen3.5-9b", Task: "text-generation", Framework: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed model: %w", err)
 	}
-	mv, err := cp.CreateModelVersion(ctx, serving.ModelVersion{ModelID: model.ID, Version: "v1", ArtifactURI: "local://qwen3.5-9b"})
+	mv, err := findOrCreateModelVersion(ctx, cp, model.ID, serving.ModelVersion{Version: "v1", ArtifactURI: "local://qwen3.5-9b"})
 	if err != nil {
 		return fmt.Errorf("seed model version: %w", err)
 	}
-	tpl, err := cp.CreateTemplate(ctx, serving.ServingTemplate{Name: "llama-openai", Runtime: "llama.cpp"})
+	tpl, err := findOrCreateTemplate(ctx, cp, serving.ServingTemplate{Name: "llama-openai", Runtime: "llama.cpp"})
 	if err != nil {
 		return fmt.Errorf("seed template: %w", err)
 	}
-	tv, err := cp.CreateTemplateVersion(ctx, serving.TemplateVersion{TemplateID: tpl.ID, Version: "v1", Image: "qwen3.5-9b:latest"})
+	tv, err := findOrCreateTemplateVersion(ctx, cp, tpl.ID, serving.TemplateVersion{Version: "v1", Image: "qwen3.5-9b:latest"})
 	if err != nil {
 		return fmt.Errorf("seed template version: %w", err)
 	}
@@ -126,4 +126,55 @@ func seedDemo(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) err
 	}
 	slog.Info("seeded demo model + READY deployment", "model", "qwen3.5-9b", "deployment", d.ID, "tenant", tenantID)
 	return nil
+}
+
+// The find-or-create helpers keep seedDemo idempotent across tenants: models and
+// templates are global (unique by name/framework), so a second seed against a
+// database that already has them must reuse the existing rows instead of
+// failing on the unique constraint.
+
+func findOrCreateModel(ctx context.Context, cp *serving.Service, want serving.Model) (*serving.Model, error) {
+	models, err := cp.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range models {
+		if models[i].Name == want.Name && models[i].Framework == want.Framework {
+			return &models[i], nil
+		}
+	}
+	return cp.CreateModel(ctx, want)
+}
+
+func findOrCreateModelVersion(ctx context.Context, cp *serving.Service, modelID string, want serving.ModelVersion) (*serving.ModelVersion, error) {
+	if mv, err := cp.GetModelVersion(ctx, modelID, want.Version); err == nil {
+		return mv, nil
+	} else if !errors.Is(err, serving.ErrNotFound) {
+		return nil, err
+	}
+	want.ModelID = modelID
+	return cp.CreateModelVersion(ctx, want)
+}
+
+func findOrCreateTemplate(ctx context.Context, cp *serving.Service, want serving.ServingTemplate) (*serving.ServingTemplate, error) {
+	templates, err := cp.ListTemplates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range templates {
+		if templates[i].Name == want.Name {
+			return &templates[i], nil
+		}
+	}
+	return cp.CreateTemplate(ctx, want)
+}
+
+func findOrCreateTemplateVersion(ctx context.Context, cp *serving.Service, templateID string, want serving.TemplateVersion) (*serving.TemplateVersion, error) {
+	if tv, err := cp.GetTemplateVersion(ctx, templateID, want.Version); err == nil {
+		return tv, nil
+	} else if !errors.Is(err, serving.ErrNotFound) {
+		return nil, err
+	}
+	want.TemplateID = templateID
+	return cp.CreateTemplateVersion(ctx, want)
 }

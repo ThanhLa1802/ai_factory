@@ -37,6 +37,11 @@ func (s *Service) CreateModelVersion(ctx context.Context, mv ModelVersion) (*Mod
 	return &mv, nil
 }
 
+// GetModelVersion returns the version of a model, or ErrNotFound.
+func (s *Service) GetModelVersion(ctx context.Context, modelID, version string) (*ModelVersion, error) {
+	return s.repos.Models.GetVersion(ctx, modelID, version)
+}
+
 // --- serving templates ---
 
 func (s *Service) CreateTemplate(ctx context.Context, t ServingTemplate) (*ServingTemplate, error) {
@@ -71,4 +76,9 @@ func (s *Service) CreateTemplateVersion(ctx context.Context, tv TemplateVersion)
 		return nil, err
 	}
 	return &tv, nil
+}
+
+// GetTemplateVersion returns the version of a template, or ErrNotFound.
+func (s *Service) GetTemplateVersion(ctx context.Context, templateID, version string) (*TemplateVersion, error) {
+	return s.repos.Templates.GetVersion(ctx, templateID, version)
 }
