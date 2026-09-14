@@ -7,7 +7,8 @@ giữ để build chat template (apply_chat_template) — quyết định D1 tro
 Handles: tokenization, forward pass, sampling, KV cache (via HF).
 """
 
-import time
+import asyncio
+import queue as stdlib_queue
 from typing import AsyncIterator, Optional
 
 import torch
@@ -15,12 +16,11 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TextStreamer,
-    TextIteratorStreamer,
 )
 from threading import Thread
 
-from .model.tokenizer import BPETokenizer
+from .model.tokenizer import BPETokenizer, StreamingDecoder
+from .sampling import SamplingParams, generate_tokens
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -170,8 +170,8 @@ class InferenceEngine:
                      | {"type": "tool_use", "id": "...", "name": "...", "arguments": "..."}
                      | {"type": "final", "stop_reason": "...", "usage": {...}}
 
-        In the future (Tuần 5-6), you'll replace the sampling logic here.
-        In the future (Tuần 7-8), you'll manage KV cache manually instead of using model.generate().
+        Sampling là vòng lặp tự viết trong `worker/sampling.py` (Tuần 5-6) — vẫn
+        dùng forward pass + KV cache của HF. Tuần 7-8 sẽ tự quản lý KV cache.
         """
         if not self._loaded:
             raise RuntimeError("Model not loaded. Call load() first.")
@@ -182,112 +182,121 @@ class InferenceEngine:
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
 
         prompt_tokens = inputs["input_ids"].shape[1]
-        max_new = sampling_params.get("max_tokens", 1024)
-        temperature = sampling_params.get("temperature", 0.7)
-        top_p = sampling_params.get("top_p", 0.9)
-        top_k = sampling_params.get("top_k", 50)
+        params = SamplingParams.from_dict(sampling_params)
         stop_sequences = sampling_params.get("stop_sequences", [])
+        stop_ids = {self.tokenizer.eos_token_id, self.tokenizer.pad_token_id}
 
-        # Setup streamer for per-token output
-        streamer = TextIteratorStreamer(
-            self.tokenizer,
-            skip_prompt=True,
-            skip_special_tokens=True,
-        )
-
-        # Generation kwargs — Trong tương lai, đây là nơi bạn sẽ thay bằng
-        # manual sampling loop (Tuần 5-6) và manual KV cache (Tuần 7-8).
-        gen_kwargs = {
-            "input_ids": inputs["input_ids"],
-            "attention_mask": inputs["attention_mask"],
-            "max_new_tokens": max_new,
-            "temperature": temperature if temperature > 0 else 1.0,
-            "top_p": top_p,
-            "top_k": top_k,
-            "do_sample": temperature > 0,
-            "pad_token_id": self.tokenizer.pad_token_id,
-            "eos_token_id": self.tokenizer.eos_token_id,
-            "streamer": streamer,
-        }
-
-        if stop_sequences:
-            gen_kwargs["stop_strings"] = stop_sequences
-
-        # Run generation in a separate thread so we can check cancellation
-        completion_tokens = 0
-        generated_text = ""
+        # Chạy sampling loop trong thread riêng (forward pass blocking) → đẩy
+        # từng token vào queue để async generator tiêu thụ + check cancel.
+        out_queue: stdlib_queue.Queue = stdlib_queue.Queue()
+        gen_error: list = []
+        completion = {"tokens": 0}
 
         def _run_generation():
-            nonlocal completion_tokens, generated_text
-            result = self.model.generate(**gen_kwargs)
-            # Count new tokens
-            completion_tokens = result.shape[1] - prompt_tokens
+            try:
+                with torch.no_grad():
+                    for row, tid, reason in generate_tokens(
+                        self.model,
+                        inputs["input_ids"],
+                        inputs["attention_mask"],
+                        [params],
+                        stop_ids,
+                        should_stop=lambda: bool(cancel_event and cancel_event.is_set()),
+                    ):
+                        out_queue.put(("token", tid, reason))
+            except Exception as e:  # noqa: BLE001 — chuyển lỗi sang async generator
+                gen_error.append(e)
+            finally:
+                out_queue.put(("end", None, None))
 
         gen_thread = Thread(target=_run_generation, daemon=True)
         gen_thread.start()
 
-        # Stream tokens one at a time
+        decoder = StreamingDecoder(self.tokenizer, skip_special_tokens=True)
+        generated_text = ""
+        stop_reason = None
+        finish_reason = None
+
         try:
-            for token in streamer:
-                # Check cancellation between tokens
+            while True:
                 if cancel_event and cancel_event.is_set():
-                    # Force stop: trong tương lai (Tuần 7-8) bạn sẽ chủ động
-                    # giải phóng KV cache ở đây thay vì chỉ bỏ qua thread
-                    yield {
-                        "type": "final",
-                        "stop_reason": "STOP_CANCELLED",
-                        "finish_reason": "cancelled",
-                        "usage": {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": prompt_tokens + completion_tokens,
-                        },
-                    }
-                    return
+                    stop_reason, finish_reason = "STOP_CANCELLED", "cancelled"
+                    break
 
-                generated_text += token
-                yield {"type": "token", "token": token}
+                try:
+                    kind, tid, reason = await asyncio.to_thread(out_queue.get, True, 0.2)
+                except stdlib_queue.Empty:
+                    if gen_error:
+                        raise gen_error[0]
+                    if not gen_thread.is_alive():
+                        break
+                    continue
 
-            # Generation hoàn tất — đợi thread join
-            gen_thread.join()
+                if kind == "end":
+                    break
 
-            # Detect finish reason
-            if completion_tokens >= max_new:
-                stop_reason = "STOP_MAX_TOKENS"
-                finish_reason = "length"
-            else:
-                # Check if model output contains a tool call
-                # Llama 3.2 format: <|python_tag|>function_name\n{...}
-                # Trong tương lai bạn sẽ tự parse cái này khi thay tokenizer
-                if self._contains_tool_call(generated_text):
-                    stop_reason = "STOP_TOOL_USE"
-                    finish_reason = "tool_use"
+                if reason == "stop":
+                    # eos/pad — không phát ra client, kết thúc lượt
+                    if self._contains_tool_call(generated_text):
+                        stop_reason, finish_reason = "STOP_TOOL_USE", "tool_use"
+                    else:
+                        stop_reason, finish_reason = "STOP_END_TURN", "stop"
+                    break
+
+                completion["tokens"] += 1
+                text = decoder.put(tid)
+                candidate = generated_text + text
+
+                # stop_sequences: cắt tại chuỗi dừng, chỉ phát phần text trước nó
+                hit = next((s for s in stop_sequences if s in candidate), None)
+                if hit:
+                    cut = candidate.find(hit)
+                    if cut > len(generated_text):
+                        yield {"type": "token", "token": candidate[len(generated_text):cut]}
+                    stop_reason, finish_reason = "STOP_END_TURN", "stop"
+                    break
+
+                generated_text = candidate
+                if text:
+                    yield {"type": "token", "token": text}
+
+                if reason == "length":
+                    stop_reason, finish_reason = "STOP_MAX_TOKENS", "length"
+                    break
+
+            gen_thread.join(timeout=1.0)
+
+            if stop_reason is None:
+                # Thread kết thúc không có tín hiệu kết thúc (cancel/abnormal)
+                if cancel_event and cancel_event.is_set():
+                    stop_reason, finish_reason = "STOP_CANCELLED", "cancelled"
+                elif self._contains_tool_call(generated_text):
+                    stop_reason, finish_reason = "STOP_TOOL_USE", "tool_use"
                 else:
-                    stop_reason = "STOP_END_TURN"
-                    finish_reason = "stop"
+                    stop_reason, finish_reason = "STOP_END_TURN", "stop"
 
-            yield {
-                "type": "final",
-                "stop_reason": stop_reason,
-                "finish_reason": finish_reason,
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
-            }
+            yield self._final_event(
+                stop_reason, finish_reason, prompt_tokens, completion["tokens"]
+            )
 
-        except Exception as e:
-            yield {
-                "type": "final",
-                "stop_reason": "STOP_ERROR",
-                "finish_reason": "error",
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": 0,
-                    "total_tokens": prompt_tokens,
-                },
-            }
+        except Exception:
+            yield self._final_event(
+                "STOP_ERROR", "error", prompt_tokens, completion["tokens"]
+            )
+
+    @staticmethod
+    def _final_event(stop_reason: str, finish_reason: str,
+                     prompt_tokens: int, completion_tokens: int) -> dict:
+        return {
+            "type": "final",
+            "stop_reason": stop_reason,
+            "finish_reason": finish_reason,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+        }
 
     def _contains_tool_call(self, text: str) -> bool:
         """Detect if generated text contains a tool/function call.

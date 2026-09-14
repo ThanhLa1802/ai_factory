@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-09-13** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-09-14** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -10,15 +10,16 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ## 📍 Hiện tại đang ở đâu
 
-> **Đang ở giai đoạn Tuần 5–6 — Tự viết sampling loop.**
+> **Đang ở giai đoạn Tuần 7–8 — Tự quản lý KV cache + dynamic batching.**
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 5–6: sampling loop (hiện do HF `model.generate()` đảm nhiệm) | Tuần 7–8: KV cache + dynamic batching |
-| Tuần 3–4: Tokenizer byte-level BPE tự viết | | Tuần 9+: Forward pass, prefix caching, PagedAttention |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 7–8: tự quản lý KV cache + dynamic/continuous batching | Tuần 9+: Forward pass, prefix caching, PagedAttention |
+| Tuần 3–4: Tokenizer byte-level BPE tự viết | | |
+| Tuần 5–6: Sampling loop tự viết (greedy / temperature / top-p / top-k) | | |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
-**Việc kế tiếp cụ thể:** thay các tham số của `model.generate()` (greedy / temperature / top-p / top-k) bằng một sampling loop tự viết, kèm test và benchmark đối chiếu.
+**Việc kế tiếp cụ thể:** thay phần KV cache do HF quản lý (`past_key_values`) bằng KV cache tự viết, rồi tiến tới dynamic/continuous batching (chèn/xoá sequence giữa các decode step).
 
 ---
 
@@ -31,8 +32,8 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Xong |
 | M2 — Runtime adapter + async deploy | ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker | ✅ Done |
 | UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
-| Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | 🔜 Kế tiếp |
-| Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
+| Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | ✅ Xong |
+| Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Kế tiếp |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
 
 ---
@@ -158,17 +159,19 @@ Trạng thái: **✅ Xong** — tool-calling **hoạt động & verified E2E** t
 - [x] Download Qwen3.5-9B GGUF + cài llama-server — [`scripts/`](../scripts/)
 - [x] Tests — `test_llama_backend.py`, `test_llama_client.py`, `test_llama_server.py`, `test_engines.py`, `test_server_backend.py`
 
-## 🔜 Giai đoạn 3 — Tuần 5–6: Tự viết sampling loop
+## ✅ Giai đoạn 3 — Tuần 5–6: Tự viết sampling loop
 
-Trạng thái: **Đang làm / kế tiếp** — hiện do HF `model.generate()` đảm nhiệm
+Trạng thái: **✅ Xong** (2026-09-14) — module [`python-worker/worker/sampling.py`](../python-worker/worker/sampling.py)
 
-- [ ] Sampling greedy (argmax)
-- [ ] Temperature scaling
-- [ ] Top-p (nucleus) sampling
-- [ ] Top-k sampling
-- [ ] Thay thế tham số `model.generate()` bằng sampling loop tự viết
-- [ ] Tích hợp vào `InferenceEngine` / `BatchEngine` (giữ streaming + batch)
-- [ ] Test đối chiếu kết quả + benchmark hiệu năng
+- [x] Sampling greedy (argmax) — `sample_next()` khi `temperature <= 0`
+- [x] Temperature scaling — `apply_temperature()`
+- [x] Top-p (nucleus) sampling — `apply_top_p()` (cùng thuật toán HF `TopPLogitsWarper`)
+- [x] Top-k sampling — `apply_top_k()`
+- [x] Thay thế tham số `model.generate()` bằng sampling loop tự viết — `generate_tokens()` (forward pass + `past_key_values` của HF)
+- [x] Tích hợp vào `InferenceEngine` / `BatchEngine` (giữ streaming + batch; batch có sampling params **riêng từng request**, bỏ average temperature)
+- [x] Test đối chiếu kết quả (`tests/test_sampling.py`, 17 test CPU) + verify E2E thật trên Qwen2.5-Coder-7B 4-bit (greedy + stochastic, single + batch)
+
+> Benchmark đối chiếu HF `model.generate()` vs loop tự viết: chưa làm riêng (verify E2E đã chạy: single TTFT ~656ms, batch OK).
 
 ## 🔜 Giai đoạn 4 — Tuần 7–8: Tự quản lý KV cache + dynamic batching
 
@@ -204,6 +207,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-14 | Giai đoạn 3 (Tuần 5–6) — sampling loop tự viết ✅. Thêm `python-worker/worker/sampling.py`: `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`; ngược lại temperature → top-k → top-p → multinomial) + vòng lặp `generate_tokens` (forward pass + `past_key_values` của HF, yield `(row, token_id, reason)`). `engine.py` + `batch_engine.py` bỏ `model.generate()`/streamer, dùng loop tự viết + `StreamingDecoder`; batch có sampling params **riêng từng request**. `tests/test_sampling.py` (17 test CPU với model giả) — toàn bộ suite `python -m pytest tests/` xanh (trừ 4 test `test_llama_backend.py` fail sẵn từ trước, do stub `LlamaBackend.__new__` thiếu `_gen_lock`). Verify E2E thật trên Qwen2.5-Coder-7B 4-bit: greedy + stochastic, single + batch đều chạy. |
 | 2026-09-13 | Usage rework sang Postgres source-of-truth + rollup ✅ — bỏ Redis counter/`Flusher`/`cache.Lock`; `RecordUsage` ghi thẳng `usage_events` (append-only, không mất khi Redis chết), `usage.Roller` (5s, chỉ API node) gộp vào `usage_daily` qua watermark `usage_rollup_state` (migration `0011_usage_rollup_state`) trong một transaction `SELECT ... FOR UPDATE` (idempotent, crash-safe, không double count). Migration `0010_backfill_usage_daily` gộp history `usage_events` cũ một lần; reads từ `usage_daily` (lag ≤ 5s). Đồng thời sửa bug usage trống (container thiếu `AI_FACTORY_REDIS_ADDR`) + thêm mount `../workspace` để agent tools ghi file ra host. `go test ./...` (có DB) xanh + E2E Docker. |
 | 2026-09-13 | UI usability fixes ✅ — API key hiện full + copy; `POST/GET /api/v1/users` + section Users trên `/admin`; deployment form dropdown cascading (thêm `GET /models/:id/versions`, `GET /templates/:id/versions`); poll status 3s; chat default model theo registry; Dockerfile copy `configs/`. Verify: `go test ./...` (có DB) xanh, `npm run lint/build` sạch, smoke E2E trong Docker. Plan `docs/superpowers/plans/2026-09-13-ui-usability-fixes.md`. |
 | 2026-09-13 | Phase 6b kiến trúc lại ✅ — reliability còn lại: `cache.Lock` (SET NX + WATCH release), `cache.KV`, `cache.UsageCounter`; cache-aside API key (TTL 5', invalidate khi xoá); bảng `usage_daily` (migration `0009_usage_daily`) + `usage.Flusher` (drain counter → upsert, khoá `lock:usage:flush`). Reads usage chuyển sang `usage_daily` khi bật counter. Test miniredis + Postgres xanh. Plan `docs/superpowers/plans/2026-09-13-phase6b-cache-lock-usage.md`. |

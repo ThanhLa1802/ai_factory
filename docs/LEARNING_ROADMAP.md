@@ -71,8 +71,8 @@ Dự án đang đi **2 track cùng lúc**. Track A theo roadmap gốc (backend/p
 |---|---|---|
 | B1. E2E pipeline | proto → gRPC → Go → model, batching tĩnh | ✅ Xong |
 | B2. Tokenizer | Byte-level BPE tự viết (khớp 100% HF) | ✅ Xong |
-| B3. Sampling loop | Greedy / temperature / top-p / top-k (thay `model.generate()`) | 🔜 Kế tiếp (Tuần 5–6) |
-| B4. KV cache + dynamic batching | Tự quản lý KV cache, continuous batching | 🔜 Tuần 7–8 |
+| B3. Sampling loop | Greedy / temperature / top-p / top-k (thay `model.generate()`) | ✅ Xong (Tuần 5–6) — `worker/sampling.py` |
+| B4. KV cache + dynamic batching | Tự quản lý KV cache, continuous batching | 🔜 Kế tiếp (Tuần 7–8) |
 | B5. Forward pass + prefix cache | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Tuần 9+ |
 
 ---

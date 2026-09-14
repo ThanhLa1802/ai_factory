@@ -2,11 +2,11 @@
 batch_engine.py — Continuous Batching Engine.
 
 Xử lý batch requests: gom nhiều request → tokenize với padding →
-model.generate() batch → stream token từng request NGAY KHI SINH RA
+sampling loop tự viết (batched forward) → stream token từng request NGAY KHI SINH RA
 (thay vì chờ generate xong hết rồi mới trả).
 
 Đây là bước trung gian trước khi tự quản lý KV cache (Tuần 7-8).
-Hiện tại dùng HF model.generate() với batched inputs + custom streamer.
+Sampling loop tự viết (`worker/sampling.py`) — mỗi request có sampling params riêng.
 """
 
 import asyncio
@@ -16,69 +16,18 @@ from threading import Thread
 from typing import AsyncIterator, Optional
 
 import torch
-from transformers import TextStreamer
+
+from .model.tokenizer import StreamingDecoder
+from .sampling import SamplingParams, generate_tokens
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-
-class BatchTokenStreamer(TextStreamer):
-    """Streamer cho batched generate — phát token mới của TỪNG request theo thời gian thực.
-
-    Contract của `model.generate(streamer=...)` (xác minh từ transformers 4.50.3):
-      - gọi `put(input_ids)` MỘT LẦN với toàn bộ prompt → bỏ qua (không phải token sinh ra)
-      - mỗi decode step: `put(next_tokens)` shape [batch, 1] → token mới của mỗi request
-      - cuối: `end()`
-
-    Request sinh ra eos (hoặc bị mask thành pad vì đã xong nhưng batch còn chạy)
-    → đánh dấu done. Event đẩy vào `out_queue` (queue.Queue thread-safe), phía
-    async generator tiêu thụ để stream về client mà không cần chờ hết batch.
-    """
-
-    def __init__(self, tokenizer, out_queue, n, eos_id, pad_id):
-        super().__init__(tokenizer)
-        self.out_queue = out_queue
-        self.n = n
-        self.eos_id = eos_id
-        self.pad_id = pad_id
-        self.active = [True] * n
-        self._first = True  # lần put đầu là prompt, không phải token mới
-
-    def put(self, value):
-        if value.dim() == 1:
-            # next_tokens từ _sample đã squeeze(1) → shape [batch]; cần [batch, 1]
-            value = value.unsqueeze(-1)
-        if self._first:
-            self._first = False
-            return
-        for i in range(self.n):
-            if not self.active[i]:
-                continue
-            tid = int(value[i, -1].item())
-            if tid == self.eos_id or tid == self.pad_id:
-                self.active[i] = False
-                self.out_queue.put(("done", i))
-                continue
-            text = self.tokenizer.decode([tid], skip_special_tokens=True)
-            if text:
-                self.out_queue.put(("token", i, text))
-
-    def end(self):
-        # generate kết thúc (đạt max_new_tokens) — request còn active đánh dấu done
-        for i in range(self.n):
-            if self.active[i]:
-                self.active[i] = False
-                self.out_queue.put(("done", i))
-
-    def on_finalized_text(self, text, stream_end=False):
-        # tắt in ra console mặc định của TextStreamer
-        pass
 
 
 class BatchEngine:
     """Xử lý batch inference requests.
 
-    Gom nhiều request → chạy model.generate() với batched inputs
-    (padding + attention mask) → split output → stream token per request.
+    Gom nhiều request → chạy sampling loop tự viết với batched inputs
+    (padding + attention mask) → stream token per request.
     """
 
     def __init__(self, model, tokenizer, hf_tokenizer=None):
@@ -156,17 +105,15 @@ class BatchEngine:
         n = len(requests)
         print(f"[batch_engine] Processing batch of {n} requests")
 
-        # ── 1. Build prompts cho từng request ──
+        # ── 1. Build prompts + sampling params cho từng request ──
         prompts = []
         request_ids = []
-        max_tokens_list = []
-        temperatures = []
+        params_list = []
 
         for req in requests:
             msgs = list(req.get("messages", []))
             system_prompt = req.get("system_prompt", "")
             tools = req.get("tools")
-            sp = req.get("sampling_params", {})
 
             # Prepend system prompt nếu có
             if system_prompt:
@@ -175,8 +122,10 @@ class BatchEngine:
             prompt = self._build_prompt(msgs, tools)
             prompts.append(prompt)
             request_ids.append(req.get("request_id", ""))
-            max_tokens_list.append(sp.get("max_tokens", 1024))
-            temperatures.append(sp.get("temperature", 0.7))
+            # Mỗi request có sampling params riêng (không còn average temperature)
+            params_list.append(SamplingParams.from_dict(req.get("sampling_params")))
+
+        max_tokens_list = [p.max_tokens for p in params_list]
 
         # ── 2. Tokenize toàn bộ batch với padding (tokenizer tự viết) ──
         t0 = time.perf_counter()
@@ -184,36 +133,39 @@ class BatchEngine:
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
 
         prompt_lens = (inputs["attention_mask"] == 1).sum(dim=1).tolist()
-        max_new_tokens = max(max_tokens_list)
-        avg_temperature = sum(temperatures) / len(temperatures) if temperatures else 0.7
+        stop_ids = {self.tokenizer.eos_token_id, self.tokenizer.pad_token_id}
 
-        # ── 3. Chạy model.generate() với streamer → token về NGAY khi sinh ──
+        # ── 3. Chạy sampling loop tự viết → token về NGAY khi sinh ──
         out_queue = stdlib_queue.Queue()
-        streamer = BatchTokenStreamer(
-            self.tokenizer, out_queue, n,
-            eos_id=self.tokenizer.eos_token_id,
-            pad_id=self.tokenizer.pad_token_id,
-        )
-
         finished = [False] * n
         completion_tokens = [0] * n
         gen_error = []
 
         def _run_generation():
             try:
+                decoders = [
+                    StreamingDecoder(self.tokenizer, skip_special_tokens=True)
+                    for _ in range(n)
+                ]
                 with torch.no_grad():
-                    self.model.generate(
-                        input_ids=inputs["input_ids"],
-                        attention_mask=inputs["attention_mask"],
-                        max_new_tokens=max_new_tokens,
-                        do_sample=avg_temperature > 0,
-                        temperature=avg_temperature if avg_temperature > 0 else 1.0,
-                        top_p=0.9,
-                        top_k=50,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                        eos_token_id=self.tokenizer.eos_token_id,
-                        streamer=streamer,
-                    )
+                    for row, tid, reason in generate_tokens(
+                        self.model,
+                        inputs["input_ids"],
+                        inputs["attention_mask"],
+                        params_list,
+                        stop_ids,
+                    ):
+                        if reason == "stop":
+                            out_queue.put(("done", row))
+                            continue
+                        text = decoders[row].put(tid)
+                        if text:
+                            out_queue.put(("token", row, text))
+                        if reason == "length":
+                            out_queue.put(("done", row))
+                # Đảm bảo mọi row đều có tín hiệu kết thúc (VD max_tokens=0)
+                for i in range(n):
+                    out_queue.put(("done", i))
             except Exception as e:  # noqa: BLE001 — chuyển lỗi sang async generator
                 gen_error.append(e)
 

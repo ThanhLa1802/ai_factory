@@ -362,12 +362,12 @@ Entry point: `python-worker/worker/server.py` (`python -m worker.server`). gRPC 
 
 - `MODEL_ID = "Qwen/Qwen2.5-Coder-7B-Instruct"` — **ungated**, không cần HF login.
 - Config 4-bit NF4 (bitsandbytes), `device_map="auto"` — khít 12GB VRAM RTX 3060.
-- `generate()`: build prompt bằng `apply_chat_template(messages, tools=...)`; `model.generate(..., streamer=TextIteratorStreamer)` trong daemon thread; đọc token → yield; kiểm tra `cancel_event` giữa các token; xác định `stop_reason` + `usage`.
-- Phát hiện tool call là **heuristic** (marker trong text) — sẽ thay bằng parse đúng khi tự viết sampling/tokenizer.
+- `generate()`: build prompt bằng `apply_chat_template(messages, tools=...)`; **sampling loop tự viết** (`worker/sampling.py`) chạy trong daemon thread — `generate_tokens` gọi forward pass + truyền `past_key_values` (KV cache của HF) từng bước, đẩy `(row, token_id, reason)` vào queue; async generator decode bằng `StreamingDecoder` → yield; kiểm tra `cancel_event` giữa các token; xác định `stop_reason` + `usage`.
+- Phát hiện tool call là **heuristic** (marker trong text) — sẽ thay bằng parse đúng khi tự viết forward pass.
 
 ### 3.3 BatchEngine — `batch_engine.py`
 
-`generate_batch(requests)`: build prompt từng request; tokenize `padding=True, truncation=True, max_length=8192`; `model.generate(..., streamer=BatchTokenStreamer)` trong `torch.no_grad()`; **stream token theo thời gian thực** (TTFT ~0.8s), request gặp EOS/max cắt sớm độc lập; split output theo `attention_mask`; cuối mỗi request → `STOP_MAX_TOKENS`/`STOP_END_TURN` + `usage`.
+`generate_batch(requests)`: build prompt từng request; tokenize `padding=True, truncation=True, max_length=8192`; **sampling loop tự viết** (`worker/sampling.py`) chạy batched forward + KV cache trong `torch.no_grad()`; mỗi request có **sampling params riêng** (không còn average temperature); **stream token theo thời gian thực** (TTFT ~0.8s), request gặp EOS/max cắt sớm độc lập; cuối mỗi request → `STOP_MAX_TOKENS`/`STOP_END_TURN` + `usage`.
 
 > ⚠️ **BatchEngine (transformers) không phát hiện tool call** — chỉ `STOP_END_TURN`/`STOP_MAX_TOKENS`. Trên engine llama, `LlamaBackend` xử lý tool call native (§10.1).
 
@@ -499,7 +499,7 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 | Khía cạnh | Thiết kế hiện tại |
 |---|---|
 | Đơn vị dispatch | Batch tĩnh: gom trong 100ms hoặc đủ 4 request |
-| GPU thực thi | `model.generate()` với batched inputs (padding + attention mask) |
+| GPU thực thi | Sampling loop tự viết (`worker/sampling.py`) với batched forward + KV cache HF (padding + attention mask) |
 | In-flight batches | **Có biên (C1)** — K Batch Slot (`DefaultMaxInFlightBatches = 1`); collector block khi hết slot |
 | Routing | Go giữ `request_id → channel` map, route từng event |
 | Backpressure | `submitCh` cap 100; hết slot → queue đầy → `TrySubmit` → `ErrOverloaded` → 503/OVERLOADED |
@@ -507,7 +507,7 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 | Multi-user | Session bền theo tenant/user + auth |
 | Channel buffer | Loop events: 64; gRPC events: 100 |
 
-> **Lưu ý:** `BatchEngine` chạy `model.generate()` cho cả batch và stream kết quả sau khi forward pass hoàn tất; các request trong batch xếp hàng tại Python. Đây là static batching, không phải true continuous batching.
+> **Lưu ý:** `BatchEngine` chạy sampling loop cho cả batch và stream token ngay khi sinh ra (từng bước decode); các request trong batch xếp hàng tại Python. Đây là static batching, không phải true continuous batching.
 
 ---
 
@@ -517,8 +517,8 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 - **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4), `--n-gpu-layers -1`.
 - **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả `StreamingDecoder`), batch pad/truncate. Đảm nhận encode/decode trong `engine.py` lẫn `batch_engine.py`. Test đối chiếu ID == HF (`tests/test_tokenizer.py`).
 - **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho Jinja template (build prompt string), không token hoá. Hỗ trợ tool calling.
-- **Streaming:** `TextIteratorStreamer` + daemon thread; `BPETokenizer` duck-type khớp decode interface.
-- **Sinh token hiện do HuggingFace đảm nhiệm** (sampling + KV cache của HF). Còn lại: Tuần 5-6 tự viết sampling, Tuần 7-8 tự quản lý KV cache + dynamic batching.
+- **Streaming:** daemon thread chạy `generate_tokens` → `queue.Queue` → async generator; decode tăng dần bằng `StreamingDecoder` (incremental UTF-8), decode tăng dần theo từng token.
+- **Sampling tự viết (Tuần 5-6 ✅):** `worker/sampling.py` — `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`, ngược lại temperature → top-k → top-p → multinomial) + vòng lặp `generate_tokens` dùng forward pass và truyền `past_key_values` (KV cache của HF). Test `tests/test_sampling.py` (CPU, model giả). **Còn lại:** Tuần 7-8 tự quản lý KV cache + dynamic batching; Tuần 9+ forward pass.
 - **Token counting:** Go heuristic `chars/4`; Python đếm chính xác qua tokenizer khi trả `usage`.
 
 Benchmark (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.
@@ -641,7 +641,7 @@ curl http://localhost:8080/health
 | A5 | Reliability: retry, circuit breaker, idempotency, backpressure | ✅ Đã xong |
 | A6 | Observability: metrics, trace, structured log, usage metering | ✅ Đã xong |
 | UI | NextJS app (`web/`) + chat history + platform console | ✅ Đã xong |
-| Tuần 5-6 | Tự viết sampling | ⏸️ Tạm hoãn — ưu tiên tái kiến trúc (xem spec 2026-09-11) |
+| Tuần 5-6 | Tự viết sampling | ✅ Đã xong — `worker/sampling.py` |
 | Tuần 7-8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
 | Tuần 9+ | Forward pass, prefix caching, PagedAttention | 🔜 Chưa |
 
