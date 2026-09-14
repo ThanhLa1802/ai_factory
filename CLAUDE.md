@@ -138,7 +138,9 @@ ai_factory/
 │       ├── server.py            #   gRPC server entry (InferenceServicer + BatchInferenceServicer)
 │       ├── sampling.py          #   Hand-written sampling loop (greedy/temperature/top-k/top-p)
 │       ├── engine.py            #   InferenceEngine (single, streaming) — transformers
-│       ├── batch_engine.py      #   BatchEngine (batched sampling loop, per-request params)
+│       ├── prompt.py            #   Shared HF chat-template prompt builder
+│       ├── kv_cache.py          #   Self-managed per-sequence KV cache + batch assembly
+│       ├── continuous_batch_engine.py  # Iteration-level continuous batching scheduler
 │       ├── engines/             #   EngineBackend interface + registry (selected via --engine)
 │       │   ├── base.py          #     EngineBackend (interface) + get_backend()
 │       │   ├── transformers.py  #     TransformersBackend (Qwen2.5-Coder-7B)
@@ -159,10 +161,10 @@ ai_factory/
 
 - **Model:** Qwen2.5-Coder-7B-Instruct (default, `--engine transformers`), 4-bit NF4 quant (bitsandbytes), `device_map="auto"`, RTX 3060 12GB (ungated, no HF login needed). Naming convention: Go sends `"model":"qwen-3b"` (transformers); the llama backend sends `"model":"qwen3.5-9b"` to llama-server. Old docs say "Qwen 2.5 3B" — the code has been running 7B all along.
 - **Tokens to care about:** EOS `151645` (`<|im_end|>`), PAD `151643` (`<|endoftext|>`).
-- **Tokenizer:** hand-written byte-level BPE (`worker/model/tokenizer/`), IDs match HF 100%, used for encode/decode/batch in both `engine.py` and `batch_engine.py`. HF `AutoTokenizer` is kept only for `apply_chat_template` (decision D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`).
-- **Sampling:** hand-written loop (`worker/sampling.py`) replaces `model.generate()`'s sampling params — `temperature → top-k → top-p → multinomial` (greedy when `temperature <= 0`), driving HF's forward pass and `past_key_values` (HF-managed KV cache). Both the single and batch paths use it; batch requests keep per-request sampling params (no averaged temperature). Weeks 7–8 will replace the KV cache; Weeks 9+ the forward pass.
+- **Tokenizer:** hand-written byte-level BPE (`worker/model/tokenizer/`), IDs match HF 100%, used for encode/decode/batch in both `engine.py` and `continuous_batch_engine.py`. HF `AutoTokenizer` is kept only for `apply_chat_template` (decision D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`).
+- **Sampling:** hand-written loop (`worker/sampling.py`) replaces `model.generate()`'s sampling params — `temperature → top-k → top-p → multinomial` (greedy when `temperature <= 0`). Both the single and batch paths use it; batch requests keep per-request sampling params (no averaged temperature). Weeks 9+ replaces the HF forward pass.
 - **Context window:** 8K tokens; truncation logic in Go when `EstimatedTokens() > 90%` of the budget.
-- **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. This is **static batching** (coalesced before a single forward pass), not dynamic/continuous batching.
+- **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. In the worker this now feeds a **continuous batching engine** (`worker/continuous_batch_engine.py`): an iteration-level scheduler admits new sequences while others decode, evicts finished ones, and self-manages per-sequence KV cache (`worker/kv_cache.py`, left-pad + `position_ids` assembly; HF runs one attention step). The scheduler's Batch Slot count is `inference.max_in_flight_batches` (default 4) — >1 lets requests queue at the worker; the worker still runs one forward pass at a time.
 - **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), streams each token immediately.
 - **Protocol:** OpenAI `/v1/chat/completions` only. The dual protocol was collapsed to OpenAI-only on 2026-08-15 — the Messages API dialect, its adapter, and the UI protocol dropdown were removed to keep a single contract. Requests convert to the internal canonical format (`session.Message`).
 - **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` without a sandbox). The interface allows swapping in a sandbox later.
@@ -202,8 +204,8 @@ Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
 | Weeks 1–2 | E2E: proto → gRPC → Go → model; OpenAI protocol + SSE; agentic loop; static batching | ✅ Done |
 | Weeks 3–4 | Hand-write byte-level BPE tokenizer | ✅ Done — spec approved, integrated into pipeline |
 | Weeks 5–6 | Hand-write the sampling loop (greedy / temperature / top-p / top-k) | ✅ Done — `worker/sampling.py` (HF forward + its KV cache) |
-| Weeks 7–8 | Hand-manage KV cache + dynamic batching | 🔜 Next |
-| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | 🔜 Not yet |
+| Weeks 7–8 | Hand-manage KV cache + dynamic batching | ✅ Done — `worker/kv_cache.py` + `worker/continuous_batch_engine.py` (continuous batching on transformers) |
+| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | 🔜 Next |
 
 Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 

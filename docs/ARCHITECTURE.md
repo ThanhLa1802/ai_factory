@@ -498,16 +498,16 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 
 | Khía cạnh | Thiết kế hiện tại |
 |---|---|
-| Đơn vị dispatch | Batch tĩnh: gom trong 100ms hoặc đủ 4 request |
-| GPU thực thi | Sampling loop tự viết (`worker/sampling.py`) với batched forward + KV cache HF (padding + attention mask) |
-| In-flight batches | **Có biên (C1)** — K Batch Slot (`DefaultMaxInFlightBatches = 1`); collector block khi hết slot |
+| Đơn vị dispatch | Batch tĩnh ở Go: gom trong 100ms hoặc đủ 4 request |
+| GPU thực thi | `ContinuousBatchEngine` (`worker/continuous_batch_engine.py`): daemon thread admit → prefill → decode 1 bước → evict; KV cache tự quản (`worker/kv_cache.py`), sampling loop tự viết |
+| In-flight batches | **Có biên (C1)** — K Batch Slot (`inference.max_in_flight_batches`, default 4); collector block khi hết slot. >1 cho request xếp hàng khi sequence khác đang decode |
 | Routing | Go giữ `request_id → channel` map, route từng event |
 | Backpressure | `submitCh` cap 100; hết slot → queue đầy → `TrySubmit` → `ErrOverloaded` → 503/OVERLOADED |
-| Dynamic batching | **Chưa** — không chèn/xoá sequence giữa các decode step (Tuần 7-8) |
+| Dynamic batching | **✅ Có (Tuần 7–8)** — chèn/xoá sequence giữa các decode step; sequence mới admit ngay khi có slot |
 | Multi-user | Session bền theo tenant/user + auth |
 | Channel buffer | Loop events: 64; gRPC events: 100 |
 
-> **Lưu ý:** `BatchEngine` chạy sampling loop cho cả batch và stream token ngay khi sinh ra (từng bước decode); các request trong batch xếp hàng tại Python. Đây là static batching, không phải true continuous batching.
+> **Lưu ý:** batch vẫn được Go gom tĩnh (100ms/batch ≤ 4), nhưng trong worker là **continuous batching thật**: một scheduler iteration-level giữ tập sequence active, chèn sequence mới khi có slot, xoá sequence xong/cancel, và tự quản KV cache per-sequence (left-pad + `position_ids` khi assemble batch). HF chỉ chạy attention cho một bước.
 
 ---
 
@@ -515,10 +515,11 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 
 - **Model (transformers, default):** Qwen2.5-Coder-7B-Instruct, quant 4-bit NF4, `device_map="auto"` (RTX 3060 12GB).
 - **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4), `--n-gpu-layers -1`.
-- **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả `StreamingDecoder`), batch pad/truncate. Đảm nhận encode/decode trong `engine.py` lẫn `batch_engine.py`. Test đối chiếu ID == HF (`tests/test_tokenizer.py`).
+- **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả `StreamingDecoder`), batch pad/truncate. Đảm nhận encode/decode trong `engine.py` (single) lẫn `continuous_batch_engine.py` (batch). Test đối chiếu ID == HF (`tests/test_tokenizer.py`).
 - **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho Jinja template (build prompt string), không token hoá. Hỗ trợ tool calling.
 - **Streaming:** daemon thread chạy `generate_tokens` → `queue.Queue` → async generator; decode tăng dần bằng `StreamingDecoder` (incremental UTF-8), decode tăng dần theo từng token.
-- **Sampling tự viết (Tuần 5-6 ✅):** `worker/sampling.py` — `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`, ngược lại temperature → top-k → top-p → multinomial) + vòng lặp `generate_tokens` dùng forward pass và truyền `past_key_values` (KV cache của HF). Test `tests/test_sampling.py` (CPU, model giả). **Còn lại:** Tuần 7-8 tự quản lý KV cache + dynamic batching; Tuần 9+ forward pass.
+- **Sampling tự viết (Tuần 5-6 ✅):** `worker/sampling.py` — `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`, ngược lại temperature → top-k → top-p → multinomial). Test `tests/test_sampling.py` (CPU, model giả).
+- **Continuous batching + KV cache tự quản (Tuần 7-8 ✅):** `worker/continuous_batch_engine.py` — daemon thread sở hữu model, iteration-level (admit theo budget → prefill → decode 1 bước → evict); `worker/kv_cache.py` sở hữu buffer KV per-sequence và assemble batch nhiều độ dài (left-pad + `position_ids`). HF chỉ chạy attention một bước. Single `Generate` cũng đi qua scheduler. Tests `tests/test_continuous_batch.py`, `tests/test_kv_cache.py` (CPU, model giả). **Còn lại:** Tuần 9+ forward pass tự viết, prefix caching, PagedAttention.
 - **Token counting:** Go heuristic `chars/4`; Python đếm chính xác qua tokenizer khi trả `usage`.
 
 Benchmark (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.

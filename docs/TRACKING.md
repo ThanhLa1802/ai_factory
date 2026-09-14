@@ -10,16 +10,17 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ## 📍 Hiện tại đang ở đâu
 
-> **Đang ở giai đoạn Tuần 7–8 — Tự quản lý KV cache + dynamic batching.**
+> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết, prefix caching, PagedAttention.**
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 7–8: tự quản lý KV cache + dynamic/continuous batching | Tuần 9+: Forward pass, prefix caching, PagedAttention |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 9+: Forward pass tự viết, prefix caching, PagedAttention | — |
 | Tuần 3–4: Tokenizer byte-level BPE tự viết | | |
 | Tuần 5–6: Sampling loop tự viết (greedy / temperature / top-p / top-k) | | |
+| Tuần 7–8: KV cache tự quản + continuous batching (transformers) | | |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
-**Việc kế tiếp cụ thể:** thay phần KV cache do HF quản lý (`past_key_values`) bằng KV cache tự viết, rồi tiến tới dynamic/continuous batching (chèn/xoá sequence giữa các decode step).
+**Việc kế tiếp cụ thể:** tự viết forward pass (thay attention/`past_key_values` của HF), rồi prefix caching + PagedAttention (Tuần 9+).
 
 ---
 
@@ -33,7 +34,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | M2 — Runtime adapter + async deploy | ServingRuntimeAdapter + MockComputeProvider + Kafka events + deployment worker | ✅ Done |
 | UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | ✅ Xong |
-| Tuần 7–8 | Tự quản lý KV cache + dynamic batching | 🔜 Kế tiếp |
+| Tuần 7–8 | Tự quản lý KV cache + dynamic batching | ✅ Xong |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
 
 ---
@@ -173,13 +174,17 @@ Trạng thái: **✅ Xong** (2026-09-14) — module [`python-worker/worker/sampl
 
 > Benchmark đối chiếu HF `model.generate()` vs loop tự viết: chưa làm riêng (verify E2E đã chạy: single TTFT ~656ms, batch OK).
 
-## 🔜 Giai đoạn 4 — Tuần 7–8: Tự quản lý KV cache + dynamic batching
+## ✅ Giai đoạn 4 — Tuần 7–8: Tự quản lý KV cache + continuous batching
 
-Trạng thái: **Chưa bắt đầu**
+Trạng thái: **✅ Xong** (2026-09-14) — engine continuous batching cho `transformers`, KV cache tự quản.
 
-- [ ] Tự quản lý KV cache (thay thế phần lõi `BatchEngine`)
-- [ ] Dynamic/continuous batching thay cho static batch hiện tại
-- [ ] Tối ưu bộ nhớ + benchmark
+- [x] KV cache tự quản (`worker/kv_cache.py`): buffer per-sequence, append slot cuối, growth ×2, `free()` khi evict
+- [x] Assembly batch nhiều độ dài: left-pad + `attention_mask` + `position_ids` tường minh; HF chỉ chạy attention 1 bước
+- [x] Continuous batching (`worker/continuous_batch_engine.py`): daemon thread admit → prefill → decode → evict; sequence mới chèn được giữa chừng
+- [x] Budget `max_batch_size`/`max_batch_tokens`; cancel; `stop_sequences` (parity với đường single)
+- [x] `TransformersBackend` dùng engine mới; single `Generate` cũng qua scheduler (không còn `_gen_lock` bọc batch)
+- [x] Go: config `inference.max_in_flight_batches` (default 4) nới Batch Slots để nhiều batch cùng bay
+- [x] Tests CPU: `test_kv_cache.py` (8), `test_continuous_batch.py` (8), `test_fake_model.py`, `test_prompt.py`; xoá `batch_engine.py`
 
 ## 🔜 Giai đoạn 5 — Tuần 9+: Forward pass tự viết
 
@@ -207,6 +212,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-14 | Giai đoạn 4 (Tuần 7–8) — KV cache tự quản + continuous batching ✅. Thêm `worker/kv_cache.py` (`KVCache` buffer per-sequence + `KVCacheManager` assemble left-pad/`position_ids`) và `worker/continuous_batch_engine.py` (daemon thread: admit → prefill → decode → evict; budget `max_batch_size`/`max_batch_tokens`; cancel; `stop_sequences`). `TransformersBackend` bỏ batch path cũ, single cũng qua scheduler (D4); xoá `worker/batch_engine.py`; tách `worker/prompt.py`. Go thêm `inference.max_in_flight_batches` (default 4) + `SetMaxInFlight` wiring. Tests CPU mới: `test_kv_cache.py`, `test_continuous_batch.py` (parity greedy, continuous admission, cancel, budget), `test_fake_model.py`; `pytest tests/` 91 passed (4 test llama fail sẵn). Spec/plan: `docs/superpowers/{specs,plans}/2026-09-14-kv-cache-continuous-batching*.md`. |
 | 2026-09-14 | Giai đoạn 3 (Tuần 5–6) — sampling loop tự viết ✅. Thêm `python-worker/worker/sampling.py`: `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`; ngược lại temperature → top-k → top-p → multinomial) + vòng lặp `generate_tokens` (forward pass + `past_key_values` của HF, yield `(row, token_id, reason)`). `engine.py` + `batch_engine.py` bỏ `model.generate()`/streamer, dùng loop tự viết + `StreamingDecoder`; batch có sampling params **riêng từng request**. `tests/test_sampling.py` (17 test CPU với model giả) — toàn bộ suite `python -m pytest tests/` xanh (trừ 4 test `test_llama_backend.py` fail sẵn từ trước, do stub `LlamaBackend.__new__` thiếu `_gen_lock`). Verify E2E thật trên Qwen2.5-Coder-7B 4-bit: greedy + stochastic, single + batch đều chạy. |
 | 2026-09-13 | Usage rework sang Postgres source-of-truth + rollup ✅ — bỏ Redis counter/`Flusher`/`cache.Lock`; `RecordUsage` ghi thẳng `usage_events` (append-only, không mất khi Redis chết), `usage.Roller` (5s, chỉ API node) gộp vào `usage_daily` qua watermark `usage_rollup_state` (migration `0011_usage_rollup_state`) trong một transaction `SELECT ... FOR UPDATE` (idempotent, crash-safe, không double count). Migration `0010_backfill_usage_daily` gộp history `usage_events` cũ một lần; reads từ `usage_daily` (lag ≤ 5s). Đồng thời sửa bug usage trống (container thiếu `AI_FACTORY_REDIS_ADDR`) + thêm mount `../workspace` để agent tools ghi file ra host. `go test ./...` (có DB) xanh + E2E Docker. |
 | 2026-09-13 | UI usability fixes ✅ — API key hiện full + copy; `POST/GET /api/v1/users` + section Users trên `/admin`; deployment form dropdown cascading (thêm `GET /models/:id/versions`, `GET /templates/:id/versions`); poll status 3s; chat default model theo registry; Dockerfile copy `configs/`. Verify: `go test ./...` (có DB) xanh, `npm run lint/build` sạch, smoke E2E trong Docker. Plan `docs/superpowers/plans/2026-09-13-ui-usability-fixes.md`. |
