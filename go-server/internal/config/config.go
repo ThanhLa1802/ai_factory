@@ -20,8 +20,12 @@ type Config struct {
 	RedisAddr            string
 	RateLimitRPM         int
 	RateLimitConcurrency int
-	Services             ServicesConfig
-	Billing              BillingConfig
+	// InferenceMaxInFlightBatches is the Batch Slot count of the BatchScheduler.
+	// With the worker's continuous batching, >1 lets requests queue up while
+	// others decode (the worker still runs one forward pass at a time).
+	InferenceMaxInFlightBatches int
+	Services                    ServicesConfig
+	Billing                     BillingConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -62,6 +66,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("redis_addr", "localhost:6379")
 	v.SetDefault("rate_limit_rpm", 60)
 	v.SetDefault("rate_limit_concurrency", 4)
+	v.SetDefault("inference.max_in_flight_batches", 4)
 	v.SetDefault("services.api", true)
 	v.SetDefault("services.worker", true)
 	v.SetDefault("services.billing", true)
@@ -102,19 +107,20 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &Config{
-		DatabaseURL:           v.GetString("database_url"),
-		JWTSecret:             secret,
-		LogLevel:              v.GetString("log_level"),
-		KafkaAddr:             v.GetString("kafka_addr"),
-		RedisAddr:             v.GetString("redis_addr"),
-		RateLimitRPM:          v.GetInt("rate_limit_rpm"),
-		RateLimitConcurrency:  v.GetInt("rate_limit_concurrency"),
-		DBMaxOpenConns:        v.GetInt("database_max_open_conns"),
-		DBMaxIdleConns:        v.GetInt("database_max_idle_conns"),
-		DBConnMaxLifetime:     v.GetDuration("database_conn_max_lifetime"),
-		DBConnMaxIdleTime:     v.GetDuration("database_conn_max_idle_time"),
-		HTTPReadHeaderTimeout: v.GetDuration("http_read_header_timeout"),
-		HTTPIdleTimeout:       v.GetDuration("http_idle_timeout"),
+		DatabaseURL:                 v.GetString("database_url"),
+		JWTSecret:                   secret,
+		LogLevel:                    v.GetString("log_level"),
+		KafkaAddr:                   v.GetString("kafka_addr"),
+		RedisAddr:                   v.GetString("redis_addr"),
+		RateLimitRPM:                v.GetInt("rate_limit_rpm"),
+		RateLimitConcurrency:        v.GetInt("rate_limit_concurrency"),
+		InferenceMaxInFlightBatches: v.GetInt("inference.max_in_flight_batches"),
+		DBMaxOpenConns:              v.GetInt("database_max_open_conns"),
+		DBMaxIdleConns:              v.GetInt("database_max_idle_conns"),
+		DBConnMaxLifetime:           v.GetDuration("database_conn_max_lifetime"),
+		DBConnMaxIdleTime:           v.GetDuration("database_conn_max_idle_time"),
+		HTTPReadHeaderTimeout:       v.GetDuration("http_read_header_timeout"),
+		HTTPIdleTimeout:             v.GetDuration("http_idle_timeout"),
 		Services: ServicesConfig{
 			API:     v.GetBool("services.api"),
 			Worker:  v.GetBool("services.worker"),

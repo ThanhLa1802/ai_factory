@@ -20,10 +20,10 @@ const (
 	DefaultBatchWindow = 100 * time.Millisecond
 	// DefaultMaxBatchSize prevents VRAM overflow.
 	DefaultMaxBatchSize = 4
-	// DefaultMaxInFlightBatches is the number of batches allowed to be in flight
-	// at the worker at once (the Batch Slot count). K=1 keeps GPU concurrency at
-	// one forward pass (≤ DefaultMaxBatchSize requests), matching the worker's
-	// real capacity.
+	// DefaultMaxInFlightBatches is the built-in Batch Slot count. Production
+	// overrides it via config (inference.max_in_flight_batches); the worker's
+	// continuous-batching engine serializes forward passes, so >1 just lets
+	// requests queue while others decode (bounded elsewhere by the slots).
 	DefaultMaxInFlightBatches = 1
 	// submitChCapacity bounds how many requests may sit in the scheduler's
 	// pending queue before TrySubmit sheds load (backpressure).

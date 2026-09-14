@@ -93,6 +93,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			if opts.MaxConcurrent > 0 {
 				s.SetMaxBatchSize(opts.MaxConcurrent)
 			}
+			s.SetMaxInFlight(cfg.InferenceMaxInFlightBatches)
 			return s, nil
 		}); err != nil {
 			return err

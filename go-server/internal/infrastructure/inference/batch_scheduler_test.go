@@ -59,6 +59,22 @@ func TestSubmitEnqueues(t *testing.T) {
 	}
 }
 
+// TestSetMaxInFlightClampsAndResizesSlots verifies the Batch Slot count is
+// resized and clamped to at least 1.
+func TestSetMaxInFlightClampsAndResizesSlots(t *testing.T) {
+	bs := newBatchScheduler(nil)
+
+	bs.SetMaxInFlight(2)
+	if bs.maxInFlight != 2 || cap(bs.slots) != 2 {
+		t.Fatalf("after SetMaxInFlight(2): maxInFlight=%d cap=%d, want 2/2", bs.maxInFlight, cap(bs.slots))
+	}
+
+	bs.SetMaxInFlight(0)
+	if bs.maxInFlight != 1 || cap(bs.slots) != 1 {
+		t.Fatalf("after SetMaxInFlight(0): maxInFlight=%d cap=%d, want 1/1", bs.maxInFlight, cap(bs.slots))
+	}
+}
+
 // --- fake batch client ---
 
 // fakeStream is a scripted batch RPC stream. Recv returns queued responses,

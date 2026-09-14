@@ -102,6 +102,30 @@ func TestRateLimitEnvOverride(t *testing.T) {
 	}
 }
 
+func TestInferenceMaxInFlightDefaults(t *testing.T) {
+	unsetenv(t, "AI_FACTORY_JWT_SECRET")
+	t.Setenv("AI_FACTORY_INFERENCE_MAX_IN_FLIGHT_BATCHES", "")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InferenceMaxInFlightBatches != 4 {
+		t.Fatalf("InferenceMaxInFlightBatches = %d, want 4", cfg.InferenceMaxInFlightBatches)
+	}
+}
+
+func TestInferenceMaxInFlightEnvOverride(t *testing.T) {
+	t.Setenv("AI_FACTORY_JWT_SECRET", "0123456789abcdef")
+	t.Setenv("AI_FACTORY_INFERENCE_MAX_IN_FLIGHT_BATCHES", "8")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.InferenceMaxInFlightBatches != 8 {
+		t.Fatalf("InferenceMaxInFlightBatches = %d, want 8", cfg.InferenceMaxInFlightBatches)
+	}
+}
+
 func TestLoadFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/config.yaml"
