@@ -20,5 +20,6 @@ func All() []*gormigrate.Migration {
 		M0011UsageRollupState(),
 		M0012ModelPricing(),
 		M0013WalletLedger(),
+		M0014APIKeyRevoke(),
 	}
 }

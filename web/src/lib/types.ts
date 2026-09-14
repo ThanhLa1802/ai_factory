@@ -101,6 +101,7 @@ export interface APIKey {
   name: string;
   status: string;
   expires_at?: string;
+  revoked_at?: string;
   created_at: string;
 }
 

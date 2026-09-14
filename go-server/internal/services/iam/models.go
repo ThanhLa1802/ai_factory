@@ -44,6 +44,7 @@ type apiKeyRow struct {
 	Status     string     `gorm:"column:status"`
 	ExpiresAt  *time.Time `gorm:"column:expires_at"`
 	LastUsedAt *time.Time `gorm:"column:last_used_at"`
+	RevokedAt  *time.Time `gorm:"column:revoked_at"`
 	CreatedAt  time.Time  `gorm:"column:created_at"`
 }
 
@@ -56,5 +57,5 @@ func toTenant(r tenantRow) Tenant {
 }
 
 func toAPIKey(r apiKeyRow) APIKey {
-	return APIKey{ID: r.ID, TenantID: r.TenantID, Name: r.Name, Status: r.Status, ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt}
+	return APIKey{ID: r.ID, TenantID: r.TenantID, Name: r.Name, Status: r.Status, ExpiresAt: r.ExpiresAt, RevokedAt: r.RevokedAt, CreatedAt: r.CreatedAt}
 }

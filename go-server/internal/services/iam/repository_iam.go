@@ -147,18 +147,20 @@ func (r *apiKeyRepo) ListByTenant(ctx context.Context, tenantID string) ([]APIKe
 	return out, nil
 }
 
-// Delete removes the key and returns its hash so the caller can invalidate the
-// cache-aside entry. ErrNotFound when no matching (id, tenant) row exists.
-func (r *apiKeyRepo) Delete(ctx context.Context, id, tenantID string) (string, error) {
+// Revoke soft-revokes an ACTIVE key (status=REVOKED, revoked_at=now) and returns
+// its hash so the caller can invalidate the cache-aside entry. ErrNotFound when
+// no matching ACTIVE (id, tenant) row exists.
+func (r *apiKeyRepo) Revoke(ctx context.Context, id, tenantID string) (string, error) {
 	var hash string
 	row := r.db.WithContext(ctx).Raw(
-		`DELETE FROM api_keys WHERE id = ? AND tenant_id = ? RETURNING key_hash`, id, tenantID,
+		`UPDATE api_keys SET status = 'REVOKED', revoked_at = now()
+		 WHERE id = ? AND tenant_id = ? AND status = 'ACTIVE' RETURNING key_hash`, id, tenantID,
 	).Row()
 	if err := row.Scan(&hash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrNotFound
 		}
-		return "", fmt.Errorf("delete api key: %w", err)
+		return "", fmt.Errorf("revoke api key: %w", err)
 	}
 	return hash, nil
 }

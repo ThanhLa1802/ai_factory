@@ -13,7 +13,7 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 	keys := e.Group("/api/v1/api-keys", middleware.RequirePermission(h.auth, middleware.ActionKeyManage))
 	keys.POST("", h.handleCreateAPIKey)
 	keys.GET("", h.handleListAPIKeys)
-	keys.DELETE("/:id", h.handleDeleteAPIKey)
+	keys.POST("/:id/revoke", h.handleRevokeAPIKey)
 
 	tenants := e.Group("/api/v1/tenants")
 	tenants.POST("", middleware.RequirePermission(h.auth, middleware.ActionTenantManage), h.handleCreateTenant)

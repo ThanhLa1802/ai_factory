@@ -132,8 +132,8 @@ func TestCreateListUsersIntegration(t *testing.T) {
 	}
 }
 
-// TestListDeleteAPIKeyIntegration chạy với Postgres thật (set AI_FACTORY_DATABASE_URL).
-func TestListDeleteAPIKeyIntegration(t *testing.T) {
+// TestListRevokeAPIKeyIntegration chạy với Postgres thật (set AI_FACTORY_DATABASE_URL).
+func TestListRevokeAPIKeyIntegration(t *testing.T) {
 	dsn := os.Getenv("AI_FACTORY_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("AI_FACTORY_DATABASE_URL not set; skipping integration test")
@@ -169,26 +169,26 @@ func TestListDeleteAPIKeyIntegration(t *testing.T) {
 		t.Fatalf("ListAPIKeys = %+v, want 1 key %s", keys, k.ID)
 	}
 
-	// scoping: key thuộc tenant A không xoá được bởi tenant B — test TRƯỚC khi xoá thật
+	// scoping: key thuộc tenant A không revoke được bởi tenant B — test TRƯỚC khi revoke thật
 	other, err := svc.CreateTenant(ctx, "keys-other-"+uuid.NewString()[:8])
 	if err != nil {
 		t.Fatalf("CreateTenant other: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Gorm().Exec( `DELETE FROM tenants WHERE id = $1`, other.ID) })
-	if _, err := svc.DeleteAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
-		t.Errorf("delete with wrong tenant = %v, want ErrNotFound", err)
+	if _, err := svc.RevokeAPIKey(ctx, k.ID, other.ID); err != ErrNotFound {
+		t.Errorf("revoke with wrong tenant = %v, want ErrNotFound", err)
 	}
 
-	// xoá thật (tenant đúng)
-	if _, err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != nil {
-		t.Fatalf("DeleteAPIKey: %v", err)
+	// revoke thật (tenant đúng): row vẫn còn để audit, status = REVOKED
+	if _, err := svc.RevokeAPIKey(ctx, k.ID, tenant.ID); err != nil {
+		t.Fatalf("RevokeAPIKey: %v", err)
 	}
 	keys, _ = svc.ListAPIKeys(ctx, tenant.ID)
-	if len(keys) != 0 {
-		t.Errorf("after delete list = %+v, want empty", keys)
+	if len(keys) != 1 || keys[0].Status != "REVOKED" || keys[0].RevokedAt == nil {
+		t.Errorf("after revoke list = %+v, want 1 REVOKED key with revoked_at", keys)
 	}
-	// xoá lần 2 → ErrNotFound
-	if _, err := svc.DeleteAPIKey(ctx, k.ID, tenant.ID); err != ErrNotFound {
-		t.Errorf("delete again = %v, want ErrNotFound", err)
+	// revoke lần 2 (đã REVOKED, không còn ACTIVE) → ErrNotFound
+	if _, err := svc.RevokeAPIKey(ctx, k.ID, tenant.ID); err != ErrNotFound {
+		t.Errorf("revoke again = %v, want ErrNotFound", err)
 	}
 }

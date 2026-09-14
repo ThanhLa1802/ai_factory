@@ -60,10 +60,13 @@
       const tr = document.createElement('tr');
       tr.innerHTML = '<td>' + esc(k.name) + '</td><td>' + esc(k.status) + '</td><td>' + esc(k.created_at || '') + '</td><td>' + esc(k.expires_at || '-') + '</td>';
       const td = document.createElement('td');
-      const del = document.createElement('button');
-      del.className = 'danger'; del.textContent = 'Revoke';
-      del.onclick = async function () { await api('/api/v1/api-keys/' + k.id, { method: 'DELETE' }); load(); };
-      td.appendChild(del); tr.appendChild(td);
+      if (k.status === 'ACTIVE') {
+        const del = document.createElement('button');
+        del.className = 'danger'; del.textContent = 'Revoke';
+        del.onclick = async function () { await api('/api/v1/api-keys/' + k.id + '/revoke', { method: 'POST' }); load(); };
+        td.appendChild(del);
+      }
+      tr.appendChild(td);
       rows.appendChild(tr);
     }
   }

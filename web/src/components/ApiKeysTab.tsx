@@ -67,7 +67,7 @@ export default function ApiKeysTab() {
 
   async function revoke(id: string) {
     try {
-      await apiFetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
+      await apiFetch(`/api/v1/api-keys/${id}/revoke`, { method: "POST" });
       load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to revoke key");
@@ -147,17 +147,21 @@ export default function ApiKeysTab() {
         rows={keys}
         loading={loading}
         empty="No API keys yet."
-        actions={(k) => (
-          <button onClick={() => setConfirmId(k.id)} className="text-[12px] text-[var(--err)] hover:underline">
-            Revoke
-          </button>
-        )}
+        actions={(k) =>
+          k.status === "ACTIVE" ? (
+            <button onClick={() => setConfirmId(k.id)} className="text-[12px] text-[var(--err)] hover:underline">
+              Revoke
+            </button>
+          ) : (
+            <span className="text-[12px] text-[var(--text2)]">—</span>
+          )
+        }
       />
 
       <ConfirmDialog
         open={!!confirmId}
         title="Revoke this API key?"
-        message="The key stops working immediately and cannot be restored."
+        message="The key stops working immediately and cannot be reactivated. It stays listed for audit."
         confirmLabel="Revoke"
         danger
         onConfirm={() => confirmId && revoke(confirmId)}

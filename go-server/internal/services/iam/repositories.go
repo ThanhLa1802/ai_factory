@@ -24,7 +24,7 @@ type APIKeyRepository interface {
 	Create(ctx context.Context, k *APIKey, keyHash string) error
 	GetByHash(ctx context.Context, keyHash string) (*APIKey, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]APIKey, error)
-	Delete(ctx context.Context, id, tenantID string) (string, error)
+	Revoke(ctx context.Context, id, tenantID string) (string, error)
 }
 
 // Repositories bundles every repository the IAM service needs.

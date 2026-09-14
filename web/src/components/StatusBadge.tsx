@@ -11,6 +11,7 @@ const COLOR: Record<string, string> = {
   DEGRADED: "text-[var(--err)] border-[var(--err)]/40 bg-[var(--err)]/10",
   ACTIVE: "text-[var(--ok)] border-[var(--ok)]/40 bg-[var(--ok)]/10",
   INACTIVE: "text-[var(--text2)] border-[var(--border)] bg-[var(--surface2)]",
+  REVOKED: "text-[var(--err)] border-[var(--err)]/40 bg-[var(--err)]/10",
   DISABLED: "text-[var(--text2)] border-[var(--border)] bg-[var(--surface2)]",
   EXPIRED: "text-[var(--err)] border-[var(--err)]/40 bg-[var(--err)]/10",
 };

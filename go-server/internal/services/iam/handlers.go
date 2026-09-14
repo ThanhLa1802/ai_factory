@@ -72,13 +72,13 @@ func (h *Handler) handleListAPIKeys(c *gin.Context) {
 	response.WriteJSON(c, http.StatusOK, keys)
 }
 
-func (h *Handler) handleDeleteAPIKey(c *gin.Context) {
+func (h *Handler) handleRevokeAPIKey(c *gin.Context) {
 	p, _ := middleware.PrincipalFromContext(c)
 	id := c.Param("id")
-	hash, err := h.svc.DeleteAPIKey(c.Request.Context(), id, p.TenantID)
+	hash, err := h.svc.RevokeAPIKey(c.Request.Context(), id, p.TenantID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "api key not found")
+			response.WriteAPIError(c, http.StatusNotFound, "NOT_FOUND", "api key not found or already revoked")
 			return
 		}
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
