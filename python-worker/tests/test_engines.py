@@ -13,21 +13,49 @@ def test_registry_llama():
     assert type(b).__name__ == "LlamaBackend"
 
 
+class _StubBatch:
+    def __init__(self, events):
+        self._events = events
+        self.requests = []
+
+    def generate_batch(self, requests):
+        self.requests.append(requests)
+
+        async def gen():
+            for e in self._events:
+                yield e
+
+        return gen()
+
+    def stop(self):
+        pass
+
+
 @pytest.mark.asyncio
-async def test_transformers_generate_delegates(monkeypatch):
+async def test_transformers_generate_batch_delegates(monkeypatch):
     events = [
-        {"type": "token", "token": "hi"},
-        {"type": "final", "stop_reason": "STOP_END_TURN",
-         "finish_reason": "stop", "usage": {}},
+        ("r1", {"type": "token", "token": "hi"}),
+        ("r1", {"type": "final", "stop_reason": "STOP_END_TURN", "finish_reason": "stop", "usage": {}}),
     ]
-
-    class StubEngine:
-        async def generate(self, messages, sampling_params, tools=None, cancel_event=None):
-            for ev in events:
-                yield ev
-
-    monkeypatch.setattr("worker.engines.transformers.get_engine",
-                        lambda *a, **k: StubEngine())
+    monkeypatch.setattr("worker.engines.transformers.get_engine", lambda *a, **k: object())
     backend = TransformersBackend()
-    got = [ev async for ev in backend.generate([], {})]
+    backend._batch = _StubBatch(events)
+    got = [e async for e in backend.generate_batch([{"request_id": "r1"}])]
     assert got == events
+
+
+@pytest.mark.asyncio
+async def test_transformers_generate_routes_through_scheduler(monkeypatch):
+    events = [
+        ("", {"type": "token", "token": "hi"}),
+        ("", {"type": "final", "stop_reason": "STOP_END_TURN", "finish_reason": "stop", "usage": {}}),
+    ]
+    monkeypatch.setattr("worker.engines.transformers.get_engine", lambda *a, **k: object())
+    backend = TransformersBackend()
+    stub = _StubBatch(events)
+    backend._batch = stub
+
+    got = [ev async for ev in backend.generate([], {})]
+    assert got == [e for _, e in events]
+    # single request đi qua scheduler, có mang cancel_event
+    assert stub.requests[0][0]["cancel_event"] is None
