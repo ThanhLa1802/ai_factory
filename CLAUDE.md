@@ -147,7 +147,9 @@ ai_factory/
 │       │   └── llama/           #     LlamaBackend (Qwen3.5-9B GGUF) — server.py, client.py
 │       ├── generate_proto.py    #   regenerate pb/ from proto
 │       ├── pb/                  #   generated gRPC stubs
-│       └── model/tokenizer/     #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
+│       ├── model/
+│       │   ├── {rope,attention,forward}.py  # Hand-written forward pass (RoPE + GQA + layer loop)
+│       │   └── tokenizer/       #   bpe.py (BPETokenizer), byte_level.py (byte-encoder) — hand-written
 ├── (models → G:\models)         # GGUF + llama.cpp + HF cache — ngoài repo
 ├── ui/                          # Static test UI: chat.html, concepts.html (embedded HTML)
 ├── web/                         # NextJS UI (App Router): /login /chat /platform (Usage + API Keys) /infra /admin
@@ -163,11 +165,12 @@ ai_factory/
 - **Tokens to care about:** EOS `151645` (`<|im_end|>`), PAD `151643` (`<|endoftext|>`).
 - **Tokenizer:** hand-written byte-level BPE (`worker/model/tokenizer/`), IDs match HF 100%, used for encode/decode/batch in both `engine.py` and `continuous_batch_engine.py`. HF `AutoTokenizer` is kept only for `apply_chat_template` (decision D1, spec `docs/superpowers/specs/2026-08-08-tokenizer-design.md`).
 - **Sampling:** hand-written loop (`worker/sampling.py`) replaces `model.generate()`'s sampling params — `temperature → top-k → top-p → multinomial` (greedy when `temperature <= 0`). Both the single and batch paths use it; batch requests keep per-request sampling params (no averaged temperature). Weeks 9+ replaces the HF forward pass.
+- **Forward pass (Weeks 9+ Phase A ✅):** the worker no longer calls `Qwen2Model.forward`. `worker/model/{rope,attention,forward}.py` hand-write RoPE (`rotate_half`), GQA attention (`repeat_kv` + causal/padding mask + fp32 softmax) and the decoder-layer loop, **reusing HF's leaf modules** (`embed_tokens`, `q/k/v/o_proj`, MLP, RMSNorm, `lm_head`) because the weights are 4-bit NF4 (no dequant). `Qwen2Forward` keeps the HF-callable interface (`past_key_values` legacy tuple `[B, H_kv, S, D]`) so `ContinuousBatchEngine`/`kv_cache.py`/proto are untouched. `TransformersBackend` defaults to it; `AI_FACTORY_SELF_FORWARD=0` falls back to HF via `HFForwardAdapter` (legacy tuple ↔ `Cache`). Verified bit-exact vs HF **eager** (tiny CPU + Qwen2.5-3B bf16/fp32); on 7B 4-bit vs HF **sdpa** diff is ~1.6 (SDPA kernel + bf16 quant noise), prefill 0.94×/decode 0.82× HF. Next: prefix caching, PagedAttention.
 - **Context window:** 8K tokens; truncation logic in Go when `EstimatedTokens() > 90%` of the budget.
 - **Batching:** `BatchScheduler` coalesces requests within a **100ms** window or up to **batch 4**, sends `BatchGenerate`; Go routes events by `request_id`. In the worker this now feeds a **continuous batching engine** (`worker/continuous_batch_engine.py`): an iteration-level scheduler admits new sequences while others decode, evicts finished ones, and self-manages per-sequence KV cache (`worker/kv_cache.py`, left-pad + `position_ids` assembly; HF runs one attention step). The scheduler's Batch Slot count is `inference.max_in_flight_batches` (default 4) — >1 lets requests queue at the worker; the worker still runs one forward pass at a time.
 - **Streaming:** gRPC server-streaming (Python→Go), SSE (Go→Client), streams each token immediately.
 - **Protocol:** OpenAI `/v1/chat/completions` only. The dual protocol was collapsed to OpenAI-only on 2026-08-15 — the Messages API dialect, its adapter, and the UI protocol dropdown were removed to keep a single contract. Requests convert to the internal canonical format (`session.Message`).
-- **Tools:** Interface `ToolExecutor` → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` without a sandbox). The interface allows swapping in a sandbox later.
+- **Tools:** Interface `ToolExecutor` (`Execute`/`ListTools`/`CanExecute`) → `LocalToolExecutor` (4 tools: `read_file`, `write_file`, `run_command`, `list_files`; 30s timeout; `run_command` uses `sh -c` **without a sandbox**) or `DockerToolExecutor` (opt-in via `tools.executor=docker`; runs every tool in a throwaway container — `--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges` + memory/pid/cpu caps, workspace bind-mounted rw at `/workspace`, params passed via env, paths confined to the workspace). `tools.docker_image` defaults to `alpine:3.24`; requires the docker CLI.
 - **Agentic loop:** max `MaxToolIterations = 10`; tool results are not streamed back to the client; they are fed into the session for the next inference turn.
 - **Error handling:** Cancel propagation from client → Go → gRPC → Python (100ms poll); tool errors first, the rest later.
 - **Multi-user:** In-memory sessions distinguished by the `x-session-id` header (set by the client); no auth.
@@ -205,16 +208,16 @@ Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
 | Weeks 3–4 | Hand-write byte-level BPE tokenizer | ✅ Done — spec approved, integrated into pipeline |
 | Weeks 5–6 | Hand-write the sampling loop (greedy / temperature / top-p / top-k) | ✅ Done — `worker/sampling.py` (HF forward + its KV cache) |
 | Weeks 7–8 | Hand-manage KV cache + dynamic batching | ✅ Done — `worker/kv_cache.py` + `worker/continuous_batch_engine.py` (continuous batching on transformers) |
-| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | 🔜 Next |
+| Weeks 9+ | Hand-written forward pass ✅ (Phase A), prefix caching, PagedAttention | 🟡 In progress |
 
 Code↔roadmap mapping details: `docs/ARCHITECTURE.md` §12.
 
 ## Known Gaps
 
-- **Tool-calling is dead on transformers, works on llama** (`ARCHITECTURE.md` §9.1): on the `transformers` engine (Qwen2.5-Coder-7B), the batch path does not detect `tool_use` (only emits `STOP_END_TURN`/`STOP_MAX_TOKENS`) → the tool branch dies. On the `llama` engine (Qwen3.5-9B), tool-use **works and is verified E2E** — the model calls `read_file`, the Go loop executes, the model answers with the file's contents.
-- **Client-provided tools not wired up** (§9.2): the loop always uses the 4 built-in tools of `LocalToolExecutor`; tools the client declares in the request are ignored.
+- **Tool-calling works on both engines** (`ARCHITECTURE.md` §10.1): on `llama` (Qwen3.5-9B) llama.cpp parses tool calls natively; on `transformers` (Qwen2.5-Coder-7B) the continuous-batch path now parses `<tool_call>{...}</tool_call>` out of the raw text (`worker/tool_calls.py`), suppresses the markup from the token stream, and emits `tool_use` + `STOP_TOOL_USE`. Broken JSON falls back to the old stop reason.
+- **Client-provided tools wired up** (§10.2): `OpenAIToolsToInternal` → `RunStreaming(..., clientTools)`; the loop merges client tools with the 4 built-ins (`toolDefinitionsFor`, client wins on a name clash). Calls the executor doesn't own are returned to the caller as `tool_calls` (stream `delta.tool_calls`; non-stream `message.tool_calls` + `finish_reason: tool_use`) instead of erroring — gate `LocalToolExecutor.CanExecute` / `Loop.allExecutable`.
 - **Fixed:** the `--max-concurrent ≤ 1` batch-size override bug (default is now `0` = use `DefaultMaxBatchSize`; any `> 0` value sets the batch size).
-- **Not yet:** persistence for other domains, sandbox for `run_command`, cost/quotas enforcement (usage is recorded but not yet enforced against quotas).
+- **Not yet:** persistence for other domains, cost/quotas enforcement (usage is recorded but not yet enforced against quotas). Tool sandboxing exists but is opt-in (`tools.executor=docker`; the default `local` executor runs `run_command` unsandboxed).
 - **Auth trên inference đã có** (consumer slice): `/v1/chat/completions` yêu cầu `Authorization: Bearer <JWT hoặc API key>`; UI 3 trang login/chat/keys. Chi tiết `docs/superpowers/specs/2026-08-15-consumer-auth-ui-design.md`.
 
 ## Running

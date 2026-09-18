@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-09-14** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-09-18** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -10,17 +10,18 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ## 📍 Hiện tại đang ở đâu
 
-> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết, prefix caching, PagedAttention.**
+> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết ✅ (Phase A), prefix caching + PagedAttention 🔜.**
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 9+: Forward pass tự viết, prefix caching, PagedAttention | — |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 9+: Prefix caching, PagedAttention | — |
 | Tuần 3–4: Tokenizer byte-level BPE tự viết | | |
 | Tuần 5–6: Sampling loop tự viết (greedy / temperature / top-p / top-k) | | |
 | Tuần 7–8: KV cache tự quản + continuous batching (transformers) | | |
+| Tuần 9+ Phase A: Forward pass tự viết (RoPE + GQA attention + layer loop) | | |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
-**Việc kế tiếp cụ thể:** tự viết forward pass (thay attention/`past_key_values` của HF), rồi prefix caching + PagedAttention (Tuần 9+).
+**Việc kế tiếp cụ thể:** prefix caching (tái dùng KV của prefix chung) rồi PagedAttention (block manager + block table).
 
 ---
 
@@ -35,7 +36,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | ✅ Xong |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | ✅ Xong |
-| Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🔜 Chưa |
+| Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🟡 Phase A ✅ (forward pass) — prefix/Paged 🔜 |
 
 ---
 
@@ -186,13 +187,17 @@ Trạng thái: **✅ Xong** (2026-09-14) — engine continuous batching cho `tra
 - [x] Go: config `inference.max_in_flight_batches` (default 4) nới Batch Slots để nhiều batch cùng bay
 - [x] Tests CPU: `test_kv_cache.py` (8), `test_continuous_batch.py` (8), `test_fake_model.py`, `test_prompt.py`; xoá `batch_engine.py`
 
-## 🔜 Giai đoạn 5 — Tuần 9+: Forward pass tự viết
+## 🟡 Giai đoạn 5 — Tuần 9+: Forward pass tự viết → prefix caching → PagedAttention
 
-Trạng thái: **Chưa bắt đầu**
+**Phase A — Forward pass tự viết: ✅ Xong** (2026-09-18). Spec [`docs/superpowers/specs/2026-09-18-self-written-forward-pass-design.md`](superpowers/specs/2026-09-18-self-written-forward-pass-design.md) · Plan [`docs/superpowers/plans/2026-09-18-self-written-forward-pass.md`](superpowers/plans/2026-09-18-self-written-forward-pass.md).
 
-- [ ] Forward pass tự viết
-- [ ] Prefix caching
-- [ ] PagedAttention
+- [x] **RoPE tự viết** (`worker/model/rope.py`) — inv_freq + `rotate_half` GPT-NeoX, parity với HF `Qwen2RotaryEmbedding`/`apply_rotary_pos_emb`.
+- [x] **GQA attention tự viết** (`worker/model/attention.py`) — `repeat_kv` + causal/padding mask + softmax fp32.
+- [x] **Forward pass tự viết** (`worker/model/forward.py`, `Qwen2Forward`) — layer loop + attention, **tái dùng leaf module HF** (embed/norm/qkvo/mlp/lm_head, weights 4-bit NF4); trả legacy-tuple KV `[B, H_kv, S, D]` tương thích `KVCache`.
+- [x] **Tích hợp** `TransformersBackend`: forward tự viết là mặc định; cờ `AI_FACTORY_SELF_FORWARD=0` quay về HF qua `HFForwardAdapter` (chuyển legacy tuple ↔ `Cache` vì HF ≥4.47 không nhận tuple). `ContinuousBatchEngine`/`kv_cache.py`/proto **không đổi**.
+- [x] **Verify**: test CPU (`tests/test_rope.py`, `test_self_attention.py`, `test_forward.py`) — `pytest tests/` **130 passed**; GPU Qwen2.5-3B bf16/fp32: self vs HF **eager bit-exact** (`max_abs_diff = 0`). Trên 7B 4-bit (HF sdpa) diff ~1.66 do kernel SDPA + lượng tử bf16 (không phải bug). Benchmark 7B 4-bit: prefill self ~407ms vs HF ~383ms (0.94×), decode/token ~69ms vs ~56ms (0.82×); thử nhánh SDPA chỉ lợi ~5% prefill, ~0% decode → giữ eager.
+- [ ] **Phase B — Prefix caching** (chưa).
+- [ ] **Phase C — PagedAttention** (chưa).
 
 ---
 
@@ -200,11 +205,12 @@ Trạng thái: **Chưa bắt đầu**
 
 Chi tiết: `docs/ARCHITECTURE.md` §9.
 
-- [ ] **Tool-calling chết trên engine transformers** (§9.1) — đường batch không phát hiện `tool_use` (chỉ sinh `STOP_END_TURN`/`STOP_MAX_TOKENS`). Hiện chỉ hoạt động trên engine llama.
-- [ ] **Tool từ client chưa nối** (§9.2) — loop luôn dùng 4 built-in tools, tool client khai báo trong request bị bỏ qua.
-- [ ] **Bug nhỏ `--max-concurrent`** (§9.4) — flag ≤ 1 không ghi đè batch size; log `max_batch` sai khi flag = 1.
+- [x] **Tool-calling trên engine transformers** (§9.1) — đã vá 2026-09-16: `ContinuousBatchEngine` parse `<tool_call>{...}</tool_call>` từ text (`worker/tool_calls.py`), chặn markup khỏi luồng token, phát `tool_use` + `STOP_TOOL_USE`. Test `tests/test_tool_calls.py`.
+- [x] **Tool từ client đã nối** (§9.2) — `OpenAIToolsToInternal` + `RunStreaming(clientTools)`; loop merge với built-ins; tool không thuộc executor trả về caller qua `tool_calls` (stream + non-stream).
+- [x] **Bug nhỏ `--max-concurrent`** (§9.4) — đã fix ở C1-C4 (default `0`, guard `>0`, log `max_batch` đúng); docs cũ đã đồng bộ 2026-09-16.
 - [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
-- [ ] Chưa có: persistence, sandbox cho `run_command`, cost metering (billing theo usage).
+- [x] **Sandbox cho tool** — `DockerToolExecutor` (opt-in `tools.executor=docker`): mỗi tool chạy trong container dùng-một-lần (`--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges` + pid/mem/cpu caps, workspace mount rw tại `/workspace`, path confined). Default `local` vẫn chạy trên host (không sandbox).
+- [ ] Chưa có: cost/quotas enforcement theo usage.
 
 ---
 
@@ -212,6 +218,9 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-18 | Giai đoạn 5 Phase A — forward pass tự viết ✅. Thêm `worker/model/rope.py` (RoPE `rotate_half` + cos/sin), `worker/model/attention.py` (`repeat_kv` + GQA + causal/padding mask + softmax fp32), `worker/model/forward.py` (`Qwen2Forward`: layer loop + attention, tái dùng leaf module HF, trả legacy-tuple KV `[B,H_kv,S,D]`). `TransformersBackend` mặc định dùng forward tự viết, cờ `AI_FACTORY_SELF_FORWARD=0` rollback về HF. Interface callable tương thích HF nên `ContinuousBatchEngine`/`kv_cache.py`/`server.py`/proto **không đổi**. Tests mới `test_rope.py` (4), `test_self_attention.py` (6), `test_forward.py` (8) + `test_engines.py` cờ → `pytest tests/` **130 passed**. GPU: Qwen2.5-3B bf16/fp32 self vs HF eager **bit-exact** (`max_abs_diff=0`); 7B 4-bit prefill 407ms vs HF 383ms, decode/tok 69ms vs 56ms (SDPA thử chỉ lợi ~5% prefill). Bug kèm theo: HF transformers 4.50 không còn nhận `past_key_values` dạng legacy tuple → thêm `worker/model/hf_forward.py` (`HFForwardAdapter`, tuple ↔ `Cache`) cho đường rollback. Spec/plan: `docs/superpowers/{specs,plans}/2026-09-18-self-written-forward-pass*.md`. |
+| 2026-09-16 | Sandbox tool + suite Python xanh ✅. Thêm `DockerToolExecutor` (`internal/services/inference/docker_tools.go`): 4 built-in tool chạy trong container dùng-một-lần (`docker run --rm --network=none --read-only --tmpfs /tmp --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=256 --memory=512m --cpus=1`, workspace bind-mount rw `/workspace`, params qua env nên không injection, `write_file` content qua stdin, path confined trong workspace); chọn bằng `tools.executor=local|docker` + `tools.docker_image` (env `AI_FACTORY_TOOLS_EXECUTOR`/`AI_FACTORY_TOOLS_DOCKER_IMAGE`), registry warn nếu thiếu docker CLI. Tests `docker_tools_test.go` (argv isolation, stdin, workdir, path escape, failure→tool error). Sửa 4 test `test_llama_backend.py` fail sẵn (stub thiếu `_gen_lock` + override `_generate`): `pytest tests/` **104 passed**. |
+| 2026-09-16 | Vá 2 lỗ hổng tool-calling + đồng bộ docs `--max-concurrent` ✅. (1) **transformers tool_use**: `worker/tool_calls.py` (`parse_tool_calls` + `marker_holdback`) + `ContinuousBatchEngine` phát hiện `<tool_call>` khi stream (giữ lại đuôi có thể thành marker, chặn markup khỏi content), `_finish` parse JSON → emit `tool_use` + `STOP_TOOL_USE`; JSON hỏng thì fallback stop reason cũ. (2) **tool client**: `OpenAIToolsToInternal` + `RunStreaming(..., clientTools)`, loop merge built-ins với tool client (`toolDefinitionsFor`, client thắng khi trùng tên), `ToolExecutor.CanExecute` + `Loop.allExecutable` → tool không thuộc executor trả `tool_calls` cho client (non-stream thêm `message.tool_calls` + `finish_reason: tool_use`). (3) Docs cũ về bug `--max-concurrent` (đã fix ở C1-C4) đồng bộ. Test: `python -m pytest tests/` 100 passed (4 test llama fail sẵn), `go test ./...` xanh. |
 | 2026-09-14 | Giai đoạn 4 (Tuần 7–8) — KV cache tự quản + continuous batching ✅. Thêm `worker/kv_cache.py` (`KVCache` buffer per-sequence + `KVCacheManager` assemble left-pad/`position_ids`) và `worker/continuous_batch_engine.py` (daemon thread: admit → prefill → decode → evict; budget `max_batch_size`/`max_batch_tokens`; cancel; `stop_sequences`). `TransformersBackend` bỏ batch path cũ, single cũng qua scheduler (D4); xoá `worker/batch_engine.py`; tách `worker/prompt.py`. Go thêm `inference.max_in_flight_batches` (default 4) + `SetMaxInFlight` wiring. Tests CPU mới: `test_kv_cache.py`, `test_continuous_batch.py` (parity greedy, continuous admission, cancel, budget), `test_fake_model.py`; `pytest tests/` 91 passed (4 test llama fail sẵn). Spec/plan: `docs/superpowers/{specs,plans}/2026-09-14-kv-cache-continuous-batching*.md`. |
 | 2026-09-14 | Giai đoạn 3 (Tuần 5–6) — sampling loop tự viết ✅. Thêm `python-worker/worker/sampling.py`: `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`; ngược lại temperature → top-k → top-p → multinomial) + vòng lặp `generate_tokens` (forward pass + `past_key_values` của HF, yield `(row, token_id, reason)`). `engine.py` + `batch_engine.py` bỏ `model.generate()`/streamer, dùng loop tự viết + `StreamingDecoder`; batch có sampling params **riêng từng request**. `tests/test_sampling.py` (17 test CPU với model giả) — toàn bộ suite `python -m pytest tests/` xanh (trừ 4 test `test_llama_backend.py` fail sẵn từ trước, do stub `LlamaBackend.__new__` thiếu `_gen_lock`). Verify E2E thật trên Qwen2.5-Coder-7B 4-bit: greedy + stochastic, single + batch đều chạy. |
 | 2026-09-13 | Usage rework sang Postgres source-of-truth + rollup ✅ — bỏ Redis counter/`Flusher`/`cache.Lock`; `RecordUsage` ghi thẳng `usage_events` (append-only, không mất khi Redis chết), `usage.Roller` (5s, chỉ API node) gộp vào `usage_daily` qua watermark `usage_rollup_state` (migration `0011_usage_rollup_state`) trong một transaction `SELECT ... FOR UPDATE` (idempotent, crash-safe, không double count). Migration `0010_backfill_usage_daily` gộp history `usage_events` cũ một lần; reads từ `usage_daily` (lag ≤ 5s). Đồng thời sửa bug usage trống (container thiếu `AI_FACTORY_REDIS_ADDR`) + thêm mount `../workspace` để agent tools ghi file ra host. `go test ./...` (có DB) xanh + E2E Docker. |

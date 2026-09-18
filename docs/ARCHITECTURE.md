@@ -2,7 +2,7 @@
 
 > Tài liệu này mô tả kiến trúc **thực tế** của dự án dựa trên mã nguồn hiện tại, bổ sung cho `CONTEXT.md` (glossary ngắn) và `CLAUDE.md` (tổng quan + lộ trình). Nó đi sâu vào từng thành phần, luồng dữ liệu và các giới hạn tích hợp.
 
-**Trạng thái doc:** cập nhật 2026-09-12 — khớp code sau M1–M3 (control plane + runtime adapter + routing/rate limit), A5 (reliability), A6 (observability), chat history + usage, NextJS UI (`web/`), và Phase 1–4 tái kiến trúc (composition root/DI, GORM, Gin, `services/*`). Nếu có thay đổi kiến trúc, cập nhật lại.
+**Trạng thái doc:** cập nhật 2026-09-18 — khớp code sau M1–M3 (control plane + runtime adapter + routing/rate limit), A5 (reliability), A6 (observability), chat history + usage, NextJS UI (`web/`), Phase 1–6 tái kiến trúc, và **forward pass tự viết** (Tuần 9+ Phase A). Nếu có thay đổi kiến trúc, cập nhật lại.
 
 > **Đã tái kiến trúc (Phase 1–4 ✅):** Go server dùng layout production (modular monolith + DI + composition root; Gin + GORM + gormigrate + viper + zap; `internal/services/{iam,serving,usage,inference}` + `internal/infrastructure/*`). Plan Phase 4: [`docs/superpowers/plans/2026-09-12-phase4-modularize.md`](superpowers/plans/2026-09-12-phase4-modularize.md). Các đường dẫn trong tài liệu dưới đây đã ánh xạ sang layout mới; còn lại Phase 5 (multi-binary) và Phase 6 (outbox/cache-aside).
 
@@ -90,7 +90,7 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `--port` | `8080` | Cổng HTTP |
 | `--inference-addr` | `localhost:50051` | Địa chỉ gRPC Python worker |
 | `--workdir` | `.` | Thư mục làm việc cho tool execution |
-| `--max-concurrent` | `1` | Batch size (chỉ override khi `>1`) |
+| `--max-concurrent` | `0` | Batch size (`0` = default 4; giá trị `>0` luôn set, kể cả `1`) |
 | `--ui-dir` | auto (`ui/` hoặc `../ui`) | Thư mục UI tĩnh |
 
 **Cấu hình (viper: `configs/config.yaml`, env `AI_FACTORY_*` override — `internal/config/config.go`):**
@@ -110,6 +110,8 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `AI_FACTORY_DATABASE_CONN_MAX_IDLE_TIME` | `5m` | Pool: thời gian idle tối đa (C4) |
 | `AI_FACTORY_HTTP_READ_HEADER_TIMEOUT` | `10s` | HTTP read-header timeout (C4) |
 | `AI_FACTORY_HTTP_IDLE_TIMEOUT` | `120s` | HTTP keep-alive idle timeout (C4) |
+| `AI_FACTORY_TOOLS_EXECUTOR` | `local` | `local` (chạy trên host) hoặc `docker` (sandbox container) |
+| `AI_FACTORY_TOOLS_DOCKER_IMAGE` | `alpine:3.24` | Image cho tool khi `executor=docker` |
 | `AI_FACTORY_SKIP_SEED` | — | `1` để bỏ qua seeding |
 | `AI_FACTORY_ADMIN_USER/PASSWORD` | `admin` / `admin1234` | Tài khoản admin seed |
 | `AI_FACTORY_DEMO_TENANT` | `acme` | Tenant demo seed |
@@ -171,7 +173,7 @@ Handler nhận `*gin.Context`; route + auth middleware `gin.HandlerFunc`; global
 **Adapters** (`adapters.go`):
 
 - `OpenAIToInternal`: system message → system prompt; `tool_calls`/`tool_call_id` map trực tiếp.
-- `ToolsToInternal` / `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên. ⚠️ **Hiện không được handler gọi** — xem §10.2.
+- `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên thành `infra.ToolDefinition`. Handler gọi và truyền xuống loop; loop merge với built-ins (client thắng khi trùng tên) — xem §5.3.
 
 **SSE writer** (`sse.go`): headers `text/event-stream`, `no-cache`, `keep-alive`, `X-Accel-Buffering: no`. Gửi token ngay mỗi lần + `Flush()`. Định dạng OpenAI stream: `chat.completion.chunk` với `delta.content` / `delta.reasoning_content` / `delta.tool_calls`, rồi chunk `finish_reason`, rồi `[DONE]`. Overloaded (backpressure) gửi frame lỗi `OVERLOADED`.
 
@@ -251,20 +253,21 @@ READY/DEGRADED → STOPPING → STOPPED → (restart) PENDING
 
 Tool results **không** stream về client — đưa vào session và dùng cho lượt inference tiếp theo.
 
-### 2.6 Tool Executor — `internal/services/inference/tools.go`
+### 2.6 Tool Executor — `internal/services/inference/{tools,docker_tools}.go`
 
-- Interface `ToolExecutor`: `Execute(ctx, name, params)` + `ListTools()`.
-- `LocalToolExecutor` chạy tool **trực tiếp trên host**, timeout `30s` mỗi tool. Interface cho phép swap sang sandbox (Docker) sau.
-- **4 built-in tools**:
+- Interface `ToolExecutor`: `Execute(ctx, name, params)` + `ListTools()` + `CanExecute(name)`.
+- `LocalToolExecutor` chạy tool **trực tiếp trên host**, timeout `30s` mỗi tool. Dùng khi tin model/caller.
+- `DockerToolExecutor` (chọn bằng `tools.executor=docker`) chạy tool trong **container dùng-một-lần** (`docker run --rm`), cách ly thật: `--network=none`, `--read-only` + tmpfs `/tmp`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit`, `--memory`, `--cpus`; workspace bind-mount rw tại `/workspace` (`-w` = workspace), image cấu hình qua `tools.docker_image` (default alpine). Tham số truyền qua env (không nội suy vào shell) → không injection; `write_file` truyền content qua stdin. Path phải là đường dẫn **tương đối trong workspace** — `..`/path tuyệt đối/`\`/`:` bị từ chối.
+- **4 built-in tools** (cả 2 executor cùng tên/schema):
 
-| Tool | Mô tả | Chạy bằng |
-|---|---|---|
-| `read_file` | Đọc file | `os.ReadFile` |
-| `write_file` | Ghi file (create/overwrite) | `os.WriteFile` |
-| `run_command` | Chạy lệnh shell | `exec.CommandContext(ctx, "sh", "-c", ...)` |
-| `list_files` | Liệt kê thư mục | `os.ReadDir` |
+| Tool | Mô tả | Local | Docker |
+|---|---|---|---|
+| `read_file` | Đọc file | `os.ReadFile` | `cat -- "$AF_TOOL_PATH"` |
+| `write_file` | Ghi file (create/overwrite) | `os.WriteFile` | `cat > "$AF_TOOL_PATH"` (stdin) |
+| `run_command` | Chạy lệnh shell | `sh -c` trên host | `sh -c` trong container |
+| `list_files` | Liệt kê thư mục | `os.ReadDir` | `ls -1 -p -A` |
 
-Kết quả JSON: `{"result": "..."}` hoặc `{"error": "..."}`. ⚠️ **`run_command` không sandbox** — đúng cho học tập, không phù hợp production.
+Kết quả JSON: `{"result": "..."}` hoặc `{"error": "..."}`. ⚠️ `LocalToolExecutor` **không sandbox**; muốn cách ly thì bật `tools.executor=docker` (cần docker CLI trên PATH).
 
 ### 2.7 Batch Scheduler — `internal/infrastructure/inference/batch_scheduler.go`
 
@@ -436,13 +439,21 @@ Giống 5.1 nhưng mỗi `LoopEventToken`/`LoopEventReasoning` được viết n
 
 ```
 user msg → model → model trả STOP_TOOL_USE + toolCalls
-  → loop execute từng tool (LocalToolExecutor, timeout 30s)
-  → lưu tool_result vào session
-  → iteration kế: model nhìn lại toàn bộ history (kèm tool results) → tiếp tục
+  → tool thuộc executor (built-in)? execute ngay (LocalToolExecutor, timeout 30s)
+    → lưu tool_result vào session
+    → iteration kế: model nhìn lại toàn bộ history (kèm tool results) → tiếp tục
+  → tool của client? không execute local — trả `tool_calls` + finish_reason `tool_use` cho caller
   → ... đến khi STOP_END_TURN hoặc đủ 10 iterations
 ```
 
-Trên engine **transformers**, `tool_use` không bao giờ được sinh ở đường batch (§10.1). Trên engine **llama**, nhánh này **chạy thật** — verified E2E.
+Bước 1 (loop) gửi **built-in tools + tool client khai báo** (merge, client thắng khi trùng tên).
+Tool client chỉ khai báo mà executor không sở hữu sẽ được trả về cho caller qua `tool_calls`
+(thay vì lỗi "unknown tool"); caller chạy rồi gửi kết quả lại ở turn sau.
+
+Trên engine **transformers** (2026-09-16), đường batch tự parse `<tool_call>…</tool_call>`
+trong output (worker `tool_calls.py` + `continuous_batch_engine.py`): markup bị chặn khỏi
+luồng token, phát `tool_use` event + `STOP_TOOL_USE` — không còn chết như trước. Trên engine
+**llama**, llama.cpp parse sẵn (native), verified E2E.
 
 ### 5.4 Concurrent requests (static batching)
 
@@ -519,7 +530,8 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 - **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho Jinja template (build prompt string), không token hoá. Hỗ trợ tool calling.
 - **Streaming:** daemon thread chạy `generate_tokens` → `queue.Queue` → async generator; decode tăng dần bằng `StreamingDecoder` (incremental UTF-8), decode tăng dần theo từng token.
 - **Sampling tự viết (Tuần 5-6 ✅):** `worker/sampling.py` — `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`, ngược lại temperature → top-k → top-p → multinomial). Test `tests/test_sampling.py` (CPU, model giả).
-- **Continuous batching + KV cache tự quản (Tuần 7-8 ✅):** `worker/continuous_batch_engine.py` — daemon thread sở hữu model, iteration-level (admit theo budget → prefill → decode 1 bước → evict); `worker/kv_cache.py` sở hữu buffer KV per-sequence và assemble batch nhiều độ dài (left-pad + `position_ids`). HF chỉ chạy attention một bước. Single `Generate` cũng đi qua scheduler. Tests `tests/test_continuous_batch.py`, `tests/test_kv_cache.py` (CPU, model giả). **Còn lại:** Tuần 9+ forward pass tự viết, prefix caching, PagedAttention.
+- **Continuous batching + KV cache tự quản (Tuần 7-8 ✅):** `worker/continuous_batch_engine.py` — daemon thread sở hữu model, iteration-level (admit theo budget → prefill → decode 1 bước → evict); `worker/kv_cache.py` sở hữu buffer KV per-sequence và assemble batch nhiều độ dài (left-pad + `position_ids`). HF chỉ chạy attention một bước. Single `Generate` cũng đi qua scheduler. Tests `tests/test_continuous_batch.py`, `tests/test_kv_cache.py` (CPU, model giả).
+- **Forward pass tự viết (Tuần 9+ Phase A ✅, 2026-09-18):** `worker/model/{rope,attention,forward}.py` thay `Qwen2Model.forward` của HF. `Qwen2Forward` tự chạy QKV projection, RoPE (`rotate_half`), GQA attention (`repeat_kv` + causal/padding mask + softmax fp32), MLP và nối KV — **tái dùng leaf module của HF** (`embed_tokens`, `q/k/v/o_proj`, MLP, RMSNorm, `lm_head`) vì weights là 4-bit NF4 (không dequant). Interface callable tương thích HF (`past_key_values` legacy tuple `[B, H_kv, S, D]`) nên `ContinuousBatchEngine`/`kv_cache.py` không đổi. `TransformersBackend` mặc định dùng forward tự viết; cờ `AI_FACTORY_SELF_FORWARD=0` quay về HF qua `HFForwardAdapter` (chuyển legacy tuple ↔ `Cache`). Parity: CPU tiny Qwen2 `allclose`, GPU Qwen2.5-3B bf16/fp32 **bit-exact** so với HF eager. **Còn lại:** prefix caching, PagedAttention.
 - **Token counting:** Go heuristic `chars/4`; Python đếm chính xác qua tokenizer khi trả `usage`.
 
 Benchmark (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.
@@ -544,21 +556,21 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 
 ## 10. Hạn chế & lỗ hổng tích hợp hiện tại
 
-### 10.1 Tool-calling: hoạt động trên engine llama, chết trên engine transformers
+### 10.1 Tool-calling: hoạt động trên cả 2 engine (đã sửa 2026-09-16)
 
-> ✅ **Engine llama (Qwen3.5-9B): tool-use ĐÃ HOẠT ĐỘNG và verified E2E (2026-08-10).** llama-server hỗ trợ tool calling native → `LlamaBackend` parse `tool_calls` → `STOP_TOOL_USE` + `tool_calls` thật → nhánh tool-use của `loop.go` kích hoạt. E2E đã xác nhận model gọi `read_file`, Go executor chạy, model trả lời với nội dung file.
+> ✅ **Engine llama (Qwen3.5-9B):** llama-server hỗ trợ tool calling native → `LlamaBackend` parse `tool_calls` → `STOP_TOOL_USE` + `tool_calls` thật. Verified E2E (2026-08-10).
 >
-> ⚠️ **Engine transformers (Qwen2.5-Coder-7B): vẫn chết.** Giới hạn dưới đây áp dụng cho đường transformers.
+> ✅ **Engine transformers (Qwen2.5-Coder-7B):** đường continuous batch tự parse text `<tool_call>{...}</tool_call>` (`worker/tool_calls.py`) → phát `tool_use` + `STOP_TOOL_USE`. Markup bị chặn khỏi luồng token (dò marker có hold-back nên không lộ ra content).
 
-- Agentic loop chỉ gọi `scheduler.Submit` → `BatchGenerate` → `TransformersBackend` → `BatchEngine.generate_batch`.
-- `BatchEngine` đã stream token theo thời gian thực nhưng **không bao giờ yield `tool_use`** — chỉ `token`/`final` với `STOP_END_TURN`/`STOP_MAX_TOKENS`.
-- Hệ quả: trên transformers, nhánh tool-calling của `loop.go` (step 7) không kích hoạt. Model nhận `tools` trong prompt nhưng tool call bị coi là text thường.
-- Cần sửa: cho `BatchEngine`/`TransformersBackend` parse tool call từ output, hoặc loop dùng `GenerateStream` (single) cho request cần tool.
+- `ContinuousBatchEngine._emit_or_finish` phát hiện marker mở `tool_call` trong text; `_finish` parse JSON và emit `{"type":"tool_use"}` trước `final`, đổi `stop_reason` sang `STOP_TOOL_USE` / `finish_reason` `tool_use`.
+- JSON hỏng/thiếu tên → bỏ qua, giữ stop reason mặc định (`STOP_END_TURN`/`STOP_MAX_TOKENS`).
+- Test CPU: `tests/test_tool_calls.py`.
 
-### 10.2 Tool definitions từ client chưa được nối
+### 10.2 Tool definitions từ client (đã nối 2026-09-16)
 
-- `adapters.go` có `ToolsToInternal` / `OpenAIToolsToInternal`, handler parse `req.Tools`, nhưng **không truyền xuống loop**.
-- Loop luôn dùng `l.tools.ListTools()` — **4 built-in tools** của `LocalToolExecutor`, không phải tool client khai báo.
+- `adapters.go` có `OpenAIToolsToInternal`; handler parse `req.Tools`, truyền xuống `RunStreaming`.
+- Loop merge tool client với built-ins của `LocalToolExecutor` (client thắng khi trùng tên) — `toolDefinitionsFor`.
+- Tool không thuộc executor: loop **không execute local**, trả `tool_calls` cho client (stream: `delta.tool_calls`; non-stream: `message.tool_calls` + `finish_reason: tool_use`, gate bằng `Loop.allExecutable`).
 
 ### 10.3 Flag `--max-concurrent` (đã sửa — C1)
 
@@ -571,7 +583,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 
 ### 10.5 Khác
 
-- **`run_command` không sandbox** — chạy trực tiếp trên host với `sh -c`.
+- **Sandbox tool (tùy chọn)**: `tools.executor=docker` chạy tool trong container dùng-một-lần (cách ly thật — §2.6). Mặc định `local` (chạy trực tiếp trên host) vẫn là "no sandbox".
 - **Cost/quota enforcement chưa đủ**: usage được ghi (`usage_events`, Prometheus) nhưng **chưa trừ vào quota** khi vượt.
 - **Persistence cho domain khác**: session/control plane đã bền; một số state worker (workload ref…) vẫn dev-only.
 - Cancel Python là poll 100ms.
@@ -634,7 +646,7 @@ curl http://localhost:8080/health
 | Giai đoạn | Nội dung | Trạng thái trong code |
 |---|---|---|
 | Tuần 1-2 | End-to-end: proto → gRPC → Go → model | ✅ Đã xong |
-| Tuần 1-2 | OpenAI protocol + SSE + agentic loop | ✅ Đã xong (tool-calling còn lỗ hổng, §10.1) |
+| Tuần 1-2 | OpenAI protocol + SSE + agentic loop | ✅ Đã xong (tool-calling cả 2 engine + tool client, §10.1–10.2) |
 | Tuần 1-2 | Continuous batching (static) | ✅ Đã xong (static batch) |
 | Tuần 3-4 | Tự viết tokenizer (BPE) | ✅ Đã xong — `worker/model/tokenizer/` |
 | Bổ sung | Engine llama (Qwen3.5-9B GGUF, llama-server proxy) | ✅ Đã xong — tool calling E2E |
@@ -643,8 +655,9 @@ curl http://localhost:8080/health
 | A6 | Observability: metrics, trace, structured log, usage metering | ✅ Đã xong |
 | UI | NextJS app (`web/`) + chat history + platform console | ✅ Đã xong |
 | Tuần 5-6 | Tự viết sampling | ✅ Đã xong — `worker/sampling.py` |
-| Tuần 7-8 | Tự quản lý KV cache + dynamic batching | 🔜 Chưa |
-| Tuần 9+ | Forward pass, prefix caching, PagedAttention | 🔜 Chưa |
+| Tuần 7-8 | Tự quản lý KV cache + dynamic batching | ✅ Đã xong |
+| Tuần 9+ Phase A | Forward pass tự viết (RoPE + GQA + layer loop) | ✅ Đã xong |
+| Tuần 9+ Phase B/C | Prefix caching, PagedAttention | 🔜 Chưa |
 
 ---
 
