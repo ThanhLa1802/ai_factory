@@ -87,7 +87,11 @@ func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor) *Loop {
 //
 // The channel is closed when generation completes or on fatal error.
 // Cancel the context to abort (cancel propagation → gRPC → Python worker).
-func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Message, params infra.SamplingParams) <-chan LoopEvent {
+//
+// clientTools are the tools the caller declared on this request (OpenAI
+// `tools`). They are merged with the executor's built-ins; calls the executor
+// doesn't own are handed back to the caller instead of being executed here.
+func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Message, params infra.SamplingParams, clientTools []infra.ToolDefinition) <-chan LoopEvent {
 	events := make(chan LoopEvent, 64) // buffer to avoid blocking on token emission
 
 	go func() {
@@ -118,16 +122,8 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 				allMessages = TruncateMessages(allMessages, sess.MaxTokens)
 			}
 
-			// Build tool definitions
-			toolDefs := l.tools.ListTools()
-			sessToolDefs := make([]infra.ToolDefinition, len(toolDefs))
-			for i, td := range toolDefs {
-				sessToolDefs[i] = infra.ToolDefinition{
-					Name:        td.Name,
-					Description: td.Description,
-					Parameters:  td.Parameters,
-				}
-			}
+			// Build tool definitions (built-ins + client-declared)
+			sessToolDefs := toolDefinitionsFor(l.tools, clientTools)
 
 			// Send to inference
 			req := infra.GenerateRequest{
@@ -218,6 +214,18 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 
 			// If model wants to call tools, execute them
 			if stopReason == "STOP_TOOL_USE" && len(toolCalls) > 0 {
+				if !l.allExecutable(toolCalls) {
+					// Tool(s) owned by the client: it already received the
+					// tool_calls events and will run them. End the turn with
+					// finish_reason=tool_use; nothing is executed here.
+					events <- LoopEvent{
+						Type:         LoopEventFinal,
+						StopReason:   stopReason,
+						FinishReason: finishReason,
+						Usage:        usage,
+					}
+					return
+				}
 				for _, tc := range toolCalls {
 					toolResult, execErr := l.tools.Execute(ctx, tc.Name, json.RawMessage(tc.Arguments))
 
@@ -266,6 +274,45 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 	}()
 
 	return events
+}
+
+// toolDefinitionsFor merges the executor's built-in tools with the tools the
+// client declared for this request. Client definitions win on a name clash so a
+// caller can override a built-in's schema.
+func toolDefinitionsFor(executor ToolExecutor, client []infra.ToolDefinition) []infra.ToolDefinition {
+	builtin := executor.ListTools()
+	out := make([]infra.ToolDefinition, 0, len(builtin)+len(client))
+	seen := make(map[string]bool, len(builtin)+len(client))
+
+	for _, td := range client {
+		if td.Name == "" || seen[td.Name] {
+			continue
+		}
+		seen[td.Name] = true
+		out = append(out, td)
+	}
+	for _, td := range builtin {
+		if seen[td.Name] {
+			continue
+		}
+		seen[td.Name] = true
+		out = append(out, infra.ToolDefinition{
+			Name:        td.Name,
+			Description: td.Description,
+			Parameters:  td.Parameters,
+		})
+	}
+	return out
+}
+
+// allExecutable reports whether every call can be run by this executor.
+func (l *Loop) allExecutable(calls []ToolCall) bool {
+	for _, tc := range calls {
+		if !l.tools.CanExecute(tc.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 // toInferenceMessages maps session messages onto the inference client's wire

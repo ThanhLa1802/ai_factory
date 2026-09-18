@@ -26,6 +26,7 @@ type Config struct {
 	InferenceMaxInFlightBatches int
 	Services                    ServicesConfig
 	Billing                     BillingConfig
+	Tools                       ToolsConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -55,6 +56,13 @@ type BillingConfig struct {
 	ReaperInterval   time.Duration
 }
 
+// ToolsConfig selects how the built-in tools execute. Executor is local (run on
+// the host) or docker (run in a throwaway sandbox container, image configurable).
+type ToolsConfig struct {
+	Executor    string
+	DockerImage string
+}
+
 // Load reads configuration from an optional YAML file plus AI_FACTORY_* env
 // overrides. path == "" loads defaults + env only.
 func Load(path string) (*Config, error) {
@@ -75,6 +83,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("billing.initial_allowance", 0)
 	v.SetDefault("billing.reservation_ttl", "15m")
 	v.SetDefault("billing.reaper_interval", "1m")
+	v.SetDefault("tools.executor", "local")
+	v.SetDefault("tools.docker_image", "alpine:3.24")
 	v.SetDefault("database_max_open_conns", 25)
 	v.SetDefault("database_max_idle_conns", 25)
 	v.SetDefault("database_conn_max_lifetime", "30m")
@@ -106,6 +116,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("AI_FACTORY_JWT_SECRET must be at least 16 characters")
 	}
 
+	if mode := v.GetString("tools.executor"); mode != "local" && mode != "docker" {
+		return nil, fmt.Errorf("tools.executor must be local or docker, got %q", mode)
+	}
+
 	return &Config{
 		DatabaseURL:                 v.GetString("database_url"),
 		JWTSecret:                   secret,
@@ -132,6 +146,10 @@ func Load(path string) (*Config, error) {
 			InitialAllowance: v.GetInt64("billing.initial_allowance"),
 			ReservationTTL:   v.GetDuration("billing.reservation_ttl"),
 			ReaperInterval:   v.GetDuration("billing.reaper_interval"),
+		},
+		Tools: ToolsConfig{
+			Executor:    v.GetString("tools.executor"),
+			DockerImage: v.GetString("tools.docker_image"),
 		},
 	}, nil
 }

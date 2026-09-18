@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from worker.engines.llama.backend import (
@@ -12,6 +14,15 @@ class _FakeClient:
     async def chat_completions(self, body):
         for c in self._chunks:
             yield c
+
+
+def _stub_backend(chunks):
+    """LlamaBackend không qua `__init__` (không spawn llama-server) — gán tay
+    client giả + `_gen_lock` mà EngineBackend cần cho guard."""
+    backend = LlamaBackend.__new__(LlamaBackend)
+    backend.client = _FakeClient(chunks)
+    backend._gen_lock = asyncio.Lock()
+    return backend
 
 
 def test_to_openai_messages():
@@ -46,8 +57,7 @@ async def test_generate_streams_tokens_and_final():
         {"choices": [{"delta": {}, "finish_reason": "stop"}],
          "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
     ]
-    backend = LlamaBackend.__new__(LlamaBackend)
-    backend.client = _FakeClient(chunks)
+    backend = _stub_backend(chunks)
     events = [ev async for ev in backend.generate([], {})]
     assert events[0] == {"type": "token", "token": "Hel"}
     assert events[1] == {"type": "token", "token": "lo"}
@@ -67,8 +77,7 @@ async def test_generate_streams_reasoning_then_content():
         {"choices": [{"delta": {}, "finish_reason": "stop"}]},
         {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}},
     ]
-    backend = LlamaBackend.__new__(LlamaBackend)
-    backend.client = _FakeClient(chunks)
+    backend = _stub_backend(chunks)
     events = [ev async for ev in backend.generate([], {})]
     assert events[0] == {"type": "reasoning", "token": "Hmm, let me "}
     assert events[1] == {"type": "reasoning", "token": "think..."}
@@ -89,8 +98,7 @@ async def test_generate_tool_calls_accumulated():
             "finish_reason": None}]},
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
     ]
-    backend = LlamaBackend.__new__(LlamaBackend)
-    backend.client = _FakeClient(chunks)
+    backend = _stub_backend(chunks)
     events = [ev async for ev in backend.generate([], {})]
     tool = events[0]
     assert tool["type"] == "tool_use" and tool["name"] == "read_file"
@@ -104,8 +112,9 @@ async def test_generate_batch_interleaves_and_completes():
         def __init__(self):
             self.server = None
             self.client = None
+            self._gen_lock = asyncio.Lock()
 
-        async def generate(self, messages, sampling_params, tools=None, cancel_event=None):
+        async def _generate(self, messages, sampling_params, tools=None, cancel_event=None):
             yield {"type": "token", "token": "x"}
             yield {"type": "final", "stop_reason": "STOP_END_TURN",
                    "finish_reason": "stop", "usage": {}}

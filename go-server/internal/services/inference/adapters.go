@@ -3,6 +3,8 @@ package inference
 import (
 	"encoding/json"
 	"fmt"
+
+	infra "github.com/ai-factory/go-server/internal/infrastructure/inference"
 )
 
 // ==========================================================================
@@ -92,6 +94,27 @@ func OpenAIToInternal(req *OpenAIRequest) ([]Message, string, error) {
 	}
 
 	return msgs, systemPrompt, nil
+}
+
+// OpenAIToolsToInternal converts tools declared by the client into the wire
+// definition carried on GenerateRequest. Tools without a function name are
+// dropped. Returns nil when the request declares no tools.
+func OpenAIToolsToInternal(tools []OpenAITool) []infra.ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]infra.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		if t.Function.Name == "" {
+			continue
+		}
+		out = append(out, infra.ToolDefinition{
+			Name:        t.Function.Name,
+			Description: t.Function.Description,
+			Parameters:  string(t.Function.Parameters),
+		})
+	}
+	return out
 }
 
 // ValidateOpenAIRequest validates required fields.

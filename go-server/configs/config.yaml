@@ -33,3 +33,10 @@ billing:
   initial_allowance: 0
   reservation_ttl: "15m"
   reaper_interval: "1m"
+# Built-in tool execution. executor: local | docker. "docker" runs every tool in
+# a throwaway container (--network=none --read-only --cap-drop=ALL, workspace
+# bind-mounted at /workspace). Env: AI_FACTORY_TOOLS_EXECUTOR /
+# AI_FACTORY_TOOLS_DOCKER_IMAGE. Requires the docker CLI on PATH.
+tools:
+  executor: "local"
+  docker_image: "alpine:3.24"

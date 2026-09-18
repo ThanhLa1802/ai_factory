@@ -11,20 +11,24 @@ import (
 )
 
 // ToolExecutor defines the interface for executing tools.
-// Implementations: LocalToolExecutor, DockerToolExecutor (future), etc.
+// Implementations: LocalToolExecutor (host), DockerToolExecutor (sandbox).
 type ToolExecutor interface {
 	// Execute runs a tool and returns the result as a JSON string.
 	Execute(ctx context.Context, toolName string, params json.RawMessage) (json.RawMessage, error)
 	// ListTools returns all available tool definitions.
 	ListTools() []ToolDefinition
+	// CanExecute reports whether this executor can run the named tool. Tools the
+	// model calls but the executor doesn't own are handed back to the client.
+	CanExecute(toolName string) bool
 }
 
 // ---------------------------------------------------------------------------
 // LocalToolExecutor — runs tools directly on the host machine.
 // ---------------------------------------------------------------------------
 
-// LocalToolExecutor executes tools as local processes.
-// In production, this would be sandboxed (Docker, etc.).
+// LocalToolExecutor executes tools as local processes on the host, with a 30s
+// timeout. Not sandboxed — use DockerToolExecutor (tools.executor=docker) when
+// commands come from an untrusted model.
 type LocalToolExecutor struct {
 	tools       map[string]localTool
 	workDir     string
@@ -109,6 +113,12 @@ func (e *LocalToolExecutor) ListTools() []ToolDefinition {
 		defs = append(defs, t.def)
 	}
 	return defs
+}
+
+// CanExecute reports whether a built-in tool with this name exists.
+func (e *LocalToolExecutor) CanExecute(toolName string) bool {
+	_, ok := e.tools[toolName]
+	return ok
 }
 
 func (e *LocalToolExecutor) toolNames() string {

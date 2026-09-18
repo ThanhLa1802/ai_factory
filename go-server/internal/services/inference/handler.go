@@ -236,14 +236,15 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		return
 	}
 
+	clientTools := OpenAIToolsToInternal(req.Tools)
 	if req.Stream {
-		h.handleOpenAIStream(ctx, c, sess, msgs, params, req.Model, p.TenantID, reservationID)
+		h.handleOpenAIStream(ctx, c, sess, msgs, params, clientTools, req.Model, p.TenantID, reservationID)
 	} else {
-		h.handleOpenAINonStream(ctx, c, sess, msgs, params, req.Model, p.TenantID, reservationID)
+		h.handleOpenAINonStream(ctx, c, sess, msgs, params, clientTools, req.Model, p.TenantID, reservationID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID, reservationID string) {
+func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
 	sse, err := NewSSEWriter(c.Writer)
 	if err != nil {
 		response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
@@ -263,7 +264,7 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 	}()
 
 	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
+		events := h.loop.RunStreaming(ctx, sess, userMsg, params, clientTools)
 
 		for event := range events {
 			switch event.Type {
@@ -378,10 +379,12 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, modelID, tenantID, reservationID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
 	var (
-		content string
-		usage   *infra.Usage
+		content      string
+		usage        *infra.Usage
+		toolCalls    []ToolCall
+		finishReason = "stop"
 	)
 
 	promptTotal, completionTotal := 0, 0
@@ -394,14 +397,21 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 	}()
 
 	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params)
+		events := h.loop.RunStreaming(ctx, sess, userMsg, params, clientTools)
 
 		for event := range events {
 			switch event.Type {
 			case LoopEventToken:
 				content += event.Token
+			case LoopEventToolUse:
+				if event.ToolCall != nil {
+					toolCalls = append(toolCalls, *event.ToolCall)
+				}
 			case LoopEventFinal:
 				usage = event.Usage
+				if event.FinishReason != "" {
+					finishReason = event.FinishReason
+				}
 				// Usage metering: Prometheus counter + durable usage_events row.
 				if event.Usage != nil {
 					promptTotal += int(event.Usage.PromptTokens)
@@ -426,18 +436,23 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 
 	}
 
+	message := map[string]interface{}{
+		"role":    "assistant",
+		"content": content,
+	}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = openAIToolCalls(toolCalls)
+	}
+
 	resp := map[string]interface{}{
 		"id":     "chatcmpl-" + uuid.New().String()[:8],
 		"object": "chat.completion",
 		"model":  modelID,
 		"choices": []map[string]interface{}{
 			{
-				"index": 0,
-				"message": map[string]string{
-					"role":    "assistant",
-					"content": content,
-				},
-				"finish_reason": "stop",
+				"index":         0,
+				"message":       message,
+				"finish_reason": finishReason,
 			},
 		},
 	}
@@ -450,6 +465,22 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// openAIToolCalls renders internal tool calls in OpenAI response format.
+func openAIToolCalls(calls []ToolCall) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(calls))
+	for _, tc := range calls {
+		out = append(out, map[string]interface{}{
+			"id":   tc.ID,
+			"type": "function",
+			"function": map[string]string{
+				"name":      tc.Name,
+				"arguments": tc.Arguments,
+			},
+		})
+	}
+	return out
 }
 
 // ==========================================================================

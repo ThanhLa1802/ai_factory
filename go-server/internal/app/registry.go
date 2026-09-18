@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/ai-factory/go-server/internal/config"
@@ -99,13 +100,20 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			return err
 		}
 		if err := c.RegisterSingleton("tool.executor", func(*di.Container) (any, error) {
+			if cfg.Tools.Executor == "docker" {
+				if _, err := exec.LookPath("docker"); err != nil {
+					slog.Warn("tools.executor=docker but the docker CLI is not on PATH; tool calls will fail",
+						"err", err)
+				}
+				return inferencesvc.NewDockerToolExecutor(opts.WorkDir, cfg.Tools.DockerImage), nil
+			}
 			return inferencesvc.NewLocalToolExecutor(opts.WorkDir), nil
 		}); err != nil {
 			return err
 		}
 		if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
 			return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
-				cc.MustResolve("tool.executor").(*inferencesvc.LocalToolExecutor)), nil
+				cc.MustResolve("tool.executor").(inferencesvc.ToolExecutor)), nil
 		}); err != nil {
 			return err
 		}

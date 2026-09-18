@@ -25,6 +25,7 @@ from .kv_cache import KVCache, KVCacheManager
 from .model.tokenizer import StreamingDecoder
 from .prompt import build_chat_prompt
 from .sampling import SamplingParams, sample_next_batch
+from .tool_calls import TOOL_CALL_OPEN, marker_holdback, parse_tool_calls
 
 _IDLE_POLL = 0.01
 
@@ -43,6 +44,8 @@ class Sequence:
     pending_input: Optional[torch.Tensor] = None
     generated: int = 0
     text: str = ""
+    emitted: int = 0
+    tool_mode: bool = False
     finished: bool = False
 
 
@@ -265,27 +268,51 @@ class ContinuousBatchEngine:
         hit = next((s for s in seq.stop_sequences if s in candidate), None)
         if hit:
             cut = candidate.find(hit)
-            if cut > len(seq.text):
-                self._send(seq, {"type": "token", "token": candidate[len(seq.text) : cut]})
             seq.text = candidate
-            self._finish(seq, "STOP_END_TURN", "stop")
+            self._emit_text(seq, cut)
+            self._finish(seq, "STOP_END_TURN", "stop", flush_text=False)
             return
 
         seq.text = candidate
-        if text:
-            self._send(seq, {"type": "token", "token": text})
+        if not seq.tool_mode:
+            marker = candidate.find(TOOL_CALL_OPEN)
+            if marker != -1:
+                # Model bắt đầu gọi tool: gửi nốt phần text trước marker rồi chặn
+                # markup khỏi luồng token (llama cũng trả tool_calls tách khỏi content).
+                seq.tool_mode = True
+                self._emit_text(seq, marker)
+            else:
+                self._emit_text(seq, len(candidate) - marker_holdback(candidate))
+
         if seq.generated >= seq.params.max_tokens:
             self._finish(seq, "STOP_MAX_TOKENS", "length")
             return
         seq.pending_input = torch.tensor([tid], dtype=torch.long, device=self.device)
 
-    def _finish(self, seq: Sequence, stop_reason: str, finish_reason: str) -> None:
+    def _emit_text(self, seq: Sequence, upto: int) -> None:
+        if upto > seq.emitted:
+            self._send(seq, {"type": "token", "token": seq.text[seq.emitted:upto]})
+            seq.emitted = upto
+
+    def _finish(self, seq: Sequence, stop_reason: str, finish_reason: str, flush_text: bool = True) -> None:
         if seq.finished:
             return
         seq.finished = True
         if seq.cache is not None:
             seq.cache.free()
             seq.cache = None
+
+        if seq.tool_mode:
+            if stop_reason in ("STOP_END_TURN", "STOP_MAX_TOKENS"):
+                calls = parse_tool_calls(seq.text)
+                if calls:
+                    for call in calls:
+                        self._send(seq, {"type": "tool_use", **call})
+                    stop_reason, finish_reason = "STOP_TOOL_USE", "tool_use"
+        elif flush_text:
+            # Xả phần đuôi đang giữ lại để dò marker (nếu có).
+            self._emit_text(seq, len(seq.text))
+
         prompt_tokens = int(seq.prompt_ids.shape[0])
         self._send(seq, {
             "type": "final",
