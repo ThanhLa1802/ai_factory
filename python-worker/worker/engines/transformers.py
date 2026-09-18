@@ -13,6 +13,7 @@ from ..continuous_batch_engine import ContinuousBatchEngine
 from ..engine import DEVICE, get_engine
 from ..model.forward import Qwen2Forward
 from ..model.hf_forward import HFForwardAdapter
+from ..prefix_cache import PrefixCache
 from .base import EngineBackend
 
 _FALSE_VALUES = {"0", "false", "off", "no"}
@@ -21,6 +22,18 @@ _FALSE_VALUES = {"0", "false", "off", "no"}
 def self_forward_enabled() -> bool:
     """Đọc cờ `AI_FACTORY_SELF_FORWARD` (default: bật)."""
     return os.environ.get("AI_FACTORY_SELF_FORWARD", "1").strip().lower() not in _FALSE_VALUES
+
+
+def prefix_cache_enabled() -> bool:
+    """Đọc cờ `AI_FACTORY_PREFIX_CACHE` (default: bật)."""
+    return os.environ.get("AI_FACTORY_PREFIX_CACHE", "1").strip().lower() not in _FALSE_VALUES
+
+
+def build_prefix_cache() -> PrefixCache:
+    return PrefixCache(
+        block_size=int(os.environ.get("AI_FACTORY_PREFIX_CACHE_BLOCK_SIZE", "16")),
+        max_blocks=int(os.environ.get("AI_FACTORY_PREFIX_CACHE_BLOCKS", "2048")),
+    )
 
 
 class TransformersBackend(EngineBackend):
@@ -65,5 +78,6 @@ class TransformersBackend(EngineBackend):
                 self.engine.tokenizer,
                 self.engine.hf_tokenizer,
                 device=DEVICE,
+                prefix_cache=build_prefix_cache() if prefix_cache_enabled() else None,
             )
         return self._batch

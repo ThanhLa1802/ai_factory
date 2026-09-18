@@ -16,7 +16,7 @@ import asyncio
 import queue as stdlib_queue
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Optional
 
 import torch
@@ -47,6 +47,9 @@ class Sequence:
     emitted: int = 0
     tool_mode: bool = False
     finished: bool = False
+    token_ids: list = field(default_factory=list)
+    prefix_len: int = 0
+    prefix_layers: object = None
 
 
 class ContinuousBatchEngine:
@@ -60,6 +63,7 @@ class ContinuousBatchEngine:
         device: Optional[str] = None,
         decoder_factory=None,
         prompt_builder=None,
+        prefix_cache=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -72,6 +76,7 @@ class ContinuousBatchEngine:
         )
         self._prompt_builder = prompt_builder or build_chat_prompt
         self.kv = KVCacheManager()
+        self.prefix_cache = prefix_cache
 
         self._waiting: deque = deque()
         self._active: list[Sequence] = []
@@ -131,9 +136,10 @@ class ContinuousBatchEngine:
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}] + msgs
         prompt = self._prompt_builder(self.hf_tokenizer, msgs, req.get("tools"))
-        ids = torch.tensor(self.tokenizer.encode(prompt), dtype=torch.long, device=self.device)
+        token_ids = list(self.tokenizer.encode(prompt))
+        ids = torch.tensor(token_ids, dtype=torch.long, device=self.device)
         sp = req.get("sampling_params") or {}
-        return Sequence(
+        seq = Sequence(
             request_id=req.get("request_id", ""),
             prompt_ids=ids,
             params=SamplingParams.from_dict(sp),
@@ -142,7 +148,26 @@ class ContinuousBatchEngine:
             decoder=self._decoder_factory(),
             rpc_queue=q,
             cancel_event=req.get("cancel_event"),
+            token_ids=token_ids,
         )
+        if self.prefix_cache is not None:
+            seq.prefix_len, seq.prefix_layers = self._match_prefix(token_ids)
+        return seq
+
+    def _match_prefix(self, token_ids: list):
+        """Prefix dài nhất khớp, chừa ít nhất 1 token để prefill (block-aligned)."""
+        matched, layers = self.prefix_cache.match(token_ids)
+        if matched <= 0 or layers is None:
+            return 0, None
+        block_size = self.prefix_cache.block_size
+        max_prefix = ((len(token_ids) - 1) // block_size) * block_size
+        if matched > max_prefix:
+            matched = max_prefix
+            if matched <= 0:
+                return 0, None
+            layers = [(k[:, :, :matched, :], v[:, :, :matched, :]) for k, v in layers]
+        layers = [(k.to(self.device), v.to(self.device)) for k, v in layers]
+        return matched, layers
 
     def _enqueue(self, seqs: list[Sequence]) -> None:
         with self._cond:
@@ -215,23 +240,48 @@ class ContinuousBatchEngine:
         if not runnable:
             return
 
-        si = self.kv.build_prefill([s.prompt_ids for s in runnable])
-        with torch.no_grad():
-            out = self.model(
-                input_ids=si.input_ids,
-                attention_mask=si.attention_mask,
-                position_ids=si.position_ids,
-                past_key_values=None,
-                use_cache=True,
+        plain = [s for s in runnable if s.prefix_layers is None]
+        prefixed = [s for s in runnable if s.prefix_layers is not None]
+
+        if plain:
+            si = self.kv.build_prefill([s.prompt_ids for s in plain])
+            with torch.no_grad():
+                out = self.model(
+                    input_ids=si.input_ids,
+                    attention_mask=si.attention_mask,
+                    position_ids=si.position_ids,
+                    past_key_values=None,
+                    use_cache=True,
+                )
+            ids = sample_next_batch(out.logits[:, -1, :], [s.params for s in plain])
+            for i, seq in enumerate(plain):
+                cache = KVCache()
+                cache.init_from_prefill(
+                    out.past_key_values, prompt_len=int(seq.prompt_ids.shape[0]), row=i
+                )
+                seq.cache = cache
+                self._emit_or_finish(seq, int(ids[i].item()))
+
+        # Sequence có prefix: prefill riêng từng cái (batch 1) với `past` = KV prefix.
+        for seq in prefixed:
+            si = self.kv.build_prefill_with_prefix(
+                seq.prompt_ids, seq.prefix_layers, seq.prefix_len
             )
-        ids = sample_next_batch(out.logits[:, -1, :], [s.params for s in runnable])
-        for i, seq in enumerate(runnable):
+            with torch.no_grad():
+                out = self.model(
+                    input_ids=si.input_ids,
+                    attention_mask=si.attention_mask,
+                    position_ids=si.position_ids,
+                    past_key_values=si.past_key_values,
+                    use_cache=True,
+                )
+            ids = sample_next_batch(out.logits[:, -1, :], [seq.params])
             cache = KVCache()
             cache.init_from_prefill(
-                out.past_key_values, prompt_len=int(seq.prompt_ids.shape[0]), row=i
+                out.past_key_values, prompt_len=int(seq.prompt_ids.shape[0]), row=0
             )
             seq.cache = cache
-            self._emit_or_finish(seq, int(ids[i].item()))
+            self._emit_or_finish(seq, int(ids[0].item()))
 
     def _decode_step(self) -> None:
         active = [s for s in self._active if not s.finished and s.pending_input is not None]
@@ -263,6 +313,7 @@ class ContinuousBatchEngine:
             return
 
         seq.generated += 1
+        seq.token_ids.append(int(tid))
         text = seq.decoder.put(tid)
         candidate = seq.text + text
         hit = next((s for s in seq.stop_sequences if s in candidate), None)
@@ -299,6 +350,8 @@ class ContinuousBatchEngine:
             return
         seq.finished = True
         if seq.cache is not None:
+            if self.prefix_cache is not None:
+                self.prefix_cache.insert(seq.token_ids, seq.cache.view(), seq.cache.length)
             seq.cache.free()
             seq.cache = None
 

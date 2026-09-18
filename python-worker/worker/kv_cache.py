@@ -104,6 +104,25 @@ class KVCacheManager:
             attention[i, max_len - n :] = 1
         return StepInputs(input_ids, attention, self._build(attention), None)
 
+    def build_prefill_with_prefix(
+        self,
+        prompt_ids: torch.Tensor,
+        prefix_layers: list,
+        prefix_len: int,
+    ) -> StepInputs:
+        """Prefill **suffix** của một sequence đã có KV prefix (batch 1).
+
+        Prefix đã được copy vào `prefix_layers` (list `(k, v)` mỗi layer, dài
+        `prefix_len`); chỉ chạy forward cho `prompt_ids[prefix_len:]`.
+        """
+        prompt_len = int(prompt_ids.shape[0])
+        device = prompt_ids.device
+        suffix = prompt_ids[prefix_len:]
+        input_ids = suffix.unsqueeze(0)
+        attention = torch.ones((1, prompt_len), dtype=torch.long, device=device)
+        position_ids = torch.arange(prefix_len, prompt_len, device=device).unsqueeze(0)
+        return StepInputs(input_ids, attention, position_ids, tuple(prefix_layers))
+
     def build_decode(
         self, caches: list[KVCache], pending_inputs: list[torch.Tensor]
     ) -> StepInputs:

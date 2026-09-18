@@ -531,7 +531,8 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 - **Streaming:** daemon thread chạy `generate_tokens` → `queue.Queue` → async generator; decode tăng dần bằng `StreamingDecoder` (incremental UTF-8), decode tăng dần theo từng token.
 - **Sampling tự viết (Tuần 5-6 ✅):** `worker/sampling.py` — `apply_temperature`/`apply_top_k`/`apply_top_p`/`sample_next` (greedy khi `temperature<=0`, ngược lại temperature → top-k → top-p → multinomial). Test `tests/test_sampling.py` (CPU, model giả).
 - **Continuous batching + KV cache tự quản (Tuần 7-8 ✅):** `worker/continuous_batch_engine.py` — daemon thread sở hữu model, iteration-level (admit theo budget → prefill → decode 1 bước → evict); `worker/kv_cache.py` sở hữu buffer KV per-sequence và assemble batch nhiều độ dài (left-pad + `position_ids`). HF chỉ chạy attention một bước. Single `Generate` cũng đi qua scheduler. Tests `tests/test_continuous_batch.py`, `tests/test_kv_cache.py` (CPU, model giả).
-- **Forward pass tự viết (Tuần 9+ Phase A ✅, 2026-09-18):** `worker/model/{rope,attention,forward}.py` thay `Qwen2Model.forward` của HF. `Qwen2Forward` tự chạy QKV projection, RoPE (`rotate_half`), GQA attention (`repeat_kv` + causal/padding mask + softmax fp32), MLP và nối KV — **tái dùng leaf module của HF** (`embed_tokens`, `q/k/v/o_proj`, MLP, RMSNorm, `lm_head`) vì weights là 4-bit NF4 (không dequant). Interface callable tương thích HF (`past_key_values` legacy tuple `[B, H_kv, S, D]`) nên `ContinuousBatchEngine`/`kv_cache.py` không đổi. `TransformersBackend` mặc định dùng forward tự viết; cờ `AI_FACTORY_SELF_FORWARD=0` quay về HF qua `HFForwardAdapter` (chuyển legacy tuple ↔ `Cache`). Parity: CPU tiny Qwen2 `allclose`, GPU Qwen2.5-3B bf16/fp32 **bit-exact** so với HF eager. **Còn lại:** prefix caching, PagedAttention.
+- **Forward pass tự viết (Tuần 9+ Phase A ✅, 2026-09-18):** `worker/model/{rope,attention,forward}.py` thay `Qwen2Model.forward` của HF. `Qwen2Forward` tự chạy QKV projection, RoPE (`rotate_half`), GQA attention (`repeat_kv` + causal/padding mask + softmax fp32), MLP và nối KV — **tái dùng leaf module của HF** (`embed_tokens`, `q/k/v/o_proj`, MLP, RMSNorm, `lm_head`) vì weights là 4-bit NF4 (không dequant). Interface callable tương thích HF (`past_key_values` legacy tuple `[B, H_kv, S, D]`) nên `ContinuousBatchEngine`/`kv_cache.py` không đổi. `TransformersBackend` mặc định dùng forward tự viết; cờ `AI_FACTORY_SELF_FORWARD=0` quay về HF qua `HFForwardAdapter` (chuyển legacy tuple ↔ `Cache`). Parity: CPU tiny Qwen2 `allclose`, GPU Qwen2.5-3B bf16/fp32 **bit-exact** so với HF eager.
+- **Prefix caching (Tuần 9+ Phase B ✅, 2026-09-18):** `worker/prefix_cache.py` (`PrefixCache`) cache KV theo **block 16 token**, khoá `blake2b(parent_hash, block_tokens)` (radix) → longest-prefix match; LRU `max_blocks`. `ContinuousBatchEngine` match prefix lúc nhận request, prefill **riêng** sequence có prefix (batch 1) với `past` = KV prefix + `input_ids` = suffix (chunked prefill; `past` + `Sq>1` đã đúng), rồi insert block khi sequence xong (copy-on-adopt). Cờ `AI_FACTORY_PREFIX_CACHE` (default on) + `AI_FACTORY_PREFIX_CACHE_BLOCKS`/`_BLOCK_SIZE`. **Còn lại:** PagedAttention (Phase C) — thay buffer per-sequence bằng block manager + block table, chia sẻ block thật (thay copy).
 - **Token counting:** Go heuristic `chars/4`; Python đếm chính xác qua tokenizer khi trả `usage`.
 
 Benchmark (`docs/BENCHMARK.md`): TTFT ~70–85ms, TPOT ~75–82ms, single throughput ~13 tok/s.
@@ -657,7 +658,8 @@ curl http://localhost:8080/health
 | Tuần 5-6 | Tự viết sampling | ✅ Đã xong — `worker/sampling.py` |
 | Tuần 7-8 | Tự quản lý KV cache + dynamic batching | ✅ Đã xong |
 | Tuần 9+ Phase A | Forward pass tự viết (RoPE + GQA + layer loop) | ✅ Đã xong |
-| Tuần 9+ Phase B/C | Prefix caching, PagedAttention | 🔜 Chưa |
+| Tuần 9+ Phase B | Prefix caching (block-hash + LRU) | ✅ Đã xong |
+| Tuần 9+ Phase C | PagedAttention | 🔜 Chưa |
 
 ---
 

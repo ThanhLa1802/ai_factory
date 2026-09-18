@@ -10,18 +10,19 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ## 📍 Hiện tại đang ở đâu
 
-> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết ✅ (Phase A), prefix caching + PagedAttention 🔜.**
+> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết ✅ (Phase A), Prefix caching ✅ (Phase B), PagedAttention 🔜.**
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
-| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 9+: Prefix caching, PagedAttention | — |
+| Tuần 1–2: E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | Tuần 9+: PagedAttention (Phase C) | — |
 | Tuần 3–4: Tokenizer byte-level BPE tự viết | | |
 | Tuần 5–6: Sampling loop tự viết (greedy / temperature / top-p / top-k) | | |
 | Tuần 7–8: KV cache tự quản + continuous batching (transformers) | | |
 | Tuần 9+ Phase A: Forward pass tự viết (RoPE + GQA attention + layer loop) | | |
+| Tuần 9+ Phase B: Prefix caching (block-hash + LRU, tái dùng KV prefix) | | |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
 
-**Việc kế tiếp cụ thể:** prefix caching (tái dùng KV của prefix chung) rồi PagedAttention (block manager + block table).
+**Việc kế tiếp cụ thể:** PagedAttention (block manager + block table, thay buffer per-sequence).
 
 ---
 
@@ -36,7 +37,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | UI — NextJS app (`web/`) | Platform management + chat + admin; proxy `/api/v1` + `/v1` + SSE qua rewrites | ✅ Xong |
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | ✅ Xong |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | ✅ Xong |
-| Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🟡 Phase A ✅ (forward pass) — prefix/Paged 🔜 |
+| Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | 🟡 Phase A+B ✅ (forward pass + prefix caching) — Paged 🔜 |
 
 ---
 
@@ -196,7 +197,12 @@ Trạng thái: **✅ Xong** (2026-09-14) — engine continuous batching cho `tra
 - [x] **Forward pass tự viết** (`worker/model/forward.py`, `Qwen2Forward`) — layer loop + attention, **tái dùng leaf module HF** (embed/norm/qkvo/mlp/lm_head, weights 4-bit NF4); trả legacy-tuple KV `[B, H_kv, S, D]` tương thích `KVCache`.
 - [x] **Tích hợp** `TransformersBackend`: forward tự viết là mặc định; cờ `AI_FACTORY_SELF_FORWARD=0` quay về HF qua `HFForwardAdapter` (chuyển legacy tuple ↔ `Cache` vì HF ≥4.47 không nhận tuple). `ContinuousBatchEngine`/`kv_cache.py`/proto **không đổi**.
 - [x] **Verify**: test CPU (`tests/test_rope.py`, `test_self_attention.py`, `test_forward.py`) — `pytest tests/` **130 passed**; GPU Qwen2.5-3B bf16/fp32: self vs HF **eager bit-exact** (`max_abs_diff = 0`). Trên 7B 4-bit (HF sdpa) diff ~1.66 do kernel SDPA + lượng tử bf16 (không phải bug). Benchmark 7B 4-bit: prefill self ~407ms vs HF ~383ms (0.94×), decode/token ~69ms vs ~56ms (0.82×); thử nhánh SDPA chỉ lợi ~5% prefill, ~0% decode → giữ eager.
-- [ ] **Phase B — Prefix caching** (chưa).
+**Phase B — Prefix caching: ✅ Xong** (2026-09-18). Spec [`docs/superpowers/specs/2026-09-18-self-written-forward-pass-design.md`](superpowers/specs/2026-09-18-self-written-forward-pass-design.md) §5 · Plan [`docs/superpowers/plans/2026-09-18-prefix-caching.md`](superpowers/plans/2026-09-18-prefix-caching.md).
+
+- [x] **`PrefixCache`** (`worker/prefix_cache.py`) — block-aligned (default 16 token), khoá `blake2b(parent_hash, block_tokens)` (radix), longest-prefix match, LRU `max_blocks`, lock (match ở event-loop thread / insert ở scheduler thread).
+- [x] **`Qwen2Forward` chunked prefill** — `past` + `Sq>1` (causal `tril(diagonal=Sk-Sq)`) đúng; test batch prefix/suffix dài khác nhau (pad trái).
+- [x] **Tích hợp engine** — sequence có prefix prefill riêng (batch 1) với `past` = KV prefix, `input_ids` = suffix; không prefix vẫn prefill theo batch. Sequence xong → insert block + LRU. Cờ `AI_FACTORY_PREFIX_CACHE` (default on), `AI_FACTORY_PREFIX_CACHE_BLOCKS` (2048), `..._BLOCK_SIZE` (16).
+- [x] **Verify**: `pytest tests/` **144 passed** (thêm `test_prefix_cache.py` 8, `test_prefix_engine.py` 4, 2 test chunked prefill). GPU 7B 4-bit: request lặp lại → output **giống hệt** khi tắt cache, prefill chỉ 7 token, thời gian **1265ms → 605ms (~2×)**.
 - [ ] **Phase C — PagedAttention** (chưa).
 
 ---
@@ -218,6 +224,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-18 | Giai đoạn 5 Phase B — prefix caching ✅. Thêm `worker/prefix_cache.py` (`PrefixCache`: block-aligned 16 token, khoá `blake2b(parent_hash, block_tokens)` cho longest-prefix match kiểu radix, LRU `max_blocks`, lock). `KVCacheManager.build_prefill_with_prefix` + `ContinuousBatchEngine` prefill riêng sequence có prefix (batch 1) với `past` = KV prefix và `input_ids` = suffix; `Sequence.token_ids`; `_finish` insert block vào cache (copy-on-adopt, chưa paging). Cờ `AI_FACTORY_PREFIX_CACHE` (default on) + `_BLOCKS`/`_BLOCK_SIZE`. Tests mới `test_prefix_cache.py` (8), `test_prefix_engine.py` (4), 2 test chunked prefill trong `test_forward.py` → `pytest tests/` **144 passed**. GPU 7B 4-bit: request lặp → output giống hệt khi tắt cache, prefill 7 token, 1265ms → 605ms (~2×). Plan `docs/superpowers/plans/2026-09-18-prefix-caching.md`. |
 | 2026-09-18 | Giai đoạn 5 Phase A — forward pass tự viết ✅. Thêm `worker/model/rope.py` (RoPE `rotate_half` + cos/sin), `worker/model/attention.py` (`repeat_kv` + GQA + causal/padding mask + softmax fp32), `worker/model/forward.py` (`Qwen2Forward`: layer loop + attention, tái dùng leaf module HF, trả legacy-tuple KV `[B,H_kv,S,D]`). `TransformersBackend` mặc định dùng forward tự viết, cờ `AI_FACTORY_SELF_FORWARD=0` rollback về HF. Interface callable tương thích HF nên `ContinuousBatchEngine`/`kv_cache.py`/`server.py`/proto **không đổi**. Tests mới `test_rope.py` (4), `test_self_attention.py` (6), `test_forward.py` (8) + `test_engines.py` cờ → `pytest tests/` **130 passed**. GPU: Qwen2.5-3B bf16/fp32 self vs HF eager **bit-exact** (`max_abs_diff=0`); 7B 4-bit prefill 407ms vs HF 383ms, decode/tok 69ms vs 56ms (SDPA thử chỉ lợi ~5% prefill). Bug kèm theo: HF transformers 4.50 không còn nhận `past_key_values` dạng legacy tuple → thêm `worker/model/hf_forward.py` (`HFForwardAdapter`, tuple ↔ `Cache`) cho đường rollback. Spec/plan: `docs/superpowers/{specs,plans}/2026-09-18-self-written-forward-pass*.md`. |
 | 2026-09-16 | Sandbox tool + suite Python xanh ✅. Thêm `DockerToolExecutor` (`internal/services/inference/docker_tools.go`): 4 built-in tool chạy trong container dùng-một-lần (`docker run --rm --network=none --read-only --tmpfs /tmp --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=256 --memory=512m --cpus=1`, workspace bind-mount rw `/workspace`, params qua env nên không injection, `write_file` content qua stdin, path confined trong workspace); chọn bằng `tools.executor=local|docker` + `tools.docker_image` (env `AI_FACTORY_TOOLS_EXECUTOR`/`AI_FACTORY_TOOLS_DOCKER_IMAGE`), registry warn nếu thiếu docker CLI. Tests `docker_tools_test.go` (argv isolation, stdin, workdir, path escape, failure→tool error). Sửa 4 test `test_llama_backend.py` fail sẵn (stub thiếu `_gen_lock` + override `_generate`): `pytest tests/` **104 passed**. |
 | 2026-09-16 | Vá 2 lỗ hổng tool-calling + đồng bộ docs `--max-concurrent` ✅. (1) **transformers tool_use**: `worker/tool_calls.py` (`parse_tool_calls` + `marker_holdback`) + `ContinuousBatchEngine` phát hiện `<tool_call>` khi stream (giữ lại đuôi có thể thành marker, chặn markup khỏi content), `_finish` parse JSON → emit `tool_use` + `STOP_TOOL_USE`; JSON hỏng thì fallback stop reason cũ. (2) **tool client**: `OpenAIToolsToInternal` + `RunStreaming(..., clientTools)`, loop merge built-ins với tool client (`toolDefinitionsFor`, client thắng khi trùng tên), `ToolExecutor.CanExecute` + `Loop.allExecutable` → tool không thuộc executor trả `tool_calls` cho client (non-stream thêm `message.tool_calls` + `finish_reason: tool_use`). (3) Docs cũ về bug `--max-concurrent` (đã fix ở C1-C4) đồng bộ. Test: `python -m pytest tests/` 100 passed (4 test llama fail sẵn), `go test ./...` xanh. |

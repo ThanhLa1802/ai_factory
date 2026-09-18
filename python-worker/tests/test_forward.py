@@ -157,6 +157,77 @@ def test_self_forward_accepts_padded_decode_past():
             assert torch.allclose(out2.logits[i], ref[0], atol=1e-4, rtol=1e-3)
 
 
+def test_self_forward_chunked_prefill_matches_full():
+    """Prefix đã có KV: prefill suffix với `past` (Sq>1) phải khớp full forward."""
+    model = build_tiny_qwen()
+    fwd = Qwen2Forward(model)
+    ids = torch.tensor([[5, 6, 7, 8, 9, 10, 11, 12]])
+    split = 3
+
+    with torch.no_grad():
+        ref = model(ids).logits
+        out1 = fwd(
+            ids[:, :split],
+            attention_mask=torch.ones(1, split, dtype=torch.long),
+            position_ids=torch.arange(split).unsqueeze(0),
+            use_cache=True,
+        )
+        out2 = fwd(
+            ids[:, split:],
+            attention_mask=torch.ones(1, ids.shape[1], dtype=torch.long),
+            position_ids=torch.arange(split, ids.shape[1]).unsqueeze(0),
+            past_key_values=out1.past_key_values,
+            use_cache=True,
+        )
+
+    assert out2.logits.shape == (1, ids.shape[1] - split, model.config.vocab_size)
+    assert torch.allclose(out2.logits, ref[:, split:, :], atol=1e-4, rtol=1e-3)
+
+
+def test_self_forward_padded_prefix_batch_matches_per_sequence():
+    """Batch 2 sequence có prefix dài khác nhau (pad trái) + suffix khác nhau."""
+    model = build_tiny_qwen()
+    fwd = Qwen2Forward(model)
+    p0 = torch.tensor([1, 2, 3, 4])
+    p1 = torch.tensor([7, 8])
+    s0 = torch.tensor([5, 6])
+    s1 = torch.tensor([9, 10, 11])
+    max_p, max_s = 4, 3
+
+    with torch.no_grad():
+        pref0 = fwd(p0.unsqueeze(0)).past_key_values
+        pref1 = fwd(p1.unsqueeze(0)).past_key_values
+
+        past = []
+        for (k0, v0), (k1, v1) in zip(pref0, pref1):
+            pad = k0.shape[2] - k1.shape[2]
+            k1p = torch.cat([k1.new_zeros((1, k1.shape[1], pad, k1.shape[3])), k1], dim=2)
+            v1p = torch.cat([v1.new_zeros((1, v1.shape[1], pad, v1.shape[3])), v1], dim=2)
+            past.append((torch.cat([k0, k1p], dim=0), torch.cat([v0, v1p], dim=0)))
+
+        input_ids = torch.zeros(2, max_s, dtype=torch.long)
+        input_ids[0, max_s - len(s0):] = s0
+        input_ids[1, max_s - len(s1):] = s1
+
+        attn = torch.zeros(2, max_p + max_s, dtype=torch.long)
+        attn[0, :max_p] = 1
+        attn[0, max_p + (max_s - len(s0)):] = 1
+        attn[1, max_p - len(p1):max_p] = 1
+        attn[1, max_p:] = 1
+
+        pos = torch.zeros(2, max_s, dtype=torch.long)
+        pos[0, max_s - len(s0):] = torch.arange(len(p0), len(p0) + len(s0))
+        pos[1, max_s - len(s1):] = torch.arange(len(p1), len(p1) + len(s1))
+
+        out = fwd(input_ids, attention_mask=attn, position_ids=pos, past_key_values=tuple(past), use_cache=True)
+
+        ref0 = fwd(torch.cat([p0, s0]).unsqueeze(0)).logits[:, -1, :]
+        ref1 = fwd(torch.cat([p1, s1]).unsqueeze(0)).logits[:, -1, :]
+
+    assert torch.allclose(out.logits[0, -1, :], ref0[0], atol=1e-4, rtol=1e-3)
+    assert torch.allclose(out.logits[1, -1, :], ref1[0], atol=1e-4, rtol=1e-3)
+
+
 def test_hf_adapter_accepts_legacy_tuple_and_matches_full_forward():
     """Đường rollback (AI_FACTORY_SELF_FORWARD=0): adapter chuyển tuple <-> Cache."""
     model = build_tiny_qwen()
