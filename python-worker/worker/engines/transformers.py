@@ -9,6 +9,7 @@ Forward pass mặc định là **tự viết** (`Qwen2Forward`, Tuần 9+); đ�
 """
 import os
 
+from ..block_manager import BlockManager, BlockPrefixCache, PagedKVCache
 from ..continuous_batch_engine import ContinuousBatchEngine
 from ..engine import DEVICE, get_engine
 from ..model.forward import Qwen2Forward
@@ -29,10 +30,32 @@ def prefix_cache_enabled() -> bool:
     return os.environ.get("AI_FACTORY_PREFIX_CACHE", "1").strip().lower() not in _FALSE_VALUES
 
 
+def paged_attention_enabled() -> bool:
+    """Đọc cờ `AI_FACTORY_PAGED_ATTENTION` (default: tắt — chờ đo trên GPU)."""
+    return os.environ.get("AI_FACTORY_PAGED_ATTENTION", "0").strip().lower() not in _FALSE_VALUES
+
+
 def build_prefix_cache() -> PrefixCache:
     return PrefixCache(
         block_size=int(os.environ.get("AI_FACTORY_PREFIX_CACHE_BLOCK_SIZE", "16")),
         max_blocks=int(os.environ.get("AI_FACTORY_PREFIX_CACHE_BLOCKS", "2048")),
+    )
+
+
+def build_block_manager(model) -> BlockManager:
+    cfg = model.config
+    block_size = int(
+        os.environ.get(
+            "AI_FACTORY_PAGED_BLOCK_SIZE",
+            os.environ.get("AI_FACTORY_PREFIX_CACHE_BLOCK_SIZE", "16"),
+        )
+    )
+    return BlockManager(
+        num_blocks=int(os.environ.get("AI_FACTORY_PAGED_BLOCKS", "2048")),
+        num_layers=int(cfg.num_hidden_layers),
+        num_kv_heads=int(cfg.num_key_value_heads),
+        block_size=block_size,
+        head_dim=int(cfg.hidden_size // cfg.num_attention_heads),
     )
 
 
@@ -73,11 +96,25 @@ class TransformersBackend(EngineBackend):
                 if self_forward_enabled()
                 else HFForwardAdapter(self.engine.model)
             )
+            prefix_cache = build_prefix_cache() if prefix_cache_enabled() else None
+            paged = paged_attention_enabled()
+            block_manager = None
+            factory = None
+            if paged:
+                block_manager = build_block_manager(self.engine.model)
+                if prefix_cache is not None:
+                    prefix_cache = BlockPrefixCache(
+                        block_manager, block_size=block_manager.block_size
+                    )
+                factory = lambda: PagedKVCache(block_manager)
             self._batch = ContinuousBatchEngine(
                 forward,
                 self.engine.tokenizer,
                 self.engine.hf_tokenizer,
                 device=DEVICE,
-                prefix_cache=build_prefix_cache() if prefix_cache_enabled() else None,
+                prefix_cache=prefix_cache,
+                paged=paged,
+                block_manager=block_manager,
+                cache_factory=factory,
             )
         return self._batch

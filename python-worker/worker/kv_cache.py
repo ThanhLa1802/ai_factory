@@ -137,12 +137,13 @@ class KVCacheManager:
             attention[i, max_len - n :] = 1
         position_ids = torch.tensor(lengths, dtype=torch.long, device=device).unsqueeze(-1)
 
-        num_layers = len(caches[0].layers)
+        views = [c.view() for c in caches]
+        num_layers = len(views[0])
         past = []
         for layer in range(num_layers):
             parts_k, parts_v = [], []
-            for i, cache in enumerate(caches):
-                k, v = cache.layers[layer]
+            for i in range(len(caches)):
+                k, v = views[i][layer]
                 k = k[:, :, : lengths[i], :]
                 v = v[:, :, : lengths[i], :]
                 pad = max_len - lengths[i]

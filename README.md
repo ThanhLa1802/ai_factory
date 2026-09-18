@@ -101,10 +101,10 @@ ai_factory/
 | Weeks 1–2 | E2E pipeline, OpenAI protocol, SSE, agentic loop, static batching | ✅ Done |
 | Weeks 3–4 | Hand-written byte-level BPE tokenizer | ✅ Done |
 | Bonus | Llama engine (Qwen3.5-9B GGUF) + working tool-calling | ✅ Done |
-| Weeks 5–6 | Hand-written sampling loop (greedy / temperature / top-p / top-k) | 🔜 Next — currently HF `model.generate()` |
-| Weeks 7–8 | KV cache management + dynamic batching | 🔜 Not started |
-| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | 🔜 Not started |
+| Weeks 5–6 | Hand-written sampling loop (greedy / temperature / top-p / top-k) | ✅ Done |
+| Weeks 7–8 | KV cache management + dynamic batching | ✅ Done |
+| Weeks 9+ | Hand-written forward pass, prefix caching, PagedAttention | ✅ Done |
 
-**Currently focused on:** the **sampling loop** (roadmap Weeks 5–6) — replacing `model.generate()` parameters with a hand-written sampler.
+**Status:** the hand-written inference stack is complete through PagedAttention (Weeks 9+ Phase C). See [`docs/TRACKING.md`](docs/TRACKING.md) for what's next.
 
 Detailed checklist, per-phase breakdown, and open gaps: [`docs/TRACKING.md`](docs/TRACKING.md).

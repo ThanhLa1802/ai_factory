@@ -91,7 +91,7 @@ Handler 3 ──┘                                     │
 | Tuần 1-2 | Continuous Batching (static): BatchScheduler + BatchEngine + batch gRPC | ✅ Hoàn thành |
 | Tuần 3-4 | Tự implement tokenizer (BPE encode/decode) | ✅ Hoàn thành |
 | Tuần 5-6 | Tự implement sampling (greedy, temperature, top-p, top-k) | ✅ Hoàn thành — `worker/sampling.py` |
-| Tuần 7-8 | Tự quản lý KV cache + dynamic continuous batching (add/remove giữa decode step) | 🔜 Kế tiếp |
-| Tuần 9+ | (Optional) Tự viết forward pass, prefix caching, PagedAttention | 🔜 Chưa |
+| Tuần 7-8 | Tự quản lý KV cache + dynamic continuous batching (add/remove giữa decode step) | ✅ Hoàn thành |
+| Tuần 9+ | Tự viết forward pass, prefix caching, PagedAttention | ✅ Hoàn thành (Phase A/B/C) |
 
 Map chi tiết code ↔ roadmap: `docs/ARCHITECTURE.md` §12. Lỗ hổng tích hợp hiện tại: `docs/ARCHITECTURE.md` §10. (Tool-calling đã chạy trên cả transformers + llama, tool client đã nối, bug `--max-concurrent` đã fix — 2026-09-16.)

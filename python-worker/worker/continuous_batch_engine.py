@@ -21,6 +21,7 @@ from typing import AsyncIterator, Optional
 
 import torch
 
+from .block_manager import PagedKVCache
 from .kv_cache import KVCache, KVCacheManager
 from .model.tokenizer import StreamingDecoder
 from .prompt import build_chat_prompt
@@ -50,6 +51,7 @@ class Sequence:
     token_ids: list = field(default_factory=list)
     prefix_len: int = 0
     prefix_layers: object = None
+    prefix_blocks: object = None
 
 
 class ContinuousBatchEngine:
@@ -64,6 +66,9 @@ class ContinuousBatchEngine:
         decoder_factory=None,
         prompt_builder=None,
         prefix_cache=None,
+        paged: bool = False,
+        block_manager=None,
+        cache_factory=None,
     ):
         self.model = model
         self.tokenizer = tokenizer
@@ -77,6 +82,14 @@ class ContinuousBatchEngine:
         self._prompt_builder = prompt_builder or build_chat_prompt
         self.kv = KVCacheManager()
         self.prefix_cache = prefix_cache
+        self.paged = paged
+        self.block_manager = block_manager
+        if cache_factory is not None:
+            self._cache_factory = cache_factory
+        elif paged:
+            self._cache_factory = lambda: PagedKVCache(self.block_manager)
+        else:
+            self._cache_factory = KVCache
 
         self._waiting: deque = deque()
         self._active: list[Sequence] = []
@@ -151,23 +164,31 @@ class ContinuousBatchEngine:
             token_ids=token_ids,
         )
         if self.prefix_cache is not None:
-            seq.prefix_len, seq.prefix_layers = self._match_prefix(token_ids)
+            seq.prefix_len, payload = self._match_prefix(token_ids)
+            if self.paged:
+                seq.prefix_blocks = payload
+            else:
+                seq.prefix_layers = payload
         return seq
 
     def _match_prefix(self, token_ids: list):
         """Prefix dài nhất khớp, chừa ít nhất 1 token để prefill (block-aligned)."""
-        matched, layers = self.prefix_cache.match(token_ids)
-        if matched <= 0 or layers is None:
+        matched, payload = self.prefix_cache.match(token_ids)
+        if matched <= 0 or payload is None:
             return 0, None
+        if self.paged:
+            # `BlockPrefixCache.match` đã cắt theo `((n-1)//block_size)*block_size`
+            # và incref đúng các block trả về.
+            return matched, payload
         block_size = self.prefix_cache.block_size
         max_prefix = ((len(token_ids) - 1) // block_size) * block_size
         if matched > max_prefix:
             matched = max_prefix
             if matched <= 0:
                 return 0, None
-            layers = [(k[:, :, :matched, :], v[:, :, :matched, :]) for k, v in layers]
-        layers = [(k.to(self.device), v.to(self.device)) for k, v in layers]
-        return matched, layers
+            payload = [(k[:, :, :matched, :], v[:, :, :matched, :]) for k, v in payload]
+        payload = [(k.to(self.device), v.to(self.device)) for k, v in payload]
+        return matched, payload
 
     def _enqueue(self, seqs: list[Sequence]) -> None:
         with self._cond:
@@ -240,8 +261,8 @@ class ContinuousBatchEngine:
         if not runnable:
             return
 
-        plain = [s for s in runnable if s.prefix_layers is None]
-        prefixed = [s for s in runnable if s.prefix_layers is not None]
+        plain = [s for s in runnable if s.prefix_len <= 0]
+        prefixed = [s for s in runnable if s.prefix_len > 0]
 
         if plain:
             si = self.kv.build_prefill([s.prompt_ids for s in plain])
@@ -255,7 +276,7 @@ class ContinuousBatchEngine:
                 )
             ids = sample_next_batch(out.logits[:, -1, :], [s.params for s in plain])
             for i, seq in enumerate(plain):
-                cache = KVCache()
+                cache = self._cache_factory()
                 cache.init_from_prefill(
                     out.past_key_values, prompt_len=int(seq.prompt_ids.shape[0]), row=i
                 )
@@ -264,8 +285,17 @@ class ContinuousBatchEngine:
 
         # Sequence có prefix: prefill riêng từng cái (batch 1) với `past` = KV prefix.
         for seq in prefixed:
+            cache = self._cache_factory()
+            if self.paged:
+                # `match` đã giữ ref cho các block prefix; adopt không incref nữa
+                # để `free()` nhả đúng một lần. Chuyển quyền sở hữu sang cache.
+                cache.adopt(seq.prefix_blocks, incref=False)
+                seq.prefix_blocks = None
+                prefix_layers = cache.view()  # gather block chia sẻ, không copy
+            else:
+                prefix_layers = seq.prefix_layers
             si = self.kv.build_prefill_with_prefix(
-                seq.prompt_ids, seq.prefix_layers, seq.prefix_len
+                seq.prompt_ids, prefix_layers, seq.prefix_len
             )
             with torch.no_grad():
                 out = self.model(
@@ -276,7 +306,6 @@ class ContinuousBatchEngine:
                     use_cache=True,
                 )
             ids = sample_next_batch(out.logits[:, -1, :], [seq.params])
-            cache = KVCache()
             cache.init_from_prefill(
                 out.past_key_values, prompt_len=int(seq.prompt_ids.shape[0]), row=0
             )
@@ -349,9 +378,17 @@ class ContinuousBatchEngine:
         if seq.finished:
             return
         seq.finished = True
+        if self.paged and seq.prefix_blocks is not None:
+            # Request hủy/kết thúc trước khi prefill: nhả ref mà `match` đã giữ.
+            for bid in seq.prefix_blocks:
+                self.block_manager.decref(bid)
+            seq.prefix_blocks = None
         if seq.cache is not None:
             if self.prefix_cache is not None:
-                self.prefix_cache.insert(seq.token_ids, seq.cache.view(), seq.cache.length)
+                if self.paged:
+                    self.prefix_cache.insert(seq.token_ids, seq.cache)
+                else:
+                    self.prefix_cache.insert(seq.token_ids, seq.cache.view(), seq.cache.length)
             seq.cache.free()
             seq.cache = None
 

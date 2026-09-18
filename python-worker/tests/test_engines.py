@@ -1,7 +1,11 @@
 import pytest
 
+from worker.block_manager import BlockManager, BlockPrefixCache, PagedKVCache
 from worker.engines import get_backend, TransformersBackend
-from worker.engines.transformers import self_forward_enabled
+from worker.engines.transformers import (
+    paged_attention_enabled,
+    self_forward_enabled,
+)
 
 
 def test_registry_unknown_raises():
@@ -82,6 +86,7 @@ def _stub_factories(monkeypatch):
 
     def fake_cb(forward, tokenizer, hf_tokenizer, **kwargs):
         captured["forward"] = forward
+        captured["kwargs"] = kwargs
         return "BATCH"
 
     monkeypatch.setattr("worker.engines.transformers.get_engine", lambda *a, **k: _FakeEngine())
@@ -118,3 +123,37 @@ def test_get_batch_uses_hf_adapter_when_disabled(monkeypatch):
     assert backend._get_batch() == "BATCH"
     assert captured["forward"] == "HF_FORWARD"
     assert captured["hf_wrapped_model"] is backend.engine.model
+
+
+def test_paged_attention_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("AI_FACTORY_PAGED_ATTENTION", raising=False)
+    assert paged_attention_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "on", "yes"])
+def test_paged_attention_enabled_values(monkeypatch, value):
+    monkeypatch.setenv("AI_FACTORY_PAGED_ATTENTION", value)
+    assert paged_attention_enabled() is True
+
+
+def test_get_batch_paged_wires_block_manager(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("AI_FACTORY_PAGED_ATTENTION", "1")
+    monkeypatch.setenv("AI_FACTORY_PREFIX_CACHE", "1")
+    captured = _stub_factories(monkeypatch)
+    backend = TransformersBackend()
+    backend.engine.model = SimpleNamespace(
+        config=SimpleNamespace(
+            num_hidden_layers=2,
+            num_key_value_heads=1,
+            hidden_size=8,
+            num_attention_heads=1,
+        )
+    )
+    assert backend._get_batch() == "BATCH"
+    kwargs = captured["kwargs"]
+    assert kwargs["paged"] is True
+    assert isinstance(kwargs["block_manager"], BlockManager)
+    assert isinstance(kwargs["prefix_cache"], BlockPrefixCache)
+    assert isinstance(kwargs["cache_factory"](), PagedKVCache)
