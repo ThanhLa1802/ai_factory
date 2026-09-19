@@ -26,6 +26,7 @@ type Config struct {
 	InferenceMaxInFlightBatches int
 	Services                    ServicesConfig
 	Billing                     BillingConfig
+	Quota                       QuotaConfig
 	Tools                       ToolsConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
@@ -56,6 +57,12 @@ type BillingConfig struct {
 	ReaperInterval   time.Duration
 }
 
+// QuotaConfig configures tenant quota enforcement against recorded usage.
+// Mode is off|shadow|enforce (shadow logs + meters without blocking).
+type QuotaConfig struct {
+	Mode string
+}
+
 // ToolsConfig selects how the built-in tools execute. Executor is local (run on
 // the host) or docker (run in a throwaway sandbox container, image configurable).
 type ToolsConfig struct {
@@ -83,6 +90,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("billing.initial_allowance", 0)
 	v.SetDefault("billing.reservation_ttl", "15m")
 	v.SetDefault("billing.reaper_interval", "1m")
+	v.SetDefault("quota.mode", "shadow")
 	v.SetDefault("tools.executor", "local")
 	v.SetDefault("tools.docker_image", "alpine:3.24")
 	v.SetDefault("database_max_open_conns", 25)
@@ -120,6 +128,10 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("tools.executor must be local or docker, got %q", mode)
 	}
 
+	if mode := v.GetString("quota.mode"); mode != "off" && mode != "shadow" && mode != "enforce" {
+		return nil, fmt.Errorf("quota.mode must be off, shadow or enforce, got %q", mode)
+	}
+
 	return &Config{
 		DatabaseURL:                 v.GetString("database_url"),
 		JWTSecret:                   secret,
@@ -146,6 +158,9 @@ func Load(path string) (*Config, error) {
 			InitialAllowance: v.GetInt64("billing.initial_allowance"),
 			ReservationTTL:   v.GetDuration("billing.reservation_ttl"),
 			ReaperInterval:   v.GetDuration("billing.reaper_interval"),
+		},
+		Quota: QuotaConfig{
+			Mode: v.GetString("quota.mode"),
 		},
 		Tools: ToolsConfig{
 			Executor:    v.GetString("tools.executor"),

@@ -7,6 +7,7 @@ import (
 	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
+	"github.com/ai-factory/go-server/internal/services/usage"
 )
 
 // deploymentResolver adapts serving.Service to the inference handler's
@@ -41,4 +42,18 @@ func (a billingGate) Settle(ctx context.Context, reservationID string, promptTok
 
 func (a billingGate) Release(ctx context.Context, reservationID string) error {
 	return a.svc.Release(ctx, reservationID)
+}
+
+// quotaGate adapts *usage.QuotaEnforcer to inference.QuotaGate, translating the
+// usage sentinel error so the inference layer never imports services/usage.
+type quotaGate struct{ enforcer *usage.QuotaEnforcer }
+
+func (a quotaGate) Check(ctx context.Context, tenantID string) error {
+	if err := a.enforcer.Check(ctx, tenantID); err != nil {
+		if errors.Is(err, usage.ErrQuotaExceeded) {
+			return inference.ErrQuotaExceeded
+		}
+		return err
+	}
+	return nil
 }

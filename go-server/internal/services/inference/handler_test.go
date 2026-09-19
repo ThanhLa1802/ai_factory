@@ -156,6 +156,82 @@ func TestReserveBillingDisabled(t *testing.T) {
 	}
 }
 
+type fakeQuotaGate struct{ err error }
+
+func (f *fakeQuotaGate) Check(ctx context.Context, tenantID string) error { return f.err }
+
+func TestCheckQuotaExceeded(t *testing.T) {
+	h := &Handler{quota: &fakeQuotaGate{err: ErrQuotaExceeded}}
+	c, rec := testContext()
+	if h.checkQuota(context.Background(), c, "t1") {
+		t.Fatal("want ok=false on quota exceeded")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("code = %d, want 429", rec.Code)
+	}
+}
+
+func TestCheckQuotaDisabled(t *testing.T) {
+	h := &Handler{} // nil gate disables quotas
+	if !h.checkQuota(context.Background(), nil, "t1") {
+		t.Fatal("nil gate must allow")
+	}
+}
+
+func TestCheckQuotaFailOpen(t *testing.T) {
+	h := &Handler{quota: &fakeQuotaGate{err: errors.New("db down")}}
+	c, _ := testContext()
+	if !h.checkQuota(context.Background(), c, "t1") {
+		t.Fatal("want fail-open on infra error")
+	}
+}
+
+// TestLastUserTurn: only the final user message is the turn to answer; the
+// messages before it are history. A request without a user message is rejected.
+func TestLastUserTurn(t *testing.T) {
+	msg := func(role, content string) Message { return Message{Role: role, Content: content} }
+
+	t.Run("no user message", func(t *testing.T) {
+		_, _, ok := lastUserTurn([]Message{msg(RoleAssistant, "hi")})
+		if ok {
+			t.Fatal("want ok=false")
+		}
+	})
+
+	t.Run("single user message", func(t *testing.T) {
+		history, turn, ok := lastUserTurn([]Message{msg(RoleUser, "hello")})
+		if !ok || len(history) != 0 || turn.Content != "hello" {
+			t.Fatalf("got history=%v turn=%q ok=%v", history, turn.Content, ok)
+		}
+	})
+
+	t.Run("history then user", func(t *testing.T) {
+		in := []Message{
+			msg(RoleUser, "hi"),
+			msg(RoleAssistant, "hello"),
+			msg(RoleUser, "area of a triangle?"),
+		}
+		history, turn, ok := lastUserTurn(in)
+		if !ok || len(history) != 2 || turn.Content != "area of a triangle?" {
+			t.Fatalf("got history=%d turn=%q ok=%v", len(history), turn.Content, ok)
+		}
+		if history[0].Role != RoleUser || history[1].Role != RoleAssistant {
+			t.Fatalf("history roles = %q,%q", history[0].Role, history[1].Role)
+		}
+	})
+
+	t.Run("trailing assistant is ignored", func(t *testing.T) {
+		in := []Message{
+			msg(RoleUser, "hi"),
+			msg(RoleAssistant, "hello"),
+		}
+		history, turn, ok := lastUserTurn(in)
+		if !ok || len(history) != 0 || turn.Content != "hi" {
+			t.Fatalf("got history=%d turn=%q ok=%v", len(history), turn.Content, ok)
+		}
+	})
+}
+
 func TestSettleReleaseBilling(t *testing.T) {
 	g := &fakeGate{}
 	h := &Handler{billing: g}

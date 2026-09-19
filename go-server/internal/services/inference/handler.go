@@ -55,6 +55,18 @@ type BillingGate interface {
 	Release(ctx context.Context, reservationID string) error
 }
 
+// ErrQuotaExceeded is returned by the quota gate when a tenant has met or
+// exceeded one of its usage quotas.
+var ErrQuotaExceeded = errors.New("quota exceeded")
+
+// QuotaGate is the inference service's view of tenant quota enforcement.
+// Satisfied by an adapter over *usage.QuotaEnforcer, wired in the composition
+// root (the adapter translates the usage sentinel error). A nil gate disables
+// quota enforcement.
+type QuotaGate interface {
+	Check(ctx context.Context, tenantID string) error
+}
+
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
 	sessionMgr *Manager
@@ -64,16 +76,17 @@ type Handler struct {
 	resolver   DeploymentResolver
 	usage      UsageRecorder
 	billing    BillingGate
+	quota      QuotaGate
 	limiter    cache.Limiter
 	rpmLimit   int
 	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, billing BillingGate, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, billing BillingGate, quota QuotaGate, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, auth: auth,
-		resolver: resolver, usage: usage, billing: billing, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
+		resolver: resolver, usage: usage, billing: billing, quota: quota, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
@@ -119,6 +132,24 @@ func (h *Handler) acquire(ctx context.Context, key string, limit int) bool {
 		return true
 	}
 	return ok
+}
+
+// checkQuota enforces the tenant's usage quotas before any work is done. It
+// returns ok=false (having written the error response) when an enforced quota
+// is exceeded. Infrastructure errors fail open, like the rate limiter.
+func (h *Handler) checkQuota(ctx context.Context, c *gin.Context, tenantID string) bool {
+	if h.quota == nil {
+		return true
+	}
+	if err := h.quota.Check(ctx, tenantID); err != nil {
+		if errors.Is(err, ErrQuotaExceeded) {
+			response.WriteOpenAIError(c, http.StatusTooManyRequests, "QUOTA_EXCEEDED", "tenant quota exceeded")
+			return false
+		}
+		slog.Warn("quota check error (fail-open)", "err", err)
+		return true
+	}
+	return true
 }
 
 // reserveBilling places a prepaid hold for the request. It returns ok=false
@@ -191,6 +222,10 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		ls.SetRouteLabels(d.TenantID, d.ID, req.Model, d.Region)
 	}
 
+	if !h.checkQuota(c.Request.Context(), c, p.TenantID) {
+		return
+	}
+
 	sessionID := c.GetHeader("x-session-id")
 	if sessionID == "" {
 		sessionID = NewSessionID()
@@ -224,12 +259,29 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		params.MaxTokens = req.MaxTokens
 	}
 
+	// Only the final user turn is answered; everything before it is history.
+	// Our own UIs keep history in the session and send just the new user
+	// message, while a stateless client (e.g. a coding agent) resends the whole
+	// conversation on every request — so a fresh session is seeded with those
+	// prior turns instead of replaying each of them as its own generation.
+	history, turn, ok := lastUserTurn(msgs)
+	if !ok {
+		response.WriteOpenAIError(c, http.StatusBadRequest, "invalid_request", "messages must contain a user message")
+		return
+	}
+
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	go func() {
 		<-c.Request.Context().Done()
 		cancel()
 	}()
+
+	if len(sess.GetMessages()) == 0 {
+		for _, m := range history {
+			sess.AddMessage(ctx, m)
+		}
+	}
 
 	reservationID, ok := h.reserveBilling(ctx, c, p.TenantID, req.Model, msgs, params)
 	if !ok {
@@ -238,13 +290,25 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 
 	clientTools := OpenAIToolsToInternal(req.Tools)
 	if req.Stream {
-		h.handleOpenAIStream(ctx, c, sess, msgs, params, clientTools, req.Model, p.TenantID, reservationID)
+		h.handleOpenAIStream(ctx, c, sess, turn, params, clientTools, req.Model, p.TenantID, reservationID)
 	} else {
-		h.handleOpenAINonStream(ctx, c, sess, msgs, params, clientTools, req.Model, p.TenantID, reservationID)
+		h.handleOpenAINonStream(ctx, c, sess, turn, params, clientTools, req.Model, p.TenantID, reservationID)
 	}
 }
 
-func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
+// lastUserTurn splits a request's conversation into the history that precedes
+// the final user turn and that turn itself. It reports ok=false when the
+// request carries no user message.
+func lastUserTurn(msgs []Message) (history []Message, turn Message, ok bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == RoleUser {
+			return msgs[:i], msgs[i], true
+		}
+	}
+	return nil, Message{}, false
+}
+
+func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *Session, turn Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
 	sse, err := NewSSEWriter(c.Writer)
 	if err != nil {
 		response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", "streaming not supported")
@@ -263,13 +327,47 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 		h.settleBilling(reservationID, promptTotal, completionTotal)
 	}()
 
-	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params, clientTools)
+	events := h.loop.RunStreaming(ctx, sess, turn, params, clientTools)
 
-		for event := range events {
-			switch event.Type {
-			case LoopEventToken:
-				// OpenAI SSE format — each token is a chunk
+	for event := range events {
+		switch event.Type {
+		case LoopEventToken:
+			// OpenAI SSE format — each token is a chunk
+			data, _ := json.Marshal(map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelID,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"delta": map[string]string{"content": event.Token},
+					},
+				},
+			})
+			fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
+			sse.flusher.Flush()
+
+		case LoopEventReasoning:
+			// Reasoning token — display-only; emit as delta.reasoning_content.
+			data, _ := json.Marshal(map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelID,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"delta": map[string]string{"reasoning_content": event.Token},
+					},
+				},
+			})
+			fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
+			sse.flusher.Flush()
+
+		case LoopEventToolUse:
+			// OpenAI format for tool calls in stream
+			if event.ToolCall != nil {
 				data, _ := json.Marshal(map[string]interface{}{
 					"id":      completionID,
 					"object":  "chat.completion.chunk",
@@ -278,108 +376,71 @@ func (h *Handler) handleOpenAIStream(ctx context.Context, c *gin.Context, sess *
 					"choices": []map[string]interface{}{
 						{
 							"index": 0,
-							"delta": map[string]string{"content": event.Token},
-						},
-					},
-				})
-				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
-				sse.flusher.Flush()
-
-			case LoopEventReasoning:
-				// Reasoning token — display-only; emit as delta.reasoning_content.
-				data, _ := json.Marshal(map[string]interface{}{
-					"id":      completionID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"model":   modelID,
-					"choices": []map[string]interface{}{
-						{
-							"index": 0,
-							"delta": map[string]string{"reasoning_content": event.Token},
-						},
-					},
-				})
-				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
-				sse.flusher.Flush()
-
-			case LoopEventToolUse:
-				// OpenAI format for tool calls in stream
-				if event.ToolCall != nil {
-					data, _ := json.Marshal(map[string]interface{}{
-						"id":      completionID,
-						"object":  "chat.completion.chunk",
-						"created": created,
-						"model":   modelID,
-						"choices": []map[string]interface{}{
-							{
-								"index": 0,
-								"delta": map[string]interface{}{
-									"tool_calls": []map[string]interface{}{
-										{
-											"index":    0,
-											"id":       event.ToolCall.ID,
-											"type":     "function",
-											"function": map[string]string{"name": event.ToolCall.Name, "arguments": event.ToolCall.Arguments},
-										},
+							"delta": map[string]interface{}{
+								"tool_calls": []map[string]interface{}{
+									{
+										"index":    0,
+										"id":       event.ToolCall.ID,
+										"type":     "function",
+										"function": map[string]string{"name": event.ToolCall.Name, "arguments": event.ToolCall.Arguments},
 									},
 								},
 							},
 						},
-					})
-					fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
-					sse.flusher.Flush()
-				}
-
-			case LoopEventFinal:
-				// Usage metering: Prometheus counter + durable usage_events row.
-				if event.Usage != nil {
-					promptTotal += int(event.Usage.PromptTokens)
-					completionTotal += int(event.Usage.CompletionTokens)
-					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
-					if h.usage != nil {
-						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
-							slog.Warn("record usage", "err", err)
-						}
-					}
-				}
-				// Send final chunk
-				data, _ := json.Marshal(map[string]interface{}{
-					"id":      completionID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"model":   modelID,
-					"choices": []map[string]interface{}{
-						{
-							"index":         0,
-							"delta":         map[string]string{},
-							"finish_reason": event.FinishReason,
-						},
 					},
 				})
 				fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
 				sse.flusher.Flush()
+			}
 
-			case LoopEventError:
-				// Overload is load shedding (backpressure): the worker queue is
-				// saturated, so tell the client to back off. SSE already started,
-				// so surface it as an error frame rather than an HTTP status.
-				if errors.Is(event.Err, infra.ErrOverloaded) {
-					observability.IncOverloaded(tenantID, modelID)
-					sse.SendError("OVERLOADED: " + event.Err.Error())
-					return
+		case LoopEventFinal:
+			// Usage metering: Prometheus counter + durable usage_events row.
+			if event.Usage != nil {
+				promptTotal += int(event.Usage.PromptTokens)
+				completionTotal += int(event.Usage.CompletionTokens)
+				observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+				if h.usage != nil {
+					if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+						slog.Warn("record usage", "err", err)
+					}
 				}
-				sse.SendError(event.Err.Error())
+			}
+			// Send final chunk
+			data, _ := json.Marshal(map[string]interface{}{
+				"id":      completionID,
+				"object":  "chat.completion.chunk",
+				"created": created,
+				"model":   modelID,
+				"choices": []map[string]interface{}{
+					{
+						"index":         0,
+						"delta":         map[string]string{},
+						"finish_reason": event.FinishReason,
+					},
+				},
+			})
+			fmt.Fprintf(sse.w, "data: %s\n\n", string(data))
+			sse.flusher.Flush()
+
+		case LoopEventError:
+			// Overload is load shedding (backpressure): the worker queue is
+			// saturated, so tell the client to back off. SSE already started,
+			// so surface it as an error frame rather than an HTTP status.
+			if errors.Is(event.Err, infra.ErrOverloaded) {
+				observability.IncOverloaded(tenantID, modelID)
+				sse.SendError("OVERLOADED: " + event.Err.Error())
 				return
 			}
+			sse.SendError(event.Err.Error())
+			return
 		}
-
 	}
 
 	fmt.Fprintf(sse.w, "data: [DONE]\n\n")
 	sse.flusher.Flush()
 }
 
-func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, msgs []Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
+func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, sess *Session, turn Message, params infra.SamplingParams, clientTools []infra.ToolDefinition, modelID, tenantID, reservationID string) {
 	var (
 		content      string
 		usage        *infra.Usage
@@ -396,44 +457,41 @@ func (h *Handler) handleOpenAINonStream(ctx context.Context, c *gin.Context, ses
 		h.settleBilling(reservationID, promptTotal, completionTotal)
 	}()
 
-	for _, userMsg := range msgs {
-		events := h.loop.RunStreaming(ctx, sess, userMsg, params, clientTools)
+	events := h.loop.RunStreaming(ctx, sess, turn, params, clientTools)
 
-		for event := range events {
-			switch event.Type {
-			case LoopEventToken:
-				content += event.Token
-			case LoopEventToolUse:
-				if event.ToolCall != nil {
-					toolCalls = append(toolCalls, *event.ToolCall)
-				}
-			case LoopEventFinal:
-				usage = event.Usage
-				if event.FinishReason != "" {
-					finishReason = event.FinishReason
-				}
-				// Usage metering: Prometheus counter + durable usage_events row.
-				if event.Usage != nil {
-					promptTotal += int(event.Usage.PromptTokens)
-					completionTotal += int(event.Usage.CompletionTokens)
-					observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
-					if h.usage != nil {
-						if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
-							slog.Warn("record usage", "err", err)
-						}
+	for event := range events {
+		switch event.Type {
+		case LoopEventToken:
+			content += event.Token
+		case LoopEventToolUse:
+			if event.ToolCall != nil {
+				toolCalls = append(toolCalls, *event.ToolCall)
+			}
+		case LoopEventFinal:
+			usage = event.Usage
+			if event.FinishReason != "" {
+				finishReason = event.FinishReason
+			}
+			// Usage metering: Prometheus counter + durable usage_events row.
+			if event.Usage != nil {
+				promptTotal += int(event.Usage.PromptTokens)
+				completionTotal += int(event.Usage.CompletionTokens)
+				observability.RecordTokenUsage(tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens))
+				if h.usage != nil {
+					if err := h.usage.RecordUsage(ctx, tenantID, modelID, int(event.Usage.PromptTokens), int(event.Usage.CompletionTokens)); err != nil {
+						slog.Warn("record usage", "err", err)
 					}
 				}
-			case LoopEventError:
-				if errors.Is(event.Err, infra.ErrOverloaded) {
-					observability.IncOverloaded(tenantID, modelID)
-					response.WriteOpenAIError(c, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
-					return
-				}
-				response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", event.Err.Error())
+			}
+		case LoopEventError:
+			if errors.Is(event.Err, infra.ErrOverloaded) {
+				observability.IncOverloaded(tenantID, modelID)
+				response.WriteOpenAIError(c, http.StatusServiceUnavailable, "overloaded", event.Err.Error())
 				return
 			}
+			response.WriteOpenAIError(c, http.StatusInternalServerError, "internal_error", event.Err.Error())
+			return
 		}
-
 	}
 
 	message := map[string]interface{}{

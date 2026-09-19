@@ -7,7 +7,7 @@ import urllib.request
 
 class LlamaServer:
     def __init__(self, gguf, host="127.0.0.1", port=8081, bin="llama-server",
-                 ctx_size=8192, threads=8, gpu_layers=-1):
+                 ctx_size=32768, threads=8, gpu_layers=-1):
         self.gguf = gguf
         self.host = host
         self.port = port

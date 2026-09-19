@@ -78,11 +78,21 @@ var (
 		},
 		[]string{"tenant"},
 	)
+
+	// Quota: tenant usage-limit breaches. mode is shadow (observed only) or
+	// enforce (request rejected).
+	QuotaExceededTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "quota_exceeded_total",
+			Help: "Requests whose tenant usage met or exceeded a configured quota.",
+		},
+		[]string{"tenant", "quota_type", "mode"},
+	)
 )
 
 func init() {
 	registry.MustRegister(HTTPRequestsTotal, RequestDurationSeconds, TokensTotal, InflightRequests, OverloadedTotal,
-		BillingReservationsTotal, BillingChargeMicroTotal, BillingInsufficientTotal)
+		BillingReservationsTotal, BillingChargeMicroTotal, BillingInsufficientTotal, QuotaExceededTotal)
 }
 
 // Registry exposes the app Prometheus registry.
@@ -135,3 +145,9 @@ func RecordBillingChargeMicro(micro int64) {
 
 // IncBillingInsufficient counts a request rejected for insufficient credits.
 func IncBillingInsufficient(tenant string) { BillingInsufficientTotal.WithLabelValues(tenant).Inc() }
+
+// RecordQuotaExceeded counts a tenant usage-limit breach, labelled by the quota
+// kind and the active mode (shadow|enforce).
+func RecordQuotaExceeded(tenant, quotaType, mode string) {
+	QuotaExceededTotal.WithLabelValues(tenant, quotaType, mode).Inc()
+}

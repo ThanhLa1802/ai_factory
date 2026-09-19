@@ -33,6 +33,12 @@ billing:
   initial_allowance: 0
   reservation_ttl: "15m"
   reaper_interval: "1m"
+# Tenant quota enforcement against recorded usage (tenant_quotas + usage_daily).
+# mode: off | shadow | enforce. quota_type is matched by prefix (tokens… /
+# requests…) and period (daily | monthly) defines the UTC window. Env:
+# AI_FACTORY_QUOTA_MODE.
+quota:
+  mode: "shadow"
 # Built-in tool execution. executor: local | docker. "docker" runs every tool in
 # a throwaway container (--network=none --read-only --cap-drop=ALL, workspace
 # bind-mounted at /workspace). Env: AI_FACTORY_TOOLS_EXECUTOR /

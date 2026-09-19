@@ -194,7 +194,7 @@ Service duy nhất (`Service`) gọi data access qua repository interface (impl 
 | Catalog | `catalog.go` | Model, ModelVersion, ServingTemplate, TemplateVersion |
 | Deployment | `deployment.go`, `state.go` | CreateDeployment/TransitionDeployment/revisions/endpoints, state machine |
 | Routing | `deployment.go` | `ResolveDeployment(tenantID, modelName)` → newest READY deployment |
-| Quota | `quota.go` | UpsertQuota/ListQuotas |
+| Quota | `quota.go`, `quota_enforcer.go` | UpsertQuota/ListQuotas + QuotaEnforcer (enforce `tenant_quotas` theo usage, mode off\|shadow\|enforce) |
 | Usage | `usage.go` | RecordUsage + UsageSummary/UsageDaily/UsageByModel |
 | Idempotency | `idempotency.go` | Resolve/Save `Idempotency-Key` |
 | API keys | `types.go` (models) | Create/List/Delete API key |
@@ -586,7 +586,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 ### 10.5 Khác
 
 - **Sandbox tool (tùy chọn)**: `tools.executor=docker` chạy tool trong container dùng-một-lần (cách ly thật — §2.6). Mặc định `local` (chạy trực tiếp trên host) vẫn là "no sandbox".
-- **Cost/quota enforcement chưa đủ**: usage được ghi (`usage_events`, Prometheus) nhưng **chưa trừ vào quota** khi vượt.
+- **Quota enforcement (✅ 2026-09-18)**: `usage.QuotaEnforcer` đọc `tenant_quotas` + `usage_daily`, chặn ở `/v1/chat/completions` (port `inference.QuotaGate`) khi `used >= limit` → `429 QUOTA_EXCEEDED`. Mode `off|shadow|enforce` (default `shadow`). Giới hạn đã biết: đọc từ rollup nên lệch ≤ 1 chu kỳ Roller (5s); quota `concurrent_requests` chưa hỗ trợ (đã có rate limit concurrency).
 - **Persistence cho domain khác**: session/control plane đã bền; một số state worker (workload ref…) vẫn dev-only.
 - Cancel Python là poll 100ms.
 

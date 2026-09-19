@@ -14,7 +14,7 @@ import (
 
 const (
 	// DefaultMaxTokens for context window.
-	DefaultMaxTokens = 8192 // 8K
+	DefaultMaxTokens = 32768 // 32K
 	// DangerZoneBeforeTruncate — start truncating when at this % of max.
 	DangerZoneBeforeTruncate = 0.90
 	// defaultMaxSessions bounds the in-memory session cache. Eviction is safe:

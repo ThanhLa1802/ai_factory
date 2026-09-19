@@ -102,6 +102,18 @@ Còn hoãn: postpaid/invoice, cổng thanh toán thật (ngoài MockProvider).
 
 ---
 
+## ✅ Quota enforcement theo usage
+
+Trạng thái: **✅ Xong** (2026-09-18) — `tenant_quotas` (đã có CRUD) giờ được **enforce** trên `/v1/chat/completions`.
+
+- **`usage.QuotaEnforcer`** (`internal/services/usage/quota_enforcer.go`): đọc `tenant_quotas` + `usage_daily` (rollup), tính usage kỳ hiện tại, chặn khi `used >= limit`. `quota_type` match theo prefix (`tokens…`/`requests…`), `period` (`daily`/`monthly`) quyết định cửa sổ UTC. Type khác (`concurrent_requests`, `gpu_hours`) bị bỏ qua; `limit_value <= 0` = không giới hạn.
+- **Port** `inference.QuotaGate` + adapter `quotaGate` (`internal/app/adapters.go`); handler gọi `checkQuota` sau khi resolve deployment, trước billing/session. Vượt quota → `429 QUOTA_EXCEEDED`; lỗi hạ tầng **fail-open** (như rate limiter).
+- **Mode** `quota.mode` = `off|shadow|enforce` (env `AI_FACTORY_QUOTA_MODE`, default **`shadow`**). `shadow` chỉ log + metric `quota_exceeded_total{tenant,quota_type,mode}`; `off` → gate `nil`.
+- **Giới hạn đã biết:** đọc từ `usage_daily` nên lệch ≤ 1 chu kỳ Roller (5s) và mang tính ước lượng ở biên; chưa hỗ trợ quota concurrency (đã có rate limit deployment concurrency).
+- **Tests:** `quota_enforcer_test.go` (enforce/shadow/under-limit, requests kind, skip unknown/zero, window daily/monthly, list error) + `handler_test.go` (429 / nil gate / fail-open). `go test ./...` xanh.
+
+---
+
 ## 🏗️ Kiến trúc lại theo production blueprint (Phase 6 ✅)
 
 Trạng thái: **Phase 6 xong** (2026-09-13) — reliability patterns: transactional outbox (6a) + cache-aside/usage rollup (6b). (Phase 1 ✅ composition root + DI; Phase 2 ✅ GORM/gormigrate + repository; Phase 3 ✅ HTTP layer Gin; Phase 4 ✅ tách `services/*` + dời infrastructure; Phase 5 ✅ multi-binary.)
@@ -121,7 +133,7 @@ Trạng thái: **Phase 6 xong** (2026-09-13) — reliability patterns: transacti
 - Phase 5 đã thêm: 4 binary `cmd/{server,worker,migrate,seed}` + role flags `services.api`/`services.worker` (env `AI_FACTORY_SERVICES_API`/`AI_FACTORY_SERVICES_WORKER`, default true); `RegisterAll` gate provider API-only (inference client/scheduler/loop, HTTP handlers) và worker provider; `App.Run` seed/serve/worker theo role; `app.RunMigrate`/`app.RunSeed`; `cmd/worker` chạy headless (không HTTP); Docker build cả 4 binary + compose service `worker` sau profile (không tự bật).
 - Phase 6a đã thêm: bảng `outbox` (migration `0008_outbox`) + `internal/infrastructure/outbox` (Record/Store/Publisher). Event `deployment_created`/`deployment_stop_requested` giờ ghi **cùng transaction** với deployment row (`DeploymentRepository.CreateWithEvent`), publisher nền drain outbox → event bus → stamp `published_at` (at-least-once, retry + `attempts`/`last_error`). `cmd/server` chạy publisher; worker node không đăng ký outbox.
 - Phase 6b đã thêm: cache-aside API key (`iam.AuthService` cache `apikey:<sha256>` TTL 5', invalidate khi xoá key — `DeleteAPIKey` trả `key_hash`); usage là **Postgres source-of-truth + rollup derive**: `RecordUsage` append vào `usage_events`, `usage.Roller` (5s, chỉ đăng ký API node) gộp vào `usage_daily` (migration `0009_usage_daily`) trong một transaction — khoá watermark `usage_rollup_state` (migration `0011_usage_rollup_state`) bằng `SELECT ... FOR UPDATE` nên nhiều replica serialise, chỉ nhích `last_event_id` sau khi upsert commit (crash-safe, idempotent, không double count); reads lấy từ `usage_daily` (lag ≤ 1 interval). Migration `0010_backfill_usage_daily` gộp lịch sử `usage_events` cũ một lần. (Thay thiết kế Redis-counter + `Flusher` cũ vì nó mất usage khi Redis không tới được và làm history cũ vô hình.)
-- Chưa làm (đã hoãn): layer subpackage `handlers/services/repositories/models/dto` trong mỗi service; billing/quota enforcement theo usage.
+- Chưa làm (đã hoãn): layer subpackage `handlers/services/repositories/models/dto` trong mỗi service.
 - Mục tiêu: modular monolith + DI + composition root + multi-binary; đổi stack HTTP/ORM/config/log sang Gin + GORM + gormigrate + viper + zap. Giữ nguyên Python worker (data plane).
 - Lộ trình: P1 nền tảng → P2 GORM/gormigrate + repository → P3 Gin → P4 tách `services/*` ✅ → P5 multi-binary ✅ → P6 reliability ✅ (outbox + cache-aside + usage rollup).
 
@@ -224,7 +236,9 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 - [x] **Bug nhỏ `--max-concurrent`** (§9.4) — đã fix ở C1-C4 (default `0`, guard `>0`, log `max_batch` đúng); docs cũ đã đồng bộ 2026-09-16.
 - [x] **Auth trên inference** (consumer slice): JWT + API key bắt buộc trên `/v1/chat/completions`; UI login/chat/keys.
 - [x] **Sandbox cho tool** — `DockerToolExecutor` (opt-in `tools.executor=docker`): mỗi tool chạy trong container dùng-một-lần (`--network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges` + pid/mem/cpu caps, workspace mount rw tại `/workspace`, path confined). Default `local` vẫn chạy trên host (không sandbox).
-- [ ] Chưa có: cost/quotas enforcement theo usage.
+- [x] **Quota enforcement theo usage** — đã làm 2026-09-18: `usage.QuotaEnforcer` + port `inference.QuotaGate`, chặn ở `/v1/chat/completions` (`429 QUOTA_EXCEEDED`), mode `off|shadow|enforce` (default `shadow`). Chi tiết mục mới bên dưới.
+
+> **Việc treo đã hết.** Còn lại chỉ là các hạng mục đã hoãn (subpackage layer trong service; UI polish; postpaid/invoice + cổng thanh toán thật; đo PagedAttention trên GPU; benchmark sampling loop vs `model.generate()`).
 
 ---
 
@@ -232,6 +246,7 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-18 | Quota enforcement theo usage ✅. Thêm `usage.QuotaEnforcer` (`internal/services/usage/quota_enforcer.go`): đọc `tenant_quotas` + `usage_daily`, `quota_type` match prefix (tokens/requests), `period` daily/monthly (UTC), chặn khi `used >= limit`. Port `inference.QuotaGate` + adapter `quotaGate` (`internal/app/adapters.go`), handler `checkQuota` sau resolve deployment → `429 QUOTA_EXCEEDED` (fail-open khi lỗi hạ tầng). Config `quota.mode` = off\|shadow\|enforce (env `AI_FACTORY_QUOTA_MODE`, default **shadow**); metric `quota_exceeded_total{tenant,quota_type,mode}`. Tests `quota_enforcer_test.go` + `handler_test.go`; `go build/vet/test ./...` xanh. Đóng việc treo "cost/quotas enforcement". |
 | 2026-09-18 | Giai đoạn 5 Phase C — PagedAttention ✅. Thêm `worker/block_manager.py`: `BlockManager` (pool per-layer `[num_blocks, H_kv, block_size, D]`, refcount, free LRU, `on_evict`, `copy_on_write`, `gather`), `PagedKVCache` (block table per-sequence + `init_from_prefill`/`append_from_output`/`adopt`/`fork`/`view`/`free`, CoW), `BlockPrefixCache` (map hash→block_id, chia sẻ block prefix bằng refcount thay copy tensor). `KVCacheManager.build_decode` assemble qua `cache.view()`; `ContinuousBatchEngine` thêm `paged`/`cache_factory`/`block_manager`, prefill suffix với block prefix adopt. Cờ `AI_FACTORY_PAGED_ATTENTION` (default off), `_BLOCKS` (2048), `_BLOCK_SIZE` (16). Tests mới `test_block_manager.py` (9), `test_block_prefix_cache.py` (7), `test_paged_engine.py` (6), `test_engines.py` (+6) → `pytest tests/` **172 passed**. Attention gather bằng PyTorch (không CUDA kernel); chưa đo GPU (cờ tắt mặc định). Plan `docs/superpowers/plans/2026-09-18-paged-attention.md`. |
 | 2026-09-18 | Giai đoạn 5 Phase B — prefix caching ✅. Thêm `worker/prefix_cache.py` (`PrefixCache`: block-aligned 16 token, khoá `blake2b(parent_hash, block_tokens)` cho longest-prefix match kiểu radix, LRU `max_blocks`, lock). `KVCacheManager.build_prefill_with_prefix` + `ContinuousBatchEngine` prefill riêng sequence có prefix (batch 1) với `past` = KV prefix và `input_ids` = suffix; `Sequence.token_ids`; `_finish` insert block vào cache (copy-on-adopt, chưa paging). Cờ `AI_FACTORY_PREFIX_CACHE` (default on) + `_BLOCKS`/`_BLOCK_SIZE`. Tests mới `test_prefix_cache.py` (8), `test_prefix_engine.py` (4), 2 test chunked prefill trong `test_forward.py` → `pytest tests/` **144 passed**. GPU 7B 4-bit: request lặp → output giống hệt khi tắt cache, prefill 7 token, 1265ms → 605ms (~2×). Plan `docs/superpowers/plans/2026-09-18-prefix-caching.md`. |
 | 2026-09-18 | Giai đoạn 5 Phase A — forward pass tự viết ✅. Thêm `worker/model/rope.py` (RoPE `rotate_half` + cos/sin), `worker/model/attention.py` (`repeat_kv` + GQA + causal/padding mask + softmax fp32), `worker/model/forward.py` (`Qwen2Forward`: layer loop + attention, tái dùng leaf module HF, trả legacy-tuple KV `[B,H_kv,S,D]`). `TransformersBackend` mặc định dùng forward tự viết, cờ `AI_FACTORY_SELF_FORWARD=0` rollback về HF. Interface callable tương thích HF nên `ContinuousBatchEngine`/`kv_cache.py`/`server.py`/proto **không đổi**. Tests mới `test_rope.py` (4), `test_self_attention.py` (6), `test_forward.py` (8) + `test_engines.py` cờ → `pytest tests/` **130 passed**. GPU: Qwen2.5-3B bf16/fp32 self vs HF eager **bit-exact** (`max_abs_diff=0`); 7B 4-bit prefill 407ms vs HF 383ms, decode/tok 69ms vs 56ms (SDPA thử chỉ lợi ~5% prefill). Bug kèm theo: HF transformers 4.50 không còn nhận `past_key_values` dạng legacy tuple → thêm `worker/model/hf_forward.py` (`HFForwardAdapter`, tuple ↔ `Cache`) cho đường rollback. Spec/plan: `docs/superpowers/{specs,plans}/2026-09-18-self-written-forward-pass*.md`. |

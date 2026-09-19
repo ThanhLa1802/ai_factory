@@ -148,6 +148,15 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
+	if err := c.RegisterSingleton("usage.quota", func(cc *di.Container) (any, error) {
+		g := cc.MustResolve("db").(*database.DB).Gorm()
+		return usage.NewQuotaEnforcer(usage.NewRepositories(g), usage.QuotaConfig{
+			Mode: cfg.Quota.Mode,
+			Log:  slog.Default(),
+		}), nil
+	}); err != nil {
+		return err
+	}
 	if err := c.RegisterSingleton("billing", func(cc *di.Container) (any, error) {
 		g := cc.MustResolve("db").(*database.DB).Gorm()
 		return billing.NewService(billing.NewRepositories(g), billing.Config{
@@ -228,6 +237,7 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			deploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},
 			cc.MustResolve("usage").(*usage.Service),
 			billingGateArg(cc, cfg),
+			quotaGateArg(cc, cfg),
 			cc.MustResolve("limiter").(*cache.RedisLimiter),
 			cfg.RateLimitRPM, cfg.RateLimitConcurrency,
 		), nil
@@ -280,6 +290,14 @@ func billingGateArg(c *di.Container, cfg *config.Config) inferencesvc.BillingGat
 		return nil
 	}
 	return billingGate{svc: c.MustResolve("billing").(*billing.Service)}
+}
+
+// quotaGateArg returns the inference quota gate, or nil when quotas are off.
+func quotaGateArg(c *di.Container, cfg *config.Config) inferencesvc.QuotaGate {
+	if cfg.Quota.Mode == usage.QuotaModeOff {
+		return nil
+	}
+	return quotaGate{enforcer: c.MustResolve("usage.quota").(*usage.QuotaEnforcer)}
 }
 
 // resolveUIDir reproduces the current auto-detect (ui/ then ../ui).
