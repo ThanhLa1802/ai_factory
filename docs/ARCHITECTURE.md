@@ -54,7 +54,8 @@ Mô hình triển khai là **monorepo phẳng, Go = main server, Python = sideca
         │  InferenceServicer + BatchInferenceServicer                    │
         │  └── EngineBackend (chọn bằng --engine)                       │
         │      ├── TransformersBackend  → Qwen2.5-Coder-7B (4-bit NF4)  │
-        │      └── LlamaBackend         → Qwen3.5-9B GGUF (llama-server)│
+        │      ├── LlamaBackend         → Qwen3.5-9B GGUF (llama-server)│
+        │      └── VLLMBackend          → Qwen2.5-1.5B (vLLM, local/K8s)│
         └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -104,6 +105,9 @@ Entry point: `go-server/cmd/server/main.go`. Các flag:
 | `AI_FACTORY_REDIS_ADDR` | `localhost:6379` | Redis cho rate limit |
 | `AI_FACTORY_RATE_LIMIT_RPM` | `60` | RPM mỗi tenant |
 | `AI_FACTORY_RATE_LIMIT_CONCURRENCY` | `4` | Concurrency mỗi deployment |
+| `AI_FACTORY_INFERENCE_MODE` | `worker` | `worker` (gRPC Python worker) hoặc `openai` (gọi thẳng upstream OpenAI-compatible, bỏ qua worker) |
+| `AI_FACTORY_INFERENCE_URL` | — | Base URL upstream khi mode `openai` (vd `http://vllm:8000`); bắt buộc khi mode `openai` |
+| `AI_FACTORY_INFERENCE_MODEL` | — | Tên model gửi lên upstream khi mode `openai` (phải khớp `--model` của vLLM/llama-server) |
 | `AI_FACTORY_DATABASE_MAX_OPEN_CONNS` | `25` | Pool: kết nối tối đa (C4) |
 | `AI_FACTORY_DATABASE_MAX_IDLE_CONNS` | `25` | Pool: kết nối idle tối đa (C4) |
 | `AI_FACTORY_DATABASE_CONN_MAX_LIFETIME` | `30m` | Pool: vòng đời kết nối (C4) |
@@ -292,6 +296,13 @@ Handler 3 ──┘        │                        │
 
 Hằng số: `DefaultBatchWindow = 100ms`, `DefaultMaxBatchSize = 4`.
 
+**Seam `Generator` (data plane).** `Loop` không phụ thuộc trực tiếp `BatchScheduler` nữa mà qua interface `inference.Generator` (`TrySubmit(ctx, GenerateRequest) (<-chan GenerateEvent, error)`). Hai implementation:
+
+- `*infra.BatchScheduler` — đường gRPC Python worker (mặc định, `inference.mode=worker`).
+- `*infra.OpenAIClient` (`internal/infrastructure/inference/openai_client.go`) — gọi thẳng `/v1/chat/completions` của một upstream OpenAI-compatible (vLLM, llama-server) bằng HTTP+SSE, map `delta.content`/`tool_calls`/`usage`/`finish_reason` → event dict y hệt worker. Chọn bằng `inference.mode=openai` + `AI_FACTORY_INFERENCE_URL`/`_MODEL`. 429/503 của upstream → `ErrOverloaded` (cùng backpressure như scheduler).
+
+Hai đường được chọn ở composition root (`internal/app/registry.go`). Với `openai`, Go **không dial gRPC** và worker không nằm trên đường request (dùng cho vLLM trong K8s); với `worker`, engine tự viết `transformers` chạy như cũ. Đây là bước "routing theo backend" thật của một serving platform.
+
 ### 2.8 gRPC Client — `internal/infrastructure/inference/client.go`
 
 - Giữ cả 2 stubs: `InferenceServiceClient` + `BatchInferenceServiceClient`.
@@ -378,13 +389,23 @@ Entry point: `python-worker/worker/server.py` (`python -m worker.server`). gRPC 
 
 Engine llama chạy GGUF qua **llama-server** (llama.cpp): worker spawn subprocess và proxy gRPC → OpenAI-compatible HTTP. Chọn engine qua `get_backend(engine_name, ...)`.
 
-- **`EngineBackend`** (`engines/base.py`): interface chung — `generate`/`generate_batch` yield event dict (token/tool_use/final). `get_backend()` là registry.
+- **`EngineBackend`** (`engines/base.py`): interface chung — `generate`/`generate_batch` yield event dict (token/tool_use/final). `get_backend()` là registry (các backend nặng import lazy).
 - **`TransformersBackend`** (`engines/transformers.py`): wrap `InferenceEngine` + `BatchEngine`.
+- **`OpenAICompatClient`/`OpenAICompatBackend`** (`engines/openai_compat.py`): plumbing OpenAI-compatible dùng chung cho cả llama lẫn vLLM — map message, request body, parse SSE, map `tool_calls`/`usage`/`finish_reason` → event dict. Mỗi engine chỉ cung cấp server launcher + tên model.
 - **`LlamaServer`** (`engines/llama/server.py`): spawn `llama-server` (`--host 127.0.0.1 --port 8081 --n-gpu-layers -1 --ctx-size 8192 --threads 8`), chờ `/health`, log file riêng, stop khi worker tắt.
 - **`LlamaClient`** (`client.py`): proxy → `POST {base_url}/v1/chat/completions` (SSE), httpx.
 - **`LlamaBackend`** (`backend.py`): map gRPC ↔ OpenAI body (`"model": "qwen3.5-9b"`, `tools`, `tool_choice:"auto"`); **tool calling native** → `STOP_TOOL_USE` + `tool_calls` thật.
 
 **GGUF / binary:** `models/Qwen3.5-9B-Q4_K_M.gguf` + `models/llama.cpp/llama-server.exe`. Flags: `--engine llama --gguf <path> --llama-port 8081 --llama-bin <bin>`.
+
+### 3.5 VLLMBackend — `engines/vllm/`
+
+Engine vLLM proxy qua OpenAI-compatible API của vLLM. Hai chế độ:
+
+- **spawn (dev/docker):** không truyền `--vllm-url` → `VLLMServer` (`engines/vllm/server.py`) spawn `vllm serve <model> --port 8082 --max-model-len 8192 --gpu-memory-utilization 0.9 --enable-auto-tool-choice --tool-call-parser hermes`, chờ `/health`. Model mặc định `Qwen/Qwen2.5-1.5B-Instruct` (nhỏ, để học). Flags: `--vllm-model --vllm-port --vllm-bin --vllm-max-model-len --vllm-gpu-memory-utilization --vllm-tool-parser`.
+- **remote (K8s):** truyền `--vllm-url http://vllm:8000` → `VLLMBackend` **không spawn**, chỉ nối tới server đang chạy (`load`/`unload` no-op). Đây là đường Kubernetes: vLLM là Deployment + Service riêng, pod worker chỉ trỏ tới nó. `--vllm-model` phải khớp `--model` mà server vLLM được khởi động.
+
+`VLLMBackend` tái dùng `OpenAICompatBackend`; **không cần dependency Python `vllm`** (chỉ spawn subprocess hoặc gọi HTTP).
 
 ---
 
@@ -526,6 +547,7 @@ Giới hạn: cancel phía Python là **poll 100ms**; trong batch mode model v�
 
 - **Model (transformers, default):** Qwen2.5-Coder-7B-Instruct, quant 4-bit NF4, `device_map="auto"` (RTX 3060 12GB).
 - **Model (llama):** Qwen3.5-9B, GGUF Q4_K_M (`models/Qwen3.5-9B-Q4_K_M.gguf`), chạy qua llama-server (llama.cpp, CUDA 12.4), `--n-gpu-layers -1`.
+- **Model (vllm):** Qwen/Qwen2.5-1.5B-Instruct (mặc định, nhỏ để học; đổi bằng `--vllm-model`), chạy qua vLLM OpenAI server — spawn local hoặc nối `--vllm-url` (K8s).
 - **Tokenizer:** BPETokenizer tự viết (`worker/model/tokenizer/bpe.py` — byte-level BPE). Load `vocab.json`/`merges.txt`/`tokenizer_config.json` của Qwen (IDs khớp 100%), tự implement byte-encoder, regex pre-tokenization, BPE merge, decode (kể cả `StreamingDecoder`), batch pad/truncate. Đảm nhận encode/decode trong `engine.py` (single) lẫn `continuous_batch_engine.py` (batch). Test đối chiếu ID == HF (`tests/test_tokenizer.py`).
 - **Chat template:** `hf_tokenizer.apply_chat_template` — chỉ dùng HF `AutoTokenizer` cho Jinja template (build prompt string), không token hoá. Hỗ trợ tool calling.
 - **Streaming:** daemon thread chạy `generate_tokens` → `queue.Queue` → async generator; decode tăng dần bằng `StreamingDecoder` (incremental UTF-8), decode tăng dần theo từng token.
@@ -604,7 +626,7 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 | Observability | `prometheus/client_golang`, `log/slog` JSON, W3C trace tự viết |
 | Reliability | `internal/infrastructure/retry`, `internal/infrastructure/circuitbreaker` (tự viết) |
 | Python worker | Python ≥3.11, `grpcio` (aio), `torch`, `transformers`, `bitsandbytes`, `accelerate` (+ `httpx` cho llama proxy) |
-| Model | Transformers: Qwen/Qwen2.5-Coder-7B-Instruct (4-bit NF4) · Llama: Qwen3.5-9B GGUF Q4_K_M (llama-server) |
+| Model | Transformers: Qwen/Qwen2.5-Coder-7B-Instruct (4-bit NF4) · Llama: Qwen3.5-9B GGUF Q4_K_M (llama-server) · vLLM: Qwen2.5-1.5B (OpenAI server) |
 | Contract | Protobuf 3, server-streaming gRPC |
 | Streaming | gRPC (Python→Go), SSE (Go→Client) |
 | Web UI | Next 16 (App Router), React 19, Tailwind v4, TypeScript |
@@ -622,6 +644,10 @@ cd python-worker && python -m worker.server
 
 #   ... hoặc engine llama (Qwen3.5-9B GGUF): spawn llama-server trên port 8081
 cd python-worker && python -m worker.server --engine llama --gguf ..\models\Qwen3.5-9B-Q4_K_M.gguf
+
+#   ... hoặc engine vllm (Qwen2.5-1.5B mặc định): spawn `vllm serve` trên port 8082.
+#   Trên K8s, vLLM chạy pod riêng → worker nối bằng --vllm-url http://vllm:8000.
+cd python-worker && python -m worker.server --engine vllm --vllm-model Qwen/Qwen2.5-1.5B-Instruct
 
 # Terminal 2: Go server (mặc định port 8080)
 #   Bắt buộc có Postgres; server fail boot nếu không kết nối được.

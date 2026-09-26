@@ -10,7 +10,7 @@ A learning project that simulates a **Claude Code / ChatGPT**-style server: an i
 - **SSE streaming** — tokens stream Python → Go → client in real time
 - **Agentic loop** — tool-use orchestration (max 10 iterations), 4 built-in tools: `read_file`, `write_file`, `run_command`, `list_files`
 - **Static batching** — requests coalesced in a 100 ms window (batch ≤ 4), routed back by `request_id`
-- **Two inference engines** — switchable at startup via `--engine`
+- **Three inference engines** — `--engine transformers | llama | vllm`, plus a direct Go→OpenAI-upstream mode (`inference.mode=openai`, bypasses the worker for vLLM)
 - **Hand-written byte-level BPE tokenizer** — IDs match HuggingFace 100%
 - **Multi-user** — in-memory sessions keyed by `x-session-id`
 
@@ -18,6 +18,7 @@ A learning project that simulates a **Claude Code / ChatGPT**-style server: an i
 
 ```
 Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (inference)
+                         │                └─ hoặc (inference.mode=openai) ─HTTP/SSE─► vLLM / llama-server
                          │
                          ├── OpenAI adapter (/v1/chat/completions)
                          ├── Agentic loop (tool-use orchestration, max 10 iter)
@@ -32,8 +33,9 @@ Client (SSE/HTTP) → Go Server (main) → gRPC stream → Python Worker (infere
 |---|---|---|---|
 | `--engine transformers` (default) | TransformersBackend | Qwen2.5-Coder-7B (4-bit NF4) | transformers + bitsandbytes + BPETokenizer |
 | `--engine llama` | LlamaBackend | Qwen3.5-9B (GGUF Q4_K_M) | llama-server (llama.cpp) + httpx proxy |
+| `--engine vllm` | VLLMBackend | Qwen2.5-1.5B-Instruct (configurable) | vLLM OpenAI server (spawn local, or `--vllm-url` for K8s) |
 
-Tool-calling currently works end-to-end only on the **llama** engine (§9.1 in [ARCHITECTURE](docs/ARCHITECTURE.md)).
+Tool-calling currently works end-to-end only on the **llama** engine (§9.1 in [ARCHITECTURE](docs/ARCHITECTURE.md)). The **vLLM** engine proxies an OpenAI-compatible server: it spawns `vllm serve` locally, or connects to a running server via `--vllm-url` (the Kubernetes path).
 
 ## Tech Stack
 
@@ -53,6 +55,11 @@ cd python-worker && python -m worker.server
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
 #   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
 cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
+
+#   ... or engine vllm (Qwen2.5-1.5B by default): spawns `vllm serve` on port 8082.
+#   Requires vLLM installed (Linux + CUDA). Point at an existing server instead with
+#   --vllm-url http://host:8000 (used in Kubernetes, where vLLM is its own pod).
+cd python-worker && python -m worker.server --engine vllm --vllm-model Qwen/Qwen2.5-1.5B-Instruct
 
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is

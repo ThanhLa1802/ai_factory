@@ -2,7 +2,7 @@
 
 File này track **dự án đang ở phần nào** trong learning roadmap: checklist chi tiết từng giai đoạn, link tới code, và các việc đang treo.
 
-- Cập nhật gần nhất: **2026-09-18** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
+- Cập nhật gần nhất: **2026-09-26** (xem [Nhật ký cập nhật](#nhật-ký-cập-nhật))
 - Map code ↔ roadmap chi tiết: `docs/ARCHITECTURE.md` §12
 - Tổng quan ngắn: `CLAUDE.md` → mục Learning Roadmap
 
@@ -10,7 +10,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 
 ## 📍 Hiện tại đang ở đâu
 
-> **Đang ở giai đoạn Tuần 9+ — Forward pass tự viết ✅ (Phase A), Prefix caching ✅ (Phase B), PagedAttention ✅ (Phase C). Giai đoạn 5 hoàn tất.**
+> **Roadmap học thuật đã hoàn tất (Tuần 1–9+, giai đoạn 5 xong). Đang ở hướng B — đưa stack lên Kubernetes theo pattern gateway→vLLM: engine vLLM ✅, seam `inference.Generator` + Go gọi thẳng vLLM ✅, K8s manifests (k3d + Kustomize) ✅ (code xong, chưa verify trên cluster GPU).**
 
 | Đã xong | Đang làm | Chưa làm |
 |---|---|---|
@@ -22,8 +22,11 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | Tuần 9+ Phase B: Prefix caching (block-hash + LRU, tái dùng KV prefix) | | |
 | Tuần 9+ Phase C: PagedAttention (block pool + block table + CoW, chia sẻ block) | | |
 | Bonus: Engine llama (Qwen3.5-9B GGUF) + tool-calling E2E | | |
+| Hướng B: Engine vLLM (`--engine vllm`, spawn local / `--vllm-url`) | | |
+| Hướng B: Seam `inference.Generator` + Go gọi thẳng vLLM (`inference.mode=openai`) | | |
+| Hướng B: K8s manifests (k3d + Kustomize) + Dockerfiles (server/web/worker) | | |
 
-**Việc kế tiếp cụ thể:** chưa chốt — giai đoạn 5 (self-written inference) đã xong; xem mục "Việc treo / lỗ hổng đang mở".
+**Việc kế tiếp cụ thể:** chạy E2E trên cluster k3d có GPU (`deployments/k8s/README.md`) và verify `go test ./...` + `pytest tests/`; còn lại là các hạng mục đã hoãn (đo PagedAttention trên GPU; benchmark sampling loop vs `model.generate()`; postpaid/invoice + cổng thanh toán thật; UI polish).
 
 ---
 
@@ -39,6 +42,7 @@ File này track **dự án đang ở phần nào** trong learning roadmap: check
 | Tuần 5–6 | Tự viết sampling loop (greedy / temperature / top-p / top-k) | ✅ Xong |
 | Tuần 7–8 | Tự quản lý KV cache + dynamic batching | ✅ Xong |
 | Tuần 9+ | Forward pass tự viết, prefix caching, PagedAttention | ✅ Phase A+B+C xong |
+| Hướng B (sau roadmap) | Engine vLLM + Go gateway→vLLM (`inference.mode=openai`) + K8s manifests | ✅ Code xong (chưa verify cluster GPU) |
 
 ---
 
@@ -246,6 +250,9 @@ Chi tiết: `docs/ARCHITECTURE.md` §9.
 
 | Ngày | Thay đổi |
 |---|---|
+| 2026-09-26 | **Inference backend seam `Generator` + đường gọi thẳng vLLM** ✅. `Loop` (Go) không còn phụ thuộc `*BatchScheduler` mà qua interface `inference.Generator`; thêm `infra.OpenAIClient` (`internal/infrastructure/inference/openai_client.go`) gọi thẳng `/v1/chat/completions` (HTTP+SSE) của upstream OpenAI-compatible (vLLM/llama-server), map `delta.content`/`tool_calls`/`usage`/`finish_reason` → event dict y hệt worker; 429/503 → `ErrOverloaded`. Chọn bằng `inference.mode=worker|openai` + `inference.url`/`inference.model` (env `AI_FACTORY_INFERENCE_MODE/_URL/_MODEL`), wire ở composition root. Mode `openai` bỏ qua Python worker hoàn toàn (pattern gateway→vLLM). Tests `openai_client_test.go` (5). Đây là hạng mục "Go gọi thẳng vLLM" của hướng B. |
+| 2026-09-26 | **K8s manifests (k3d + Kustomize)** — `deployments/k8s/{base,overlays/k3d,gpu,optional}`: postgres StatefulSet, redis, kafka (KRaft in-cluster), vLLM Deployment (GPU), server, web; Ingress Traefik; NVIDIA device plugin; `optional/worker-grpc.yaml` cho đường worker. Thêm `python-worker/Dockerfile` (slim, không torch — engine llama/vllm) + `web/Dockerfile` (Next standalone) + `.dockerignore`; `web/next.config.ts` bật `output: standalone`. Server chạy `inference.mode=openai` → gọi thẳng `http://vllm:8000`. Hướng dẫn: `deployments/k8s/README.md`. |
+| 2026-09-26 | Thêm engine **vLLM** (`--engine vllm`) ✅. Tách plumbing OpenAI-compatible dùng chung (`worker/engines/openai_compat.py`: `OpenAICompatClient` + `OpenAICompatBackend`), refactor `LlamaBackend`/`LlamaClient` lên trên đó (giữ re-export để test cũ không đổi). Thêm `worker/engines/vllm/{server,backend}.py`: `VLLMServer` spawn `vllm serve` (mặc định `Qwen/Qwen2.5-1.5B-Instruct`, `--enable-auto-tool-choice --tool-call-parser hermes`, chờ `/health`); `VLLMBackend` hỗ trợ **spawn local** hoặc **remote** qua `--vllm-url` (đường K8s — vLLM là pod riêng). Registry `worker/engines/__init__.py` thêm `vllm` + import lazy (chọn llama/vllm không kéo theo torch). Flags `--vllm-model/--vllm-url/--vllm-port/--vllm-bin/--vllm-max-model-len/--vllm-gpu-memory-utilization/--vllm-tool-parser`. Không cần dependency Python `vllm` (chỉ subprocess/HTTP). Tests mới `test_vllm_backend.py` (7), `test_vllm_server.py` (3), `test_engines.py` (+2 registry). |
 | 2026-09-18 | Quota enforcement theo usage ✅. Thêm `usage.QuotaEnforcer` (`internal/services/usage/quota_enforcer.go`): đọc `tenant_quotas` + `usage_daily`, `quota_type` match prefix (tokens/requests), `period` daily/monthly (UTC), chặn khi `used >= limit`. Port `inference.QuotaGate` + adapter `quotaGate` (`internal/app/adapters.go`), handler `checkQuota` sau resolve deployment → `429 QUOTA_EXCEEDED` (fail-open khi lỗi hạ tầng). Config `quota.mode` = off\|shadow\|enforce (env `AI_FACTORY_QUOTA_MODE`, default **shadow**); metric `quota_exceeded_total{tenant,quota_type,mode}`. Tests `quota_enforcer_test.go` + `handler_test.go`; `go build/vet/test ./...` xanh. Đóng việc treo "cost/quotas enforcement". |
 | 2026-09-18 | Giai đoạn 5 Phase C — PagedAttention ✅. Thêm `worker/block_manager.py`: `BlockManager` (pool per-layer `[num_blocks, H_kv, block_size, D]`, refcount, free LRU, `on_evict`, `copy_on_write`, `gather`), `PagedKVCache` (block table per-sequence + `init_from_prefill`/`append_from_output`/`adopt`/`fork`/`view`/`free`, CoW), `BlockPrefixCache` (map hash→block_id, chia sẻ block prefix bằng refcount thay copy tensor). `KVCacheManager.build_decode` assemble qua `cache.view()`; `ContinuousBatchEngine` thêm `paged`/`cache_factory`/`block_manager`, prefill suffix với block prefix adopt. Cờ `AI_FACTORY_PAGED_ATTENTION` (default off), `_BLOCKS` (2048), `_BLOCK_SIZE` (16). Tests mới `test_block_manager.py` (9), `test_block_prefix_cache.py` (7), `test_paged_engine.py` (6), `test_engines.py` (+6) → `pytest tests/` **172 passed**. Attention gather bằng PyTorch (không CUDA kernel); chưa đo GPU (cờ tắt mặc định). Plan `docs/superpowers/plans/2026-09-18-paged-attention.md`. |
 | 2026-09-18 | Giai đoạn 5 Phase B — prefix caching ✅. Thêm `worker/prefix_cache.py` (`PrefixCache`: block-aligned 16 token, khoá `blake2b(parent_hash, block_tokens)` cho longest-prefix match kiểu radix, LRU `max_blocks`, lock). `KVCacheManager.build_prefill_with_prefix` + `ContinuousBatchEngine` prefill riêng sequence có prefix (batch 1) với `past` = KV prefix và `input_ids` = suffix; `Sequence.token_ids`; `_finish` insert block vào cache (copy-on-adopt, chưa paging). Cờ `AI_FACTORY_PREFIX_CACHE` (default on) + `_BLOCKS`/`_BLOCK_SIZE`. Tests mới `test_prefix_cache.py` (8), `test_prefix_engine.py` (4), 2 test chunked prefill trong `test_forward.py` → `pytest tests/` **144 passed**. GPU 7B 4-bit: request lặp → output giống hệt khi tắt cache, prefill 7 token, 1265ms → 605ms (~2×). Plan `docs/superpowers/plans/2026-09-18-prefix-caching.md`. |

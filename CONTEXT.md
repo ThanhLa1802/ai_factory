@@ -8,14 +8,15 @@ Dự án học tập mô phỏng cách server Claude Code và ChatGPT hoạt đ�
 Client (SSE/HTTP) → Go Server (main)
     ├── HTTP Handler (OpenAI /v1/chat/completions)
     ├── Agentic Loop (tool-use orchestration, max 10 iterations)
-    ├── Batch Scheduler (gom request 100ms, dispatch batch xuống Python)
+    ├── Batch Scheduler (gom request 100ms, dispatch batch) — hoặc ─► OpenAIClient (HTTP trực tiếp tới vLLM/llama-server khi inference.mode=openai)
     ├── Session Manager (in-memory, multi-user, context truncation 8K)
     └── gRPC Client ──► Python Worker
                             ├── InferenceService.Generate()  (single request, streaming token)
                             ├── BatchInferenceService.BatchGenerate() (batch, route per request_id)
                             └── EngineBackend (chọn bằng --engine)
                                  ├── TransformersBackend → InferenceEngine + BatchEngine (HF 4-bit, Qwen2.5-Coder-7B)
-                                 └── LlamaBackend → llama-server proxy /v1/chat/completions (Qwen3.5-9B GGUF)
+                                 ├── LlamaBackend → llama-server proxy /v1/chat/completions (Qwen3.5-9B GGUF)
+                                 └── VLLMBackend → vLLM OpenAI server (Qwen2.5-1.5B; spawn local hoặc --vllm-url cho K8s)
 ```
 
 ### Data Flow — Single Request
@@ -61,7 +62,8 @@ Handler 3 ──┘                                     │
 - **Context Truncation**: Logic trong Go cắt bớt messages cũ nhất khi tổng số token vượt quá 8K, đảm bảo không cắt giữa cặp `tool_use`/`tool_result`.
 - **Cancel Propagation**: Chain từ client disconnect → Go `ctx.Done()` → gRPC stream cancel → Python dừng inference → giải phóng VRAM. Với batch mode, cancel từng request riêng không ảnh hưởng các request khác trong batch. ⚠️ Giới hạn hiện tại: phía Python là poll **100ms** (không phải event-driven), và trong batch mode model vẫn chạy hết forward pass của batch — chỉ bỏ gửi kết quả của request bị cancel.
 - **Engine Concurrency Guard**: Phần serialization bên trong `EngineBackend` (Python) đảm bảo `generate`/`generate_batch` an toàn khi bị gọi đồng thời — một `asyncio.Lock`/executor dùng chung quanh `model.generate()`, và `out_queue.get` đẩy sang `to_thread` để nhả event loop. Batch Slot (C1) lo throughput; Guard là lưới an toàn cho trường hợp nhiều đường (single `Generate` + `BatchGenerate`) cùng chạm một model.
-- **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Hai implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers) và `LlamaBackend` (Qwen3.5-9B, llama-server proxy). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface".
+- **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Ba implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers), `LlamaBackend` (Qwen3.5-9B, llama-server proxy) và `VLLMBackend` (vLLM OpenAI server — spawn local hoặc nối `--vllm-url` cho K8s). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface". Hai engine proxy OpenAI-compatible (llama, vllm) dùng chung `engines/openai_compat.py`.
+- **Inference Mode / Generator (Go)**: Seam data-plane phía Go — `inference.Generator` (`TrySubmit`). `worker` (default) = `BatchScheduler` → gRPC Python worker (engine tự viết). `openai` = `OpenAIClient` gọi thẳng `/v1/chat/completions` của upstream OpenAI-compatible (vLLM/llama-server), **bỏ qua worker**; map SSE → cùng event dict (token/tool_use/final). Cấu hình `AI_FACTORY_INFERENCE_MODE/_URL/_MODEL`. Đây là pattern gateway→vLLM của K8s.
 - **LlamaProxyEngine**: `LlamaBackend` — spawn `llama-server` subprocess, proxy gRPC → OpenAI-compatible `/v1/chat/completions` (SSE). Tool calling native (structured output) → nhánh tool-use của agentic loop hoạt động thật trên engine này (vá §9.1).
 
 ### Billing (Prepaid)
