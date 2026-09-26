@@ -61,18 +61,28 @@ type LoopEvent struct {
 // Loop
 // ---------------------------------------------------------------------------
 
+// Generator is the inference backend seam. The agentic loop submits a request
+// and consumes engine events without knowing which backend serves it:
+//   - *infra.BatchScheduler  → gRPC Python worker (transformers/llama/vllm)
+//   - *infra.OpenAIClient    → direct OpenAI-compatible upstream (vLLM, …)
+//
+// Selected by config at the composition root (inference.mode).
+type Generator interface {
+	TrySubmit(ctx context.Context, req infra.GenerateRequest) (<-chan infra.GenerateEvent, error)
+}
+
 // Loop orchestrates the agentic conversation: user message → model → tools → model → ...
-// Uses BatchScheduler for inference — individual GenerateStream calls are collected
-// and batched together for GPU efficiency.
+// Uses a Generator for inference — either the gRPC BatchScheduler (requests are
+// collected and batched for GPU efficiency) or a direct OpenAI-compatible client.
 type Loop struct {
-	scheduler *infra.BatchScheduler
+	generator Generator
 	tools     ToolExecutor
 }
 
-// NewLoop creates a new agentic loop with batch scheduler.
-func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor) *Loop {
+// NewLoop creates a new agentic loop over the given inference backend.
+func NewLoop(generator Generator, executor ToolExecutor) *Loop {
 	return &Loop{
-		scheduler: scheduler,
+		generator: generator,
 		tools:     executor,
 	}
 }
@@ -135,9 +145,11 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 				Tools:          sessToolDefs,
 			}
 
-			// Submit to batch scheduler — may wait up to 100ms to collect a batch.
-			// TrySubmit sheds load (ErrOverloaded → 503) when the queue is full.
-			grpcEvents, err := l.scheduler.TrySubmit(ctx, req)
+			// Submit to the inference backend — the gRPC scheduler may wait up to
+			// 100ms to collect a batch; the direct client starts the upstream
+			// request immediately. TrySubmit sheds load (ErrOverloaded → 503)
+			// when the backend is saturated.
+			grpcEvents, err := l.generator.TrySubmit(ctx, req)
 			if err != nil {
 				events <- LoopEvent{
 					Type: LoopEventError,

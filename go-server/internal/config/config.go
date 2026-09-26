@@ -24,10 +24,17 @@ type Config struct {
 	// With the worker's continuous batching, >1 lets requests queue up while
 	// others decode (the worker still runs one forward pass at a time).
 	InferenceMaxInFlightBatches int
-	Services                    ServicesConfig
-	Billing                     BillingConfig
-	Quota                       QuotaConfig
-	Tools                       ToolsConfig
+	// InferenceMode picks the data-plane backend: "worker" (default) routes to
+	// the gRPC Python worker (BatchScheduler); "openai" calls InferenceURL's
+	// OpenAI-compatible API directly (vLLM, llama-server, …), bypassing the
+	// worker. InferenceModel is the model name sent to that upstream.
+	InferenceMode  string
+	InferenceURL   string
+	InferenceModel string
+	Services       ServicesConfig
+	Billing        BillingConfig
+	Quota          QuotaConfig
+	Tools          ToolsConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -82,6 +89,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("rate_limit_rpm", 60)
 	v.SetDefault("rate_limit_concurrency", 4)
 	v.SetDefault("inference.max_in_flight_batches", 4)
+	v.SetDefault("inference.mode", "worker")
+	v.SetDefault("inference.url", "")
+	v.SetDefault("inference.model", "")
 	v.SetDefault("services.api", true)
 	v.SetDefault("services.worker", true)
 	v.SetDefault("services.billing", true)
@@ -132,6 +142,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("quota.mode must be off, shadow or enforce, got %q", mode)
 	}
 
+	if mode := v.GetString("inference.mode"); mode != "worker" && mode != "openai" {
+		return nil, fmt.Errorf("inference.mode must be worker or openai, got %q", mode)
+	}
+	if v.GetString("inference.mode") == "openai" && v.GetString("inference.url") == "" {
+		return nil, fmt.Errorf("inference.mode=openai requires inference.url")
+	}
+
 	return &Config{
 		DatabaseURL:                 v.GetString("database_url"),
 		JWTSecret:                   secret,
@@ -141,6 +158,9 @@ func Load(path string) (*Config, error) {
 		RateLimitRPM:                v.GetInt("rate_limit_rpm"),
 		RateLimitConcurrency:        v.GetInt("rate_limit_concurrency"),
 		InferenceMaxInFlightBatches: v.GetInt("inference.max_in_flight_batches"),
+		InferenceMode:               v.GetString("inference.mode"),
+		InferenceURL:                v.GetString("inference.url"),
+		InferenceModel:              v.GetString("inference.model"),
 		DBMaxOpenConns:              v.GetInt("database_max_open_conns"),
 		DBMaxIdleConns:              v.GetInt("database_max_idle_conns"),
 		DBConnMaxLifetime:           v.GetDuration("database_conn_max_lifetime"),

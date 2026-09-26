@@ -11,6 +11,13 @@ rate_limit_concurrency: 4
 # at a time. Env: AI_FACTORY_INFERENCE_MAX_IN_FLIGHT_BATCHES.
 inference:
   max_in_flight_batches: 4
+  # Data-plane backend. mode: worker (gRPC Python worker, default) | openai.
+  # "openai" calls an OpenAI-compatible upstream directly (vLLM, llama-server),
+  # bypassing the worker — url + model required. Env: AI_FACTORY_INFERENCE_MODE /
+  # _URL / _MODEL. With "openai" the Python worker is not needed in the path.
+  mode: "worker"
+  url: ""
+  model: ""
 # Resource budgets (C4). Bound the Postgres pool and HTTP idle/read timeouts.
 # http_write_timeout is intentionally unset (0) — SSE streams must not be killed.
 database_max_open_conns: 25

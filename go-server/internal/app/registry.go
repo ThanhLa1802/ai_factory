@@ -80,24 +80,36 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 	}); err != nil {
 		return err
 	}
-	// API-only: the data-plane client + agentic loop. A worker process never
-	// builds these.
+	// API-only: the data-plane backend + agentic loop. A worker process never
+	// builds these. inference.mode chooses the backend: "worker" (gRPC Python
+	// worker via BatchScheduler, default) or "openai" (call an OpenAI-compatible
+	// upstream directly — e.g. vLLM — bypassing the worker).
 	if cfg.Services.API {
-		if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
-			return infrainf.NewClient(opts.InferenceAddr)
-		}); err != nil {
-			return err
-		}
-		if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
-			ic := cc.MustResolve("inference.client").(*infrainf.Client)
-			s := infrainf.NewBatchScheduler(ic)
-			if opts.MaxConcurrent > 0 {
-				s.SetMaxBatchSize(opts.MaxConcurrent)
+		if cfg.InferenceMode == "openai" {
+			if err := c.RegisterSingleton("inference.openai", func(*di.Container) (any, error) {
+				slog.Info("inference backend: direct OpenAI-compatible upstream",
+					"url", cfg.InferenceURL, "model", cfg.InferenceModel)
+				return infrainf.NewOpenAIClient(cfg.InferenceURL, cfg.InferenceModel), nil
+			}); err != nil {
+				return err
 			}
-			s.SetMaxInFlight(cfg.InferenceMaxInFlightBatches)
-			return s, nil
-		}); err != nil {
-			return err
+		} else {
+			if err := c.RegisterSingleton("inference.client", func(*di.Container) (any, error) {
+				return infrainf.NewClient(opts.InferenceAddr)
+			}); err != nil {
+				return err
+			}
+			if err := c.RegisterSingleton("batch.scheduler", func(cc *di.Container) (any, error) {
+				ic := cc.MustResolve("inference.client").(*infrainf.Client)
+				s := infrainf.NewBatchScheduler(ic)
+				if opts.MaxConcurrent > 0 {
+					s.SetMaxBatchSize(opts.MaxConcurrent)
+				}
+				s.SetMaxInFlight(cfg.InferenceMaxInFlightBatches)
+				return s, nil
+			}); err != nil {
+				return err
+			}
 		}
 		if err := c.RegisterSingleton("tool.executor", func(*di.Container) (any, error) {
 			if cfg.Tools.Executor == "docker" {
@@ -112,7 +124,13 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			return err
 		}
 		if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
-			return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
+			var gen inferencesvc.Generator
+			if cfg.InferenceMode == "openai" {
+				gen = cc.MustResolve("inference.openai").(*infrainf.OpenAIClient)
+			} else {
+				gen = cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler)
+			}
+			return inferencesvc.NewLoop(gen,
 				cc.MustResolve("tool.executor").(inferencesvc.ToolExecutor)), nil
 		}); err != nil {
 			return err
