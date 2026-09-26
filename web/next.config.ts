@@ -12,6 +12,9 @@ const apiUrl = process.env.AI_FACTORY_API_URL || "http://localhost:8080";
 // /chat and /keys on :8080, but the Next app owns those paths: /keys is gone
 // (API keys moved into /platform), so redirect it to the API Keys tab.
 const nextConfig: NextConfig = {
+  // Emit a self-contained server bundle for a slim production image
+  // (web/Dockerfile copies `.next/standalone`).
+  output: "standalone",
   async redirects() {
     return [{ source: "/keys", destination: "/platform?tab=keys", permanent: false }];
   },

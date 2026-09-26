@@ -1,0 +1,65 @@
+# OPTIONAL: Python inference worker (gRPC :50051) as its own pod.
+#
+# NOT part of the base overlay: with `inference.mode=openai` the Go server calls
+# vLLM directly, so the worker is not on the request path. Apply this only if you
+# want the worker route too (e.g. to exercise the self-written `transformers`
+# engine cluster-side), then set on the server:
+#   AI_FACTORY_INFERENCE_MODE=worker
+#   --inference-addr worker:50051
+#
+#   kubectl apply -f deployments/k8s/optional/worker-grpc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: ai-factory
+spec:
+  selector:
+    app: worker
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: ai-factory
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: ai-factory/worker:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--engine"
+            - "vllm"
+            - "--vllm-url"
+            - "http://vllm:8000"
+            - "--vllm-model"
+            - "Qwen/Qwen2.5-1.5B-Instruct"
+            - "--port"
+            - "50051"
+          ports:
+            - containerPort: 50051
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi

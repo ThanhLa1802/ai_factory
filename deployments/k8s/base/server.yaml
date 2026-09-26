@@ -1,0 +1,89 @@
+# Go server — inference gateway + control plane (and the in-process control
+# plane worker: services.worker defaults true). Migrates and seeds on boot.
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+spec:
+  selector:
+    app: server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+        - name: server
+          image: ai-factory/server:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--inference-addr"
+            # Control-plane health probe target. The data plane is now direct
+            # (inference.mode=openai → vLLM), so the Python worker is not in the
+            # request path; point this at vLLM's TCP endpoint.
+            - "vllm:8000"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AI_FACTORY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ai-factory-secrets
+                  key: database-url
+            - name: AI_FACTORY_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ai-factory-secrets
+                  key: jwt-secret
+            - name: AI_FACTORY_REDIS_ADDR
+              value: "redis:6379"
+            - name: AI_FACTORY_KAFKA_ADDR
+              value: "kafka:29092"
+            # Data plane: call vLLM's OpenAI-compatible API directly, bypassing
+            # the gRPC Python worker. Model must match vLLM's --model.
+            - name: AI_FACTORY_INFERENCE_MODE
+              value: "openai"
+            - name: AI_FACTORY_INFERENCE_URL
+              value: "http://vllm:8000"
+            - name: AI_FACTORY_INFERENCE_MODEL
+              value: "Qwen/Qwen2.5-1.5B-Instruct"
+            - name: AI_FACTORY_LOG_LEVEL
+              value: "info"
+            # The `docker` tool executor needs the docker CLI + socket — not
+            # available in-cluster; use the host executor here (K8s-native tool
+            # sandboxing would need a job-based executor, out of scope).
+            - name: AI_FACTORY_TOOLS_EXECUTOR
+              value: "local"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}

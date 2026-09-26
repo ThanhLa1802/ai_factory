@@ -1,0 +1,94 @@
+# vLLM OpenAI-compatible server. Runs as its OWN pod (the Kubernetes-native
+# path): the Python worker connects to it via `--vllm-url http://vllm:8000`
+# instead of spawning a local `vllm serve` subprocess.
+#
+# Requires an NVIDIA GPU + the device plugin (see ../gpu/). Without the plugin
+# the pod stays Pending on the `nvidia.com/gpu` request.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-cache
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector:
+    app: vllm
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one GPU, one model — never two pods at once
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:latest
+          # Image entrypoint is already `vllm serve`, so args are its flags.
+          args:
+            - "--model"
+            - "Qwen/Qwen2.5-1.5B-Instruct"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+            - "--max-model-len"
+            - "4096"
+            - "--gpu-memory-utilization"
+            - "0.85"
+            # Tool calling must be enabled at startup or requests carrying
+            # `tools` are rejected. Qwen2.x uses the Hermes parser.
+            - "--enable-auto-tool-choice"
+            - "--tool-call-parser"
+            - "hermes"
+          ports:
+            - containerPort: 8000
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: ai-factory-secrets
+                  key: hf-token
+                  optional: true
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 60 # model download + load can take minutes
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          volumeMounts:
+            - name: hf-cache
+              mountPath: /root/.cache/huggingface
+      volumes:
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: vllm-cache

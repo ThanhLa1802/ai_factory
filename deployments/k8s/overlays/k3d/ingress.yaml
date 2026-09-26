@@ -1,0 +1,19 @@
+# Traefik is bundled with k3d and `*.localhost` resolves to 127.0.0.1, so this
+# host works out of the box: http://ai-factory.localhost
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: ai-factory.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000
