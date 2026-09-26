@@ -316,16 +316,24 @@ def _build_batch_response(request_id: str, event: dict) -> inference_pb2.BatchGe
 async def serve(port: int = DEFAULT_PORT, model_id: str | None = None,
                 engine_name: str = "transformers", gguf: str | None = None,
                 llama_port: int = 8081, llama_bin: str = "llama-server",
-                gpu_layers: int = -1):
+                gpu_layers: int = -1, vllm_model: str | None = None,
+                vllm_url: str | None = None, vllm_port: int = 8082,
+                vllm_bin: str = "vllm", vllm_max_model_len: int = 8192,
+                vllm_gpu_memory_utilization: float = 0.9,
+                vllm_tool_parser: str = "hermes"):
     """Start the gRPC inference server."""
     print("[server] Starting AI Factory Inference Worker...")
     print(f"[server] gRPC port: {port}")
 
-    # Load model via backend registry (transformers | llama)
+    # Load model via backend registry (transformers | llama | vllm)
     from .engines import get_backend
     backend = get_backend(engine_name, model_id=model_id, gguf=gguf,
                           llama_port=llama_port, llama_bin=llama_bin,
-                          gpu_layers=gpu_layers)
+                          gpu_layers=gpu_layers, vllm_model=vllm_model,
+                          vllm_url=vllm_url, vllm_port=vllm_port,
+                          vllm_bin=vllm_bin, vllm_max_model_len=vllm_max_model_len,
+                          vllm_gpu_memory_utilization=vllm_gpu_memory_utilization,
+                          vllm_tool_parser=vllm_tool_parser)
     backend.load()
 
     # Create gRPC server
@@ -376,7 +384,7 @@ def main():
     parser.add_argument("--model", type=str, default=None,
                         help="Transformers model ID (default: Qwen2.5-Coder-7B-Instruct; bỏ qua khi --engine llama)")
     parser.add_argument("--engine", type=str, default="transformers",
-                        help="transformers | llama")
+                        help="transformers | llama | vllm")
     parser.add_argument("--gguf", type=str, default=None,
                         help="Path or repo GGUF (only when --engine llama)")
     parser.add_argument("--llama-port", type=int, default=8081,
@@ -385,11 +393,29 @@ def main():
                         help="llama-server binary path (default: in PATH)")
     parser.add_argument("--gpu-layers", type=int, default=-1,
                         help="số layer đẩy lên GPU (llama.cpp --n-gpu-layers); -1 = tất cả. Giảm xuống để CPU-offload khi model lớn hơn VRAM")
+    parser.add_argument("--vllm-model", type=str, default=None,
+                        help="vLLM model (default: Qwen/Qwen2.5-1.5B-Instruct); phải khớp --model của server khi dùng --vllm-url")
+    parser.add_argument("--vllm-url", type=str, default=None,
+                        help="URL server vLLM đang chạy sẵn (vd http://vllm:8000) — dùng cho K8s; bỏ trống thì tự spawn `vllm serve`")
+    parser.add_argument("--vllm-port", type=int, default=8082,
+                        help="vLLM port khi tự spawn (không dùng cùng --vllm-url)")
+    parser.add_argument("--vllm-bin", type=str, default="vllm",
+                        help="vLLM binary path (default: in PATH)")
+    parser.add_argument("--vllm-max-model-len", type=int, default=8192,
+                        help="vLLM --max-model-len (chỉ khi tự spawn)")
+    parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=0.9,
+                        help="vLLM --gpu-memory-utilization (chỉ khi tự spawn)")
+    parser.add_argument("--vllm-tool-parser", type=str, default="hermes",
+                        help="vLLM --tool-call-parser (Qwen2.x dùng hermes)")
     args = parser.parse_args()
 
     asyncio.run(serve(port=args.port, model_id=args.model, engine_name=args.engine,
                       gguf=args.gguf, llama_port=args.llama_port, llama_bin=args.llama_bin,
-                      gpu_layers=args.gpu_layers))
+                      gpu_layers=args.gpu_layers, vllm_model=args.vllm_model,
+                      vllm_url=args.vllm_url, vllm_port=args.vllm_port,
+                      vllm_bin=args.vllm_bin, vllm_max_model_len=args.vllm_max_model_len,
+                      vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+                      vllm_tool_parser=args.vllm_tool_parser))
 
 
 if __name__ == "__main__":

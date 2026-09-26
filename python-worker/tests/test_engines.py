@@ -18,6 +18,21 @@ def test_registry_llama():
     assert type(b).__name__ == "LlamaBackend"
 
 
+def test_registry_vllm_spawn():
+    b = get_backend("vllm", vllm_port=8123)
+    assert type(b).__name__ == "VLLMBackend"
+    assert b.server is not None
+    assert b.client.base_url == "http://127.0.0.1:8123"
+
+
+def test_registry_vllm_remote():
+    b = get_backend("vllm", vllm_model="served", vllm_url="http://vllm:8000")
+    assert type(b).__name__ == "VLLMBackend"
+    assert b.server is None
+    assert b.model == "served"
+    assert b.client.base_url == "http://vllm:8000"
+
+
 class _StubBatch:
     def __init__(self, events):
         self._events = events
