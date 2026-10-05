@@ -9,11 +9,13 @@ import (
 	"github.com/ai-factory/go-server/internal/config"
 	"github.com/ai-factory/go-server/internal/infrastructure/cache"
 	"github.com/ai-factory/go-server/internal/infrastructure/database"
+	infraimage "github.com/ai-factory/go-server/internal/infrastructure/image"
 	infrainf "github.com/ai-factory/go-server/internal/infrastructure/inference"
 	"github.com/ai-factory/go-server/internal/infrastructure/message"
 	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	imagesvc "github.com/ai-factory/go-server/internal/services/image"
 	inferencesvc "github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
@@ -116,6 +118,33 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 				cc.MustResolve("tool.executor").(inferencesvc.ToolExecutor)), nil
 		}); err != nil {
 			return err
+		}
+		// Image generation: a separate worker process/port (spec D3). The Go
+		// node only dials it; the GPU is owned by whichever worker runs.
+		if cfg.Services.Image {
+			if err := c.RegisterSingleton("image.client", func(*di.Container) (any, error) {
+				return infraimage.NewClient(opts.ImageInferenceAddr)
+			}); err != nil {
+				return err
+			}
+			if err := c.RegisterSingleton("image.service", func(cc *di.Container) (any, error) {
+				g := cc.MustResolve("db").(*database.DB).Gorm()
+				return imagesvc.NewService(
+					imagesvc.NewRepositories(g),
+					cc.MustResolve("image.client").(*infraimage.Client),
+					imagesvc.NewDiskStorage(cfg.Image.StorageDir),
+					imageDeploymentResolver{svc: cc.MustResolve("serving").(*serving.Service)},
+					imagesvc.Config{
+						DefaultWidth:    cfg.Image.DefaultWidth,
+						DefaultHeight:   cfg.Image.DefaultHeight,
+						DefaultSteps:    cfg.Image.DefaultSteps,
+						DefaultGuidance: cfg.Image.DefaultGuidance,
+						MaxImages:       cfg.Image.MaxImages,
+					},
+				), nil
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -274,6 +303,16 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		if err := c.RegisterSingleton("http.billing", func(cc *di.Container) (any, error) {
 			return billing.NewHandler(
 				cc.MustResolve("billing").(*billing.Service),
+				cc.MustResolve("iam.authenticator").(*iam.Authenticator),
+			), nil
+		}); err != nil {
+			return err
+		}
+	}
+	if cfg.Services.Image {
+		if err := c.RegisterSingleton("http.image", func(cc *di.Container) (any, error) {
+			return imagesvc.NewHandler(
+				cc.MustResolve("image.service").(*imagesvc.Service),
 				cc.MustResolve("iam.authenticator").(*iam.Authenticator),
 			), nil
 		}); err != nil {

@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package image;
+
+option go_package = "go-server/internal/infrastructure/image/pb";
+
+// ImageService — Python image worker exposes this (separate process/port from
+// the text InferenceService). Go calls GenerateImage() for a one-shot result,
+// or StreamImage() to receive per-step progress and the final image.
+service ImageService {
+  // GenerateImage — unary: chạy toàn bộ pipeline rồi trả ảnh một lần.
+  rpc GenerateImage(ImageRequest) returns (ImageResponse);
+
+  // StreamImage — server-streaming: phát tiến độ từng step, kết thúc bằng
+  // một ImageProgress có done=true kèm result (hoặc error).
+  rpc StreamImage(ImageRequest) returns (stream ImageProgress);
+}
+
+// ImageRequest — tham số sinh ảnh, gửi từ Go xuống Python worker.
+message ImageRequest {
+  string request_id = 1;
+  string prompt = 2;
+  string negative_prompt = 3;
+  int32 width = 4;             // default: 1024
+  int32 height = 5;            // default: 1024
+  int32 steps = 6;             // default: 25
+  float guidance_scale = 7;    // default: 7.0 (0 => turbo/lightning)
+  int64 seed = 8;              // -1 => random
+  int32 num_images = 9;        // default: 1
+  string scheduler = 10;       // euler | dpmpp_2m (default: pipeline default)
+}
+
+// ImageProgress — một mốc tiến độ (StreamImage).
+message ImageProgress {
+  string request_id = 1;
+  int32 step = 2;
+  int32 total_steps = 3;
+  bool done = 4;
+  ImageResponse result = 5;    // set khi done=true và thành công
+  string error = 6;            // set khi done=true và thất bại
+}
+
+// ImageResponse — ảnh PNG đã encode cùng metadata thực tế đã dùng.
+message ImageResponse {
+  repeated bytes png = 1;
+  int32 width = 2;
+  int32 height = 3;
+  int64 seed = 4;
+  int32 steps = 5;
+  string scheduler = 6;
+}

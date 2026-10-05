@@ -181,6 +181,81 @@ func findOrCreateTemplateVersion(ctx context.Context, cp *serving.Service, templ
 	return cp.CreateTemplateVersion(ctx, want)
 }
 
+// seedImage seeds a demo SDXL model + READY deployment for the demo tenant so
+// image routing works without Kafka. Idempotent: skips if a READY deployment
+// already resolves for the model.
+func seedImage(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) error {
+	if os.Getenv("AI_FACTORY_SKIP_SEED") == "1" {
+		return nil
+	}
+	tenantID, err := demoTenantID(ctx, iamSvc)
+	if err != nil {
+		return err
+	}
+	if tenantID == "" {
+		return nil // no demo tenant yet; nothing to seed
+	}
+	if _, err := cp.ResolveDeployment(ctx, tenantID, "sdxl-1.0"); err == nil {
+		return nil // already seeded
+	} else if !errors.Is(err, serving.ErrNotFound) {
+		return fmt.Errorf("resolve for seed: %w", err)
+	}
+
+	model, err := findOrCreateModel(ctx, cp, serving.Model{
+		Name: "sdxl-1.0", Task: "text-to-image", Framework: "diffusers",
+	})
+	if err != nil {
+		return fmt.Errorf("seed image model: %w", err)
+	}
+	mv, err := findOrCreateModelVersion(ctx, cp, model.ID, serving.ModelVersion{
+		Version: "v1", ArtifactURI: "stabilityai/stable-diffusion-xl-base-1.0",
+	})
+	if err != nil {
+		return fmt.Errorf("seed image model version: %w", err)
+	}
+	tpl, err := findOrCreateTemplate(ctx, cp, serving.ServingTemplate{
+		Name: "diffusers-sdxl", Runtime: "diffusers",
+	})
+	if err != nil {
+		return fmt.Errorf("seed image template: %w", err)
+	}
+	tv, err := findOrCreateTemplateVersion(ctx, cp, tpl.ID, serving.TemplateVersion{
+		Version: "v1", Image: "sdxl:latest",
+	})
+	if err != nil {
+		return fmt.Errorf("seed image template version: %w", err)
+	}
+	d, err := cp.CreateDeployment(ctx, serving.Deployment{
+		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
+		Name: "sdxl-1.0-prod", Region: "local", DesiredReplicas: 1,
+	})
+	if err != nil {
+		return fmt.Errorf("seed image deployment: %w", err)
+	}
+	for _, to := range []string{serving.DeploymentProvisioning, serving.DeploymentStarting, serving.DeploymentReady} {
+		if _, err := cp.TransitionDeployment(ctx, d.ID, to); err != nil {
+			return fmt.Errorf("seed image transition to %s: %w", to, err)
+		}
+	}
+	slog.Info("seeded demo image model + READY deployment", "model", "sdxl-1.0", "deployment", d.ID, "tenant", tenantID)
+	return nil
+}
+
+// demoTenantID returns the demo tenant's id, or "" when it does not exist yet.
+func demoTenantID(ctx context.Context, iamSvc *iam.Service) (string, error) {
+	tenantName := envOr("AI_FACTORY_DEMO_TENANT", "acme")
+	tenants, err := iamSvc.ListTenants(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, t := range tenants {
+		if t.Name == tenantName {
+			return t.ID, nil
+		}
+	}
+	return "", nil
+}
+
 // seedBilling seeds demo model prices and credits the demo tenant's wallet.
 // Idempotent: prices upsert; the top-up uses a fixed idempotency key per tenant
 // so a repeated seed never credits twice.

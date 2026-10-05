@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/ai-factory/go-server/internal/services/billing"
+	"github.com/ai-factory/go-server/internal/services/image"
 	"github.com/ai-factory/go-server/internal/services/inference"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
@@ -21,6 +22,18 @@ func (a deploymentResolver) ResolveDeployment(ctx context.Context, tenantID, mod
 		return nil, err
 	}
 	return &inference.ResolvedDeployment{ID: d.ID, TenantID: d.TenantID, Region: d.Region}, nil
+}
+
+// imageDeploymentResolver adapts serving.Service to image.DeploymentResolver —
+// the only place the image service meets serving (design §4.2 / D-P4-2).
+type imageDeploymentResolver struct{ svc *serving.Service }
+
+func (a imageDeploymentResolver) ResolveDeployment(ctx context.Context, tenantID, modelName string) (*image.ResolvedDeployment, error) {
+	d, err := a.svc.ResolveDeployment(ctx, tenantID, modelName)
+	if err != nil {
+		return nil, err
+	}
+	return &image.ResolvedDeployment{ID: d.ID, TenantID: d.TenantID, Region: d.Region}, nil
 }
 
 // billingGate adapts *billing.Service to inference.BillingGate, translating the

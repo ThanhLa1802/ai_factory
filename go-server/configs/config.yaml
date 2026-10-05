@@ -25,6 +25,9 @@ services:
   api: true
   worker: true
   billing: true
+  # image gates the image HTTP surface + job runner on this node (the Python
+  # image worker is a separate process; spec D3). Env: AI_FACTORY_SERVICES_IMAGE.
+  image: true
 # Prepaid billing. mode: off | shadow | enforce. Money is integer micro-credits
 # (1 currency unit = 1,000,000 µcr); model_pricing stores µcr per 1M tokens.
 billing:
@@ -46,3 +49,13 @@ quota:
 tools:
   executor: "local"
   docker_image: "alpine:3.24"
+# Text-to-image (SDXL). storage_dir holds generated PNGs. Defaults mirror SDXL
+# base (25 steps, guidance 7.0); a turbo worker deployment uses 4 steps / 0.0.
+# max_images caps `n` (12GB VRAM: keep at 1). Env: AI_FACTORY_IMAGE_*.
+image:
+  storage_dir: "workspace/images"
+  default_width: 1024
+  default_height: 1024
+  default_steps: 25
+  default_guidance: 7.0
+  max_images: 1

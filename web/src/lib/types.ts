@@ -193,3 +193,21 @@ export interface TopupTransaction {
   status: string;
   created_at: string;
 }
+
+// Text-to-image. An asset is one persisted generated PNG (bytes fetched
+// separately, authenticated, from /api/v1/images/assets/:id).
+export interface ImageAsset {
+  id: string;
+  tenant_id: string;
+  job_id?: string;
+  model: string;
+  prompt: string;
+  negative_prompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  guidance_scale: number;
+  seed: number;
+  scheduler: string;
+  created_at: string;
+}

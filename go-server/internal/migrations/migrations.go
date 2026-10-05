@@ -21,5 +21,7 @@ func All() []*gormigrate.Migration {
 		M0012ModelPricing(),
 		M0013WalletLedger(),
 		M0014APIKeyRevoke(),
+		M0015ImageAssets(),
+		M0016ImageJobs(),
 	}
 }

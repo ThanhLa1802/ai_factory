@@ -28,6 +28,7 @@ type Config struct {
 	Billing                     BillingConfig
 	Quota                       QuotaConfig
 	Tools                       ToolsConfig
+	Image                       ImageConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -45,6 +46,9 @@ type ServicesConfig struct {
 	API     bool
 	Worker  bool
 	Billing bool
+	// Image gates the image HTTP surface + job runner on the API node. The
+	// Python image worker itself runs as a separate process (spec D3).
+	Image bool
 }
 
 // BillingConfig configures prepaid billing. Mode is off|shadow|enforce;
@@ -70,6 +74,17 @@ type ToolsConfig struct {
 	DockerImage string
 }
 
+// ImageConfig configures text-to-image generation (SDXL). DefaultGuidance is 7
+// for SDXL base; a turbo worker deployment uses 0 and 4 steps (spec D1/D9).
+type ImageConfig struct {
+	StorageDir      string
+	DefaultWidth    int
+	DefaultHeight   int
+	DefaultSteps    int
+	DefaultGuidance float64
+	MaxImages       int
+}
+
 // Load reads configuration from an optional YAML file plus AI_FACTORY_* env
 // overrides. path == "" loads defaults + env only.
 func Load(path string) (*Config, error) {
@@ -85,6 +100,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("services.api", true)
 	v.SetDefault("services.worker", true)
 	v.SetDefault("services.billing", true)
+	v.SetDefault("services.image", true)
 	v.SetDefault("billing.mode", "shadow")
 	v.SetDefault("billing.currency", "USD")
 	v.SetDefault("billing.initial_allowance", 0)
@@ -93,6 +109,12 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("quota.mode", "shadow")
 	v.SetDefault("tools.executor", "local")
 	v.SetDefault("tools.docker_image", "alpine:3.24")
+	v.SetDefault("image.storage_dir", "workspace/images")
+	v.SetDefault("image.default_width", 1024)
+	v.SetDefault("image.default_height", 1024)
+	v.SetDefault("image.default_steps", 25)
+	v.SetDefault("image.default_guidance", 7.0)
+	v.SetDefault("image.max_images", 1)
 	v.SetDefault("database_max_open_conns", 25)
 	v.SetDefault("database_max_idle_conns", 25)
 	v.SetDefault("database_conn_max_lifetime", "30m")
@@ -151,6 +173,7 @@ func Load(path string) (*Config, error) {
 			API:     v.GetBool("services.api"),
 			Worker:  v.GetBool("services.worker"),
 			Billing: v.GetBool("services.billing"),
+			Image:   v.GetBool("services.image"),
 		},
 		Billing: BillingConfig{
 			Mode:             v.GetString("billing.mode"),
@@ -165,6 +188,14 @@ func Load(path string) (*Config, error) {
 		Tools: ToolsConfig{
 			Executor:    v.GetString("tools.executor"),
 			DockerImage: v.GetString("tools.docker_image"),
+		},
+		Image: ImageConfig{
+			StorageDir:      v.GetString("image.storage_dir"),
+			DefaultWidth:    v.GetInt("image.default_width"),
+			DefaultHeight:   v.GetInt("image.default_height"),
+			DefaultSteps:    v.GetInt("image.default_steps"),
+			DefaultGuidance: v.GetFloat64("image.default_guidance"),
+			MaxImages:       v.GetInt("image.max_images"),
 		},
 	}, nil
 }

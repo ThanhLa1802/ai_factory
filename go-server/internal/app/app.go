@@ -45,6 +45,9 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 		if cfg.Services.Billing {
 			names = append(names, "billing.reaper", "http.billing")
 		}
+		if cfg.Services.Image {
+			names = append(names, "image.client", "image.service", "http.image")
+		}
 	}
 	if cfg.Services.Worker {
 		names = append(names, "deployment.worker")
@@ -69,6 +72,9 @@ func NewHTTPHandler(c *di.Container) *gin.Engine {
 	c.MustResolve("http.usage").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	if _, err := c.Resolve("http.billing"); err == nil {
 		c.MustResolve("http.billing").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
+	}
+	if _, err := c.Resolve("http.image"); err == nil {
+		c.MustResolve("http.image").(interface{ RegisterRoutes(*gin.Engine) }).RegisterRoutes(e)
 	}
 	e.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
 	return e
@@ -144,6 +150,11 @@ func (a *App) seed(ctx context.Context) error {
 	}
 	if err := seedDemo(ctx, iamSvc, servingSvc); err != nil {
 		a.log.Warn("seed demo deployment", "err", err)
+	}
+	if a.cfg.Services.Image {
+		if err := seedImage(ctx, iamSvc, servingSvc); err != nil {
+			a.log.Warn("seed image deployment", "err", err)
+		}
 	}
 	if a.cfg.Services.Billing {
 		billingSvc := a.container.MustResolve("billing").(*billing.Service)

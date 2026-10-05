@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       { source: "/api/v1/:path*", destination: `${apiUrl}/api/v1/:path*` },
+      // Image generation is a plain JSON POST (no SSE), so a buffering rewrite
+      // is fine — unlike /v1/chat/completions which has a streaming route.
+      { source: "/v1/images/:path*", destination: `${apiUrl}/v1/images/:path*` },
       { source: "/health", destination: `${apiUrl}/health` },
       { source: "/metrics", destination: `${apiUrl}/metrics` },
     ];
