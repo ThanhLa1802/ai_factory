@@ -173,7 +173,7 @@ Handler nhận `*gin.Context`; route + auth middleware `gin.HandlerFunc`; global
 **Adapters** (`adapters.go`):
 
 - `OpenAIToInternal`: system message → system prompt; `tool_calls`/`tool_call_id` map trực tiếp.
-- `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên thành `infra.ToolDefinition`. Handler gọi và truyền xuống loop; loop merge với built-ins (client thắng khi trùng tên) — xem §5.3.
+- `OpenAIToolsToInternal`: chuyển tool definitions client gửi lên thành `infra.ToolDefinition`. Handler gọi và truyền xuống loop; request có `tools` thì chỉ những tool đó được quảng bá (built-in chỉ dùng khi client không khai báo tool nào) — xem §5.3.
 
 **SSE writer** (`sse.go`): headers `text/event-stream`, `no-cache`, `keep-alive`, `X-Accel-Buffering: no`. Gửi token ngay mỗi lần + `Flush()`. Định dạng OpenAI stream: `chat.completion.chunk` với `delta.content` / `delta.reasoning_content` / `delta.tool_calls`, rồi chunk `finish_reason`, rồi `[DONE]`. Overloaded (backpressure) gửi frame lỗi `OVERLOADED`.
 
@@ -442,13 +442,15 @@ user msg → model → model trả STOP_TOOL_USE + toolCalls
   → tool thuộc executor (built-in)? execute ngay (LocalToolExecutor, timeout 30s)
     → lưu tool_result vào session
     → iteration kế: model nhìn lại toàn bộ history (kèm tool results) → tiếp tục
-  → tool của client? không execute local — trả `tool_calls` + finish_reason `tool_use` cho caller
+  → request có tool client? không execute local — trả `tool_calls` + finish_reason `tool_calls` cho caller
   → ... đến khi STOP_END_TURN hoặc đủ 10 iterations
 ```
 
-Bước 1 (loop) gửi **built-in tools + tool client khai báo** (merge, client thắng khi trùng tên).
-Tool client chỉ khai báo mà executor không sở hữu sẽ được trả về cho caller qua `tool_calls`
-(thay vì lỗi "unknown tool"); caller chạy rồi gửi kết quả lại ở turn sau.
+Bước 1 (loop) quảng bá **đúng tool mà client khai báo** nếu request có `tools`; built-in của
+`LocalToolExecutor` chỉ được gửi khi client không khai báo tool nào (ví dụ UI chat built-in).
+Khi có tool client, loop **không tự chạy** bất kỳ call nào — mọi `tool_calls` được trả về cho caller
+(stream: `delta.tool_calls`; non-stream: `message.tool_calls` + `finish_reason: tool_calls`);
+caller chạy rồi gửi kết quả lại ở turn sau.
 
 Trên engine **transformers** (2026-09-16), đường batch tự parse `<tool_call>…</tool_call>`
 trong output (worker `tool_calls.py` + `continuous_batch_engine.py`): markup bị chặn khỏi
@@ -571,8 +573,9 @@ Auth: JWT lưu `localStorage`, decode client-side để phân role. UI tĩnh cũ
 ### 10.2 Tool definitions từ client (đã nối 2026-09-16)
 
 - `adapters.go` có `OpenAIToolsToInternal`; handler parse `req.Tools`, truyền xuống `RunStreaming`.
-- Loop merge tool client với built-ins của `LocalToolExecutor` (client thắng khi trùng tên) — `toolDefinitionsFor`.
-- Tool không thuộc executor: loop **không execute local**, trả `tool_calls` cho client (stream: `delta.tool_calls`; non-stream: `message.tool_calls` + `finish_reason: tool_use`, gate bằng `Loop.allExecutable`).
+- Request có `tools` → quảng bá đúng những tool đó; built-in của `LocalToolExecutor` chỉ dùng khi client khai báo không tool nào — `toolDefinitionsFor`.
+- Có tool client: loop **không execute local**, trả mọi `tool_calls` cho client (stream: `delta.tool_calls`; non-stream: `message.tool_calls` + `finish_reason: tool_calls`).
+- Không có tool client: built-in được execute tại server, tool_use không lộ ra client.
 
 ### 10.3 Flag `--max-concurrent` (đã sửa — C1)
 

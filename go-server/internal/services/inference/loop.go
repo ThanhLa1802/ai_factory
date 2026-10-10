@@ -89,8 +89,9 @@ func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor) *Loop {
 // Cancel the context to abort (cancel propagation → gRPC → Python worker).
 //
 // clientTools are the tools the caller declared on this request (OpenAI
-// `tools`). They are merged with the executor's built-ins; calls the executor
-// doesn't own are handed back to the caller instead of being executed here.
+// `tools`). When present they are the only tools advertised to the model and
+// every call is handed back to the caller instead of being executed here;
+// the executor's built-ins run server-side only when the caller declares none.
 func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Message, params infra.SamplingParams, clientTools []infra.ToolDefinition) <-chan LoopEvent {
 	events := make(chan LoopEvent, 64) // buffer to avoid blocking on token emission
 
@@ -174,16 +175,11 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 
 				case "tool_use":
 					if event.ToolUse != nil {
-						tc := ToolCall{
+						toolCalls = append(toolCalls, ToolCall{
 							ID:        event.ToolUse.ID,
 							Name:      event.ToolUse.Name,
 							Arguments: event.ToolUse.Arguments,
-						}
-						toolCalls = append(toolCalls, tc)
-						events <- LoopEvent{
-							Type:     LoopEventToolUse,
-							ToolCall: &tc,
-						}
+						})
 					}
 
 				case "final":
@@ -214,10 +210,17 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 
 			// If model wants to call tools, execute them
 			if stopReason == "STOP_TOOL_USE" && len(toolCalls) > 0 {
-				if !l.allExecutable(toolCalls) {
-					// Tool(s) owned by the client: it already received the
-					// tool_calls events and will run them. End the turn with
-					// finish_reason=tool_use; nothing is executed here.
+				// When the request declares tools, they belong to the caller:
+				// surface every call and end the turn. Built-ins are executed
+				// here only for requests that declared no tools at all.
+				if len(clientTools) > 0 || !l.allExecutable(toolCalls) {
+					for i := range toolCalls {
+						tc := toolCalls[i]
+						events <- LoopEvent{
+							Type:     LoopEventToolUse,
+							ToolCall: &tc,
+						}
+					}
 					events <- LoopEvent{
 						Type:         LoopEventFinal,
 						StopReason:   stopReason,
@@ -276,26 +279,27 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 	return events
 }
 
-// toolDefinitionsFor merges the executor's built-in tools with the tools the
-// client declared for this request. Client definitions win on a name clash so a
-// caller can override a built-in's schema.
+// toolDefinitionsFor returns the tools advertised to the model for a request.
+// A request that declares tools gets exactly those (the standard OpenAI
+// function-calling contract); the executor's built-ins are offered only when
+// the caller declares none (e.g. the built-in chat UI).
 func toolDefinitionsFor(executor ToolExecutor, client []infra.ToolDefinition) []infra.ToolDefinition {
-	builtin := executor.ListTools()
-	out := make([]infra.ToolDefinition, 0, len(builtin)+len(client))
-	seen := make(map[string]bool, len(builtin)+len(client))
-
-	for _, td := range client {
-		if td.Name == "" || seen[td.Name] {
-			continue
+	if len(client) > 0 {
+		out := make([]infra.ToolDefinition, 0, len(client))
+		seen := make(map[string]bool, len(client))
+		for _, td := range client {
+			if td.Name == "" || seen[td.Name] {
+				continue
+			}
+			seen[td.Name] = true
+			out = append(out, td)
 		}
-		seen[td.Name] = true
-		out = append(out, td)
+		return out
 	}
+
+	builtin := executor.ListTools()
+	out := make([]infra.ToolDefinition, 0, len(builtin))
 	for _, td := range builtin {
-		if seen[td.Name] {
-			continue
-		}
-		seen[td.Name] = true
 		out = append(out, infra.ToolDefinition{
 			Name:        td.Name,
 			Description: td.Description,

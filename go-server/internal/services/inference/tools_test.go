@@ -29,7 +29,7 @@ func TestOpenAIToolsToInternal(t *testing.T) {
 	}
 }
 
-func TestToolDefinitionsForMergesClientTools(t *testing.T) {
+func TestToolDefinitionsForClientToolsReplaceBuiltins(t *testing.T) {
 	exec := NewLocalToolExecutor(t.TempDir())
 	client := []infra.ToolDefinition{
 		{Name: "get_weather", Description: "client tool", Parameters: `{}`},
@@ -38,6 +38,9 @@ func TestToolDefinitionsForMergesClientTools(t *testing.T) {
 
 	defs := toolDefinitionsFor(exec, client)
 
+	if len(defs) != 2 {
+		t.Fatalf("len = %d, want 2 (built-ins are not advertised when the client declares tools)", len(defs))
+	}
 	byName := make(map[string]infra.ToolDefinition, len(defs))
 	for _, d := range defs {
 		if _, dup := byName[d.Name]; dup {
@@ -45,14 +48,19 @@ func TestToolDefinitionsForMergesClientTools(t *testing.T) {
 		}
 		byName[d.Name] = d
 	}
-	if len(defs) != 5 { // 4 built-ins + 1 new client tool
-		t.Fatalf("len = %d, want 5", len(defs))
+	if _, ok := byName["run_command"]; ok {
+		t.Error("built-in run_command must not leak into a client-tool request")
 	}
-	if byName["read_file"].Description != "client override" {
-		t.Errorf("client definition should win on a name clash, got %q", byName["read_file"].Description)
+	if byName["read_file"].Parameters != `{"override":true}` {
+		t.Errorf("client definition must be passed through verbatim, got %q", byName["read_file"].Parameters)
 	}
-	if _, ok := byName["run_command"]; !ok {
-		t.Error("built-in run_command missing from merged definitions")
+}
+
+func TestToolDefinitionsForBuiltinsWhenNoClientTools(t *testing.T) {
+	exec := NewLocalToolExecutor(t.TempDir())
+	defs := toolDefinitionsFor(exec, nil)
+	if len(defs) != 4 {
+		t.Fatalf("len = %d, want the 4 built-ins", len(defs))
 	}
 }
 
