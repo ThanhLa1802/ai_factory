@@ -209,6 +209,48 @@ func (h *Handler) handleGetJob(c *gin.Context) {
 	response.WriteJSON(c, http.StatusOK, job)
 }
 
+// handleJobEvents streams a job's progress over SSE until it reaches a terminal
+// status. It polls the job row (the runner writes progress_step there), so no
+// shared in-process state is needed and any API replica can serve the stream.
+func (h *Handler) handleJobEvents(c *gin.Context) {
+	p, _ := middleware.PrincipalFromContext(c)
+	id := c.Param("id")
+
+	job, err := h.svc.GetJob(c.Request.Context(), p.TenantID, id)
+	if err != nil {
+		writeResourceError(c, err)
+		return
+	}
+	sse, err := newSSEWriter(c.Writer)
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	ctx := c.Request.Context()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := sse.send(job); err != nil {
+			return
+		}
+		if isTerminalJob(job.Status) {
+			sse.done()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		job, err = h.svc.GetJob(ctx, p.TenantID, id)
+		if err != nil {
+			_ = sse.sendError(err.Error())
+			return
+		}
+	}
+}
+
 // --- error mapping ---
 
 func writeGenerateError(c *gin.Context, err error) {

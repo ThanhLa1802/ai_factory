@@ -16,4 +16,5 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 	g.POST("/jobs", h.handleCreateJob)
 	g.GET("/jobs", h.handleListJobs)
 	g.GET("/jobs/:id", h.handleGetJob)
+	g.GET("/jobs/:id/events", h.handleJobEvents)
 }

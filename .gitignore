@@ -10,6 +10,7 @@ venv/
 
 # Go
 go-server/tmp/
+go-server/workspace/
 *.exe
 
 # Model files (too large for git)
@@ -39,3 +40,4 @@ llama-server-*.log
 .superpowers/
 
 *.log
+opencode.json

@@ -24,6 +24,14 @@ type JobRepository interface {
 	List(ctx context.Context, tenantID string, limit int) ([]Job, error)
 	UpdateStatus(ctx context.Context, id, status, errMsg string) error
 	UpdateProgress(ctx context.Context, id string, step int) error
+	// Claim atomically transitions up to limit claimable jobs to running and
+	// returns them. A job is claimable when it is queued, or running with an
+	// updated_at before staleBefore (a lease that lapsed, e.g. after a crash).
+	Claim(ctx context.Context, limit int, staleBefore time.Time) ([]Job, error)
+	// Finish moves a running job to a terminal status. The transition is guarded
+	// on status=running, so a duplicate finish (or a job another replica already
+	// finished) is a no-op.
+	Finish(ctx context.Context, id, status, errMsg string) error
 }
 
 // Repositories bundles every repository the image service needs.
@@ -161,10 +169,57 @@ func (r *jobRepo) UpdateStatus(ctx context.Context, id, status, errMsg string) e
 
 func (r *jobRepo) UpdateProgress(ctx context.Context, id string, step int) error {
 	err := r.db.WithContext(ctx).Model(&jobRow{}).
-		Where("id = ?", id).
+		Where("id = ? AND status = ?", id, JobRunning).
 		Updates(map[string]any{"progress_step": step, "updated_at": time.Now().UTC()}).Error
 	if err != nil {
 		return fmt.Errorf("update image job progress: %w", err)
+	}
+	return nil
+}
+
+// Claim uses a CTE with FOR UPDATE SKIP LOCKED so concurrent API replicas never
+// grab the same job. Re-claiming a stale running job resumes it after a crash;
+// its progress_step is preserved so work continues where it stopped.
+func (r *jobRepo) Claim(ctx context.Context, limit int, staleBefore time.Time) ([]Job, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	var rows []jobRow
+	err := r.db.WithContext(ctx).Raw(`
+		WITH claimed AS (
+			SELECT id FROM image_jobs
+			WHERE status = ? OR (status = ? AND updated_at < ?)
+			ORDER BY created_at
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE image_jobs j
+		SET status = ?, updated_at = now()
+		FROM claimed c
+		WHERE j.id = c.id
+		RETURNING j.id, j.tenant_id, j.model, j.status, j.prompt, j.negative_prompt,
+		          j.width, j.height, j.steps, j.guidance_scale, j.seed, j.num_images,
+		          j.scheduler, j.progress_step, j.error, j.created_at, j.updated_at`,
+		JobQueued, JobRunning, staleBefore, limit, JobRunning,
+	).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("claim image jobs: %w", err)
+	}
+	out := make([]Job, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, toJob(row))
+	}
+	return out, nil
+}
+
+func (r *jobRepo) Finish(ctx context.Context, id, status, errMsg string) error {
+	err := r.db.WithContext(ctx).Model(&jobRow{}).
+		Where("id = ? AND status = ?", id, JobRunning).
+		Updates(map[string]any{
+			"status": status, "error": errMsg, "updated_at": time.Now().UTC(),
+		}).Error
+	if err != nil {
+		return fmt.Errorf("finish image job: %w", err)
 	}
 	return nil
 }

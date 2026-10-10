@@ -211,3 +211,33 @@ export interface ImageAsset {
   scheduler: string;
   created_at: string;
 }
+
+// An async image-generation job (see internal/services/image/model.go). The
+// runner advances status queued→running→succeeded|failed and writes
+// progress_step; the UI streams these snapshots from /api/v1/images/jobs/:id/events.
+export type ImageJobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export interface ImageJob {
+  id: string;
+  tenant_id: string;
+  model: string;
+  status: ImageJobStatus;
+  prompt: string;
+  negative_prompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  guidance_scale: number;
+  seed: number;
+  num_images: number;
+  scheduler: string;
+  progress_step: number;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}

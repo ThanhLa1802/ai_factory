@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -93,6 +94,26 @@ func TestHandleGenerateModelNotFound(t *testing.T) {
 		`{"model":"nope","prompt":"x"}`)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleJobEventsStreamsTerminalJob(t *testing.T) {
+	svc, _, _, jobs := newTestService(nil, nil, 1)
+	job, err := svc.CreateJob(context.Background(), "t1", GenerateParams{Model: "sdxl-1.0", Prompt: "x"})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	jobs.items[0].Status = JobSucceeded
+
+	e := gin.New()
+	NewHandler(svc, fakeAuth{}).RegisterRoutes(e)
+	w := doJSON(e, http.MethodGet, "/api/v1/images/jobs/"+job.ID+"/events", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, JobSucceeded) || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("body = %q", body)
 	}
 }
 

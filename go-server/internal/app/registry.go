@@ -145,6 +145,12 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			}); err != nil {
 				return err
 			}
+			// Async job runner on the API node (services.api + services.image).
+			if err := c.RegisterSingleton("image.runner", func(cc *di.Container) (any, error) {
+				return imagesvc.NewRunner(cc.MustResolve("image.service").(*imagesvc.Service), slog.Default()), nil
+			}); err != nil {
+				return err
+			}
 		}
 	}
 

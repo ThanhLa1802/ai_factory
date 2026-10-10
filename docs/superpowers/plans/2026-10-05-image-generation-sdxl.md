@@ -66,11 +66,11 @@
 
 **Files:** `internal/services/image/{runner.go,storage.go,repository.go}` (new), `internal/app/{registry,app}.go`.
 
-- [ ] `storage.go`: ghi/đọc `workspace/images/<asset_id>.png` (atomic write, path-traversal guard).
-- [ ] `repository.go`: CRUD `image_jobs` (queued→running→succeeded/failed/cancelled), `image_assets`.
-- [ ] `runner.go`: poll 5s (kiểu usage roller), chỉ `services.api`; guard terminal; cập nhật `step/total`; graceful shutdown theo context.
-- [ ] SSE `GET /api/v1/images/jobs/:id/events` phát tiến độ (dùng `SSEWriter` sẵn có).
-- [ ] Tests: runner idempotent + resume sau crash; storage path guard.
+- [x] `storage.go`: ghi/đọc `workspace/images/<asset_id>.png` (atomic write, path-traversal guard).
+- [x] `repository.go`: CRUD `image_jobs` (queued→running→succeeded/failed/cancelled), `image_assets` + `Claim` (FOR UPDATE SKIP LOCKED) / `Finish` (guard terminal).
+- [x] `runner.go`: poll 5s (kiểu usage roller), chỉ `services.api`; guard terminal; cập nhật `step/total`; graceful shutdown theo context.
+- [x] SSE `GET /api/v1/images/jobs/:id/events` phát tiến độ (local `sseWriter` trong package image — services không import chéo).
+- [x] Tests: runner idempotent + resume sau crash; storage path guard; SSE terminal job.
 
 ## Phase 4 — Web UI
 

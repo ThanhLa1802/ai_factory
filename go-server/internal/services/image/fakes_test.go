@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"time"
 
 	infraimage "github.com/ai-factory/go-server/internal/infrastructure/image"
 	"github.com/ai-factory/go-server/internal/infrastructure/middleware"
@@ -14,6 +15,8 @@ type fakeGenerator struct {
 	result  *infraimage.GenerateResult
 	err     error
 	calls   int
+	// steps > 0 makes Stream emit that many progress events before the result.
+	steps int
 }
 
 func (f *fakeGenerator) Generate(_ context.Context, req infraimage.GenerateRequest) (*infraimage.GenerateResult, error) {
@@ -26,9 +29,20 @@ func (f *fakeGenerator) Generate(_ context.Context, req infraimage.GenerateReque
 }
 
 func (f *fakeGenerator) Stream(_ context.Context, req infraimage.GenerateRequest) (<-chan infraimage.ProgressEvent, error) {
+	f.calls++
 	f.lastReq = req
 	ch := make(chan infraimage.ProgressEvent)
-	close(ch)
+	go func() {
+		defer close(ch)
+		if f.err != nil {
+			ch <- infraimage.ProgressEvent{Done: true, Error: f.err.Error()}
+			return
+		}
+		for i := 1; i <= f.steps; i++ {
+			ch <- infraimage.ProgressEvent{Step: int32(i), TotalSteps: int32(f.steps)}
+		}
+		ch <- infraimage.ProgressEvent{Done: true, Result: f.result}
+	}()
 	return ch, nil
 }
 
@@ -87,6 +101,11 @@ func (r *memAssetRepo) List(_ context.Context, tenantID string, limit int) ([]As
 type memJobRepo struct{ items []*Job }
 
 func (r *memJobRepo) Create(_ context.Context, j *Job) error {
+	now := time.Now().UTC()
+	if j.CreatedAt.IsZero() {
+		j.CreatedAt = now
+	}
+	j.UpdatedAt = now
 	r.items = append(r.items, j)
 	return nil
 }
@@ -122,8 +141,38 @@ func (r *memJobRepo) UpdateStatus(_ context.Context, id, status, errMsg string) 
 
 func (r *memJobRepo) UpdateProgress(_ context.Context, id string, step int) error {
 	for _, j := range r.items {
-		if j.ID == id {
+		if j.ID == id && j.Status == JobRunning {
 			j.ProgressStep = step
+			j.UpdatedAt = time.Now().UTC()
+		}
+	}
+	return nil
+}
+
+func (r *memJobRepo) Claim(_ context.Context, limit int, staleBefore time.Time) ([]Job, error) {
+	var out []Job
+	for _, j := range r.items {
+		if len(out) >= limit {
+			break
+		}
+		claimable := j.Status == JobQueued ||
+			(j.Status == JobRunning && j.UpdatedAt.Before(staleBefore))
+		if !claimable {
+			continue
+		}
+		j.Status = JobRunning
+		j.UpdatedAt = time.Now().UTC()
+		out = append(out, *j)
+	}
+	return out, nil
+}
+
+func (r *memJobRepo) Finish(_ context.Context, id, status, errMsg string) error {
+	for _, j := range r.items {
+		if j.ID == id && j.Status == JobRunning {
+			j.Status = status
+			j.Error = errMsg
+			j.UpdatedAt = time.Now().UTC()
 		}
 	}
 	return nil

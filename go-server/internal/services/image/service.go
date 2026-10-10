@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -114,6 +115,68 @@ func (s *Service) CreateJob(ctx context.Context, tenantID string, p GeneratePara
 		return nil, err
 	}
 	return j, nil
+}
+
+// ExecuteJob runs one claimed async job: it streams generation from the worker
+// (persisting progress_step as it goes) and saves each produced PNG with the
+// job id set. The caller is responsible for the job's running→terminal
+// transition; ExecuteJob only does the work.
+func (s *Service) ExecuteJob(ctx context.Context, job Job) error {
+	if _, err := s.resolver.ResolveDeployment(ctx, job.TenantID, job.Model); err != nil {
+		return fmt.Errorf("%w: %v", ErrModelNotFound, err)
+	}
+
+	events, err := s.generator.Stream(ctx, infraimage.GenerateRequest{
+		RequestID:      job.ID,
+		Prompt:         job.Prompt,
+		NegativePrompt: job.NegativePrompt,
+		Width:          int32(job.Width),
+		Height:         int32(job.Height),
+		Steps:          int32(job.Steps),
+		GuidanceScale:  float32(job.GuidanceScale),
+		Seed:           job.Seed,
+		NumImages:      int32(job.NumImages),
+		Scheduler:      job.Scheduler,
+	})
+	if err != nil {
+		return err
+	}
+
+	var result *infraimage.GenerateResult
+	for ev := range events {
+		if ev.Error != "" {
+			return errors.New(ev.Error)
+		}
+		if ev.Step > 0 {
+			_ = s.repos.Jobs.UpdateProgress(ctx, job.ID, int(ev.Step))
+		}
+		if ev.Done {
+			result = ev.Result
+			break
+		}
+	}
+	if result == nil {
+		return errors.New("image stream ended without a result")
+	}
+
+	for _, png := range result.PNG {
+		id := uuid.NewString()
+		path, err := s.storage.Save(id, png)
+		if err != nil {
+			return err
+		}
+		a := Asset{
+			ID: id, TenantID: job.TenantID, JobID: job.ID, Model: job.Model,
+			Prompt: job.Prompt, NegativePrompt: job.NegativePrompt,
+			Width: int(result.Width), Height: int(result.Height), Steps: int(result.Steps),
+			GuidanceScale: job.GuidanceScale, Seed: result.Seed,
+			Scheduler: result.Scheduler, Path: path,
+		}
+		if err := s.repos.Assets.Create(ctx, &a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListJobs returns the tenant's jobs, newest first.

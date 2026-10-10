@@ -15,6 +15,7 @@ import (
 	"github.com/ai-factory/go-server/internal/infrastructure/outbox"
 	"github.com/ai-factory/go-server/internal/services/billing"
 	"github.com/ai-factory/go-server/internal/services/iam"
+	imagesvc "github.com/ai-factory/go-server/internal/services/image"
 	"github.com/ai-factory/go-server/internal/services/serving"
 	"github.com/ai-factory/go-server/internal/services/usage"
 	"github.com/ai-factory/go-server/pkg/di"
@@ -46,7 +47,7 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 			names = append(names, "billing.reaper", "http.billing")
 		}
 		if cfg.Services.Image {
-			names = append(names, "image.client", "image.service", "http.image")
+			names = append(names, "image.client", "image.service", "image.runner", "http.image")
 		}
 	}
 	if cfg.Services.Worker {
@@ -93,6 +94,9 @@ func (a *App) Run() error {
 		a.container.MustResolve("usage.roller").(*usage.Roller).Start(ctx)
 		if _, err := a.container.Resolve("billing.reaper"); err == nil {
 			a.container.MustResolve("billing.reaper").(*billing.Reaper).Start(ctx)
+		}
+		if a.cfg.Services.Image {
+			a.container.MustResolve("image.runner").(*imagesvc.Runner).Start(ctx)
 		}
 	}
 	if a.cfg.Services.Worker {

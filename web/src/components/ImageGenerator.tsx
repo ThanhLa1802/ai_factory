@@ -3,24 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import { getToken } from "@/lib/auth";
-import type { ImageAsset } from "@/lib/types";
+import type { ImageAsset, ImageJob } from "@/lib/types";
 
 // SDXL-friendly sizes (multiples of 8, native 1024).
 const SIZES = ["1024x1024", "1152x896", "896x1152", "768x768"];
-
-interface OpenAIImageData {
-  b64_json?: string;
-  url?: string;
-  seed?: number;
-  width?: number;
-  height?: number;
-  steps?: number;
-}
-
-interface OpenAIImageResponse {
-  created: number;
-  data: OpenAIImageData[];
-}
 
 interface GeneratedImage {
   src: string;
@@ -28,11 +14,6 @@ interface GeneratedImage {
   width: number;
   height: number;
   steps: number;
-}
-
-function sizeDims(size: string): { width: number; height: number } {
-  const [w, h] = size.split("x").map((n) => parseInt(n, 10));
-  return { width: w || 1024, height: h || 1024 };
 }
 
 export default function ImageGenerator() {
@@ -46,17 +27,38 @@ export default function ImageGenerator() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [images, setImages] = useState<GeneratedImage[]>([]);
+  const [job, setJob] = useState<ImageJob | null>(null);
 
   const [assets, setAssets] = useState<ImageAsset[]>([]);
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({});
   const urlsRef = useRef<string[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const loadAssets = useCallback(async () => {
+  const loadAssets = useCallback(async (): Promise<ImageAsset[]> => {
     try {
       const resp = await apiFetch<{ data: ImageAsset[] }>("/api/v1/images/assets?limit=12");
       setAssets(resp.data ?? []);
+      return resp.data ?? [];
     } catch {
       // The gallery is best-effort; a failure must not block generation.
+      return [];
+    }
+  }, []);
+
+  // Assets are served behind auth, so <img src> cannot load them directly:
+  // fetch the PNG as an authenticated blob and hand React an object URL.
+  const fetchAssetUrl = useCallback(async (id: string): Promise<string | null> => {
+    try {
+      const token = getToken();
+      const resp = await fetch(`/api/v1/images/assets/${id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!resp.ok) return null;
+      const url = URL.createObjectURL(await resp.blob());
+      urlsRef.current.push(url);
+      return url;
+    } catch {
+      return null;
     }
   }, []);
 
@@ -65,43 +67,85 @@ export default function ImageGenerator() {
     loadAssets();
   }, [loadAssets]);
 
-  // Assets are served behind auth, so <img src> cannot load them directly:
-  // fetch each as an authenticated blob and hand React an object URL.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       for (const a of assets) {
         if (assetUrls[a.id]) continue;
-        try {
-          const token = getToken();
-          const resp = await fetch(`/api/v1/images/assets/${a.id}`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-          });
-          if (!resp.ok) continue;
-          const url = URL.createObjectURL(await resp.blob());
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          urlsRef.current.push(url);
-          setAssetUrls((m) => ({ ...m, [a.id]: url }));
-        } catch {
-          // skip a broken asset
+        const url = await fetchAssetUrl(a.id);
+        if (!url) continue;
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
         }
+        setAssetUrls((m) => ({ ...m, [a.id]: url }));
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [assets, assetUrls]);
+  }, [assets, assetUrls, fetchAssetUrl]);
 
-  useEffect(() => () => urlsRef.current.forEach((u) => URL.revokeObjectURL(u)), []);
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      urlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+    },
+    [],
+  );
+
+  // streamJob consumes the SSE progress stream for a job and invokes onJob for
+  // each snapshot. Resolves at [DONE] or when the server closes the stream.
+  async function streamJob(
+    id: string,
+    onJob: (j: ImageJob) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const token = getToken();
+    const resp = await fetch(`/api/v1/images/jobs/${id}/events`, {
+      headers: {
+        Accept: "text/event-stream",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal,
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`progress stream failed (${resp.status})`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        for (const line of frame.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") return;
+          try {
+            onJob(JSON.parse(data) as ImageJob);
+          } catch {
+            // ignore malformed frames
+          }
+        }
+      }
+    }
+  }
 
   async function generate(e: React.FormEvent) {
     e.preventDefault();
     if (!prompt.trim() || loading) return;
     setLoading(true);
     setError(null);
+    setImages([]);
+    setJob(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       const body: Record<string, unknown> = {
         model: model.trim(),
@@ -109,31 +153,43 @@ export default function ImageGenerator() {
         size,
         steps,
         guidance_scale: guidance,
-        response_format: "b64_json",
       };
       if (negative.trim()) body.negative_prompt = negative.trim();
       if (seed.trim() !== "") body.seed = Number(seed);
 
-      const resp = await apiFetch<OpenAIImageResponse>("/v1/images/generations", {
-        method: "POST",
-        body,
-      });
-      const dims = sizeDims(size);
-      const rendered: GeneratedImage[] = (resp.data ?? [])
-        .filter((d) => d.b64_json)
-        .map((d) => ({
-          src: `data:image/png;base64,${d.b64_json}`,
-          seed: d.seed ?? 0,
-          width: d.width ?? dims.width,
-          height: d.height ?? dims.height,
-          steps: d.steps ?? steps,
-        }));
+      let latest = await apiFetch<ImageJob>("/api/v1/images/jobs", { method: "POST", body });
+      setJob(latest);
+      await streamJob(
+        latest.id,
+        (j) => {
+          latest = j;
+          setJob(j);
+        },
+        controller.signal,
+      );
+
+      if (latest.status === "failed") {
+        setError(latest.error || "Generation failed");
+        return;
+      }
+      if (latest.status !== "succeeded") {
+        // Stream ended early (e.g. server restart); leave the job in the list.
+        return;
+      }
+      const list = await loadAssets();
+      const rendered: GeneratedImage[] = [];
+      for (const a of list.filter((a) => a.job_id === latest.id)) {
+        const url = await fetchAssetUrl(a.id);
+        if (!url) continue;
+        rendered.push({ src: url, seed: a.seed, width: a.width, height: a.height, steps: a.steps });
+      }
       setImages(rendered);
-      await loadAssets();
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : "Generation failed");
     } finally {
       setLoading(false);
+      abortRef.current = null;
     }
   }
 
@@ -239,9 +295,22 @@ export default function ImageGenerator() {
             {loading ? "Generating…" : "Generate"}
           </button>
           {loading && (
-            <p className="text-[12px] text-[var(--text2)]">
-              This can take 15–40 seconds on a 12GB GPU.
-            </p>
+            <div className="space-y-1">
+              <p className="text-[12px] text-[var(--text2)]">
+                {job
+                  ? job.status === "queued"
+                    ? "Queued — waiting for the worker…"
+                    : `Generating ${job.progress_step}/${job.steps} steps…`
+                  : "Submitting…"}
+              </p>
+              {job?.status === "running" && (
+                <progress
+                  className="h-1.5 w-full"
+                  value={job.progress_step}
+                  max={job.steps || 1}
+                />
+              )}
+            </div>
           )}
           {error && <p className="text-[12px] text-[var(--err)]">{error}</p>}
         </form>
