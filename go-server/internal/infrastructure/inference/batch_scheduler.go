@@ -461,6 +461,11 @@ func pbToGenerateEvent(resp *pb.BatchGenerateResponse) GenerateEvent {
 			}
 		}
 		event.Token = resp.Token
+		// The worker reports fatal errors by putting the message in the final
+		// event's token field; surface it as Error so callers can show it.
+		if resp.StopReason == pb.StopReason_STOP_ERROR {
+			event.Error = resp.Token
+		}
 	}
 
 	return event

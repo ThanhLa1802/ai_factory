@@ -230,6 +230,24 @@ func TestShutdownUnblocksCollector(t *testing.T) {
 	drainEvents(t, ch)
 }
 
+// TestPBToGenerateEventFinalError: the worker puts a fatal error message in the
+// final event's token field; it must reach callers as Error (not be dropped).
+func TestPBToGenerateEventFinalError(t *testing.T) {
+	ev := pbToGenerateEvent(&pb.BatchGenerateResponse{
+		RequestId:    "r1",
+		EventType:    pb.GenerateEventType_EVENT_FINAL,
+		StopReason:   pb.StopReason_STOP_ERROR,
+		FinishReason: "error",
+		Token:        "image input requires --engine vl",
+	})
+	if ev.Type != "final" || ev.StopReason != "STOP_ERROR" {
+		t.Fatalf("event = %+v, want final STOP_ERROR", ev)
+	}
+	if ev.Error != "image input requires --engine vl" {
+		t.Fatalf("Error = %q, want the worker message", ev.Error)
+	}
+}
+
 func drainEvents(t *testing.T, ch <-chan GenerateEvent) {
 	t.Helper()
 	timeout := time.After(2 * time.Second)

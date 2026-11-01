@@ -246,6 +246,9 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 					}
 				}
 				event.Token = pbResp.Token // may contain error message
+				if pbResp.StopReason == pb.StopReason_STOP_ERROR {
+					event.Error = pbResp.Token
+				}
 			}
 
 			select {
