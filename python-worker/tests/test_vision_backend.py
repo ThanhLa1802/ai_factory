@@ -174,3 +174,60 @@ async def test_generate_without_model_is_an_error_event():
     events = [ev async for _rid, ev in b.generate_batch([_req()])]
     assert events[-1]["stop_reason"] == "STOP_ERROR"
     assert "not loaded" in events[-1]["token"]
+
+
+def test_load_keeps_lm_head_in_bf16_and_ties_weights(monkeypatch):
+    """Qwen2.5-VL checkpoints tie lm_head to embed_tokens (no lm_head.weight).
+
+    Quantising lm_head to 4-bit and then tying bf16 embeddings into it breaks
+    bitsandbytes' quant state, so lm_head must be skipped from quantisation and
+    the tie must happen explicitly after load.
+    """
+    import transformers
+
+    # transformers is a lazy module: touching each attribute first forces the
+    # real class to be imported and cached, so monkeypatch.setattr below is not
+    # overwritten by the lazy import.
+    for _name in (
+        "Qwen2_5_VLForConditionalGeneration",
+        "AutoProcessor",
+        "BitsAndBytesConfig",
+        "TextIteratorStreamer",
+    ):
+        getattr(transformers, _name)
+
+    captured = {}
+    class _FakeModel:
+        def tie_weights(self):
+            captured["tied"] = True
+
+        def eval(self):
+            pass
+
+    class _FakeQwen:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            captured["model_id"] = model_id
+            captured["kwargs"] = kwargs
+            return _FakeModel()
+
+    class _FakeProcessor:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            return object()
+
+    def _fake_bnb(**kwargs):
+        captured["quant"] = kwargs
+        return object()
+
+    monkeypatch.setattr("transformers.Qwen2_5_VLForConditionalGeneration", _FakeQwen)
+    monkeypatch.setattr("transformers.AutoProcessor", _FakeProcessor)
+    monkeypatch.setattr("transformers.BitsAndBytesConfig", _fake_bnb)
+    monkeypatch.setattr("transformers.TextIteratorStreamer", object)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    VisionBackend(model_id="fake/vl").load()
+
+    assert captured["tied"] is True
+    assert "lm_head" in captured["quant"]["llm_int8_skip_modules"]
+    assert "visual" in captured["quant"]["llm_int8_skip_modules"]

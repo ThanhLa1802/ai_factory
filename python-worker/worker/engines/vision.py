@@ -142,7 +142,11 @@ class VisionBackend(EngineBackend):
                 bnb_4bit_use_double_quant=True,
                 # Giữ vision tower ở bf16: lượng tử hoá vision encoder làm giảm
                 # chất lượng đọc ảnh rõ rệt mà chỉ tiết kiệm ~1GB.
-                llm_int8_skip_modules=["visual"],
+                # lm_head phải ở bf16: checkpoint dùng tied embeddings (không có
+                # lm_head.weight) nên ta tie nó với embed_tokens sau khi load;
+                # nếu để bitsandbytes lượng tử hoá lm_head thì việc gán weight
+                # bf16 vào sẽ làm vỡ quant state (assert weight.shape[1] == 1).
+                llm_int8_skip_modules=["visual", "lm_head"],
             )
 
         kwargs = {
@@ -156,6 +160,12 @@ class VisionBackend(EngineBackend):
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_id, **kwargs
         )
+        # Qwen2.5-VL ships with tied word embeddings: the checkpoint has no
+        # lm_head.weight, only embed_tokens.weight. When device_map="auto" is
+        # used, accelerate dispatches the model before the tie happens, so
+        # lm_head stays randomly initialised and the model emits EOS at once
+        # (empty completion). Tie explicitly after load.
+        self.model.tie_weights()
         self.processor = AutoProcessor.from_pretrained(
             self.model_id,
             min_pixels=self.min_pixels,
