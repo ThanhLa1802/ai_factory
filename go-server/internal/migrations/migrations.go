@@ -23,5 +23,6 @@ func All() []*gormigrate.Migration {
 		M0014APIKeyRevoke(),
 		M0015ImageAssets(),
 		M0016ImageJobs(),
+		M0017MessageImages(),
 	}
 }

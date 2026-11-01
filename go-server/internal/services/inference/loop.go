@@ -67,13 +67,15 @@ type LoopEvent struct {
 type Loop struct {
 	scheduler *infra.BatchScheduler
 	tools     ToolExecutor
+	images    ImageStore
 }
 
 // NewLoop creates a new agentic loop with batch scheduler.
-func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor) *Loop {
+func NewLoop(scheduler *infra.BatchScheduler, executor ToolExecutor, images ImageStore) *Loop {
 	return &Loop{
 		scheduler: scheduler,
 		tools:     executor,
+		images:    images,
 	}
 }
 
@@ -126,11 +128,18 @@ func (l *Loop) RunStreaming(ctx context.Context, sess *Session, userMessage Mess
 			// Build tool definitions (built-ins + client-declared)
 			sessToolDefs := toolDefinitionsFor(l.tools, clientTools)
 
+			// Load any attached images from disk before hitting the worker.
+			wireMessages, err := l.toInferenceMessages(ctx, allMessages)
+			if err != nil {
+				events <- LoopEvent{Type: LoopEventError, Err: err}
+				return
+			}
+
 			// Send to inference
 			req := infra.GenerateRequest{
 				RequestID:      uuid.New().String(),
 				SessionID:      sess.GetID(),
-				Messages:       toInferenceMessages(allMessages),
+				Messages:       wireMessages,
 				SystemPrompt:   sess.SystemPrompt,
 				SamplingParams: params,
 				Tools:          sessToolDefs,
@@ -321,8 +330,9 @@ func (l *Loop) allExecutable(calls []ToolCall) bool {
 
 // toInferenceMessages maps session messages onto the inference client's wire
 // types. infrastructure/inference owns those types so it never imports a
-// service package (design §4.2 / D-P4-4).
-func toInferenceMessages(msgs []Message) []infra.Message {
+// service package (design §4.2 / D-P4-4). Images are loaded from the upload
+// store here because the session only persists their id + mime type.
+func (l *Loop) toInferenceMessages(ctx context.Context, msgs []Message) ([]infra.Message, error) {
 	out := make([]infra.Message, len(msgs))
 	for i, m := range msgs {
 		out[i] = infra.Message{
@@ -338,6 +348,28 @@ func toInferenceMessages(msgs []Message) []infra.Message {
 				out[i].ToolCalls[j] = infra.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
 			}
 		}
+		for _, img := range m.Images {
+			data := img.Data
+			if len(data) == 0 {
+				if l.images == nil {
+					return nil, fmt.Errorf("image store not configured")
+				}
+				var err error
+				data, err = l.images.Load(ctx, img)
+				if errors.Is(err, ErrImageNotFound) {
+					// The file was deleted (e.g. uploads dir cleared). Keep the
+					// conversation usable rather than failing every future turn.
+					slog.Warn("chat image missing on disk; sending the turn without it", "id", img.ID)
+					continue
+				}
+				if err != nil {
+					return nil, fmt.Errorf("load image %s: %w", img.ID, err)
+				}
+			}
+			out[i].Images = append(out[i].Images, infra.MessageImage{
+				ID: img.ID, MimeType: img.MimeType, Data: data,
+			})
+		}
 	}
-	return out
+	return out, nil
 }

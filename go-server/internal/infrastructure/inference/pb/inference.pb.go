@@ -234,9 +234,12 @@ type Message struct {
 	// Tool calls made by the assistant in this message (cho multi-turn history).
 	ToolCalls []*ToolCall `protobuf:"bytes,3,rep,name=tool_calls,json=toolCalls,proto3" json:"tool_calls,omitempty"`
 	// If this is a tool result message.
-	ToolCallId    string `protobuf:"bytes,4,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
-	ToolResult    string `protobuf:"bytes,5,opt,name=tool_result,json=toolResult,proto3" json:"tool_result,omitempty"`
-	IsError       bool   `protobuf:"varint,6,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	ToolCallId string `protobuf:"bytes,4,opt,name=tool_call_id,json=toolCallId,proto3" json:"tool_call_id,omitempty"`
+	ToolResult string `protobuf:"bytes,5,opt,name=tool_result,json=toolResult,proto3" json:"tool_result,omitempty"`
+	IsError    bool   `protobuf:"varint,6,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	// Inline images attached to this message (vision models). A text-only engine
+	// rejects the request instead of silently ignoring them.
+	Images        []*Image `protobuf:"bytes,7,rep,name=images,proto3" json:"images,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -313,6 +316,66 @@ func (x *Message) GetIsError() bool {
 	return false
 }
 
+func (x *Message) GetImages() []*Image {
+	if x != nil {
+		return x.Images
+	}
+	return nil
+}
+
+// Image — one encoded image (PNG/JPEG bytes, not base64) attached to a message.
+type Image struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	MimeType      string                 `protobuf:"bytes,1,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Image) Reset() {
+	*x = Image{}
+	mi := &file_inference_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Image) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Image) ProtoMessage() {}
+
+func (x *Image) ProtoReflect() protoreflect.Message {
+	mi := &file_inference_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Image.ProtoReflect.Descriptor instead.
+func (*Image) Descriptor() ([]byte, []int) {
+	return file_inference_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *Image) GetMimeType() string {
+	if x != nil {
+		return x.MimeType
+	}
+	return ""
+}
+
+func (x *Image) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 // ToolCall — một tool call từ assistant.
 type ToolCall struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -325,7 +388,7 @@ type ToolCall struct {
 
 func (x *ToolCall) Reset() {
 	*x = ToolCall{}
-	mi := &file_inference_proto_msgTypes[2]
+	mi := &file_inference_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -337,7 +400,7 @@ func (x *ToolCall) String() string {
 func (*ToolCall) ProtoMessage() {}
 
 func (x *ToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[2]
+	mi := &file_inference_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -350,7 +413,7 @@ func (x *ToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolCall.ProtoReflect.Descriptor instead.
 func (*ToolCall) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{2}
+	return file_inference_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ToolCall) GetId() string {
@@ -386,7 +449,7 @@ type ToolDefinition struct {
 
 func (x *ToolDefinition) Reset() {
 	*x = ToolDefinition{}
-	mi := &file_inference_proto_msgTypes[3]
+	mi := &file_inference_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -398,7 +461,7 @@ func (x *ToolDefinition) String() string {
 func (*ToolDefinition) ProtoMessage() {}
 
 func (x *ToolDefinition) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[3]
+	mi := &file_inference_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -411,7 +474,7 @@ func (x *ToolDefinition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolDefinition.ProtoReflect.Descriptor instead.
 func (*ToolDefinition) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{3}
+	return file_inference_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ToolDefinition) GetName() string {
@@ -449,7 +512,7 @@ type SamplingParams struct {
 
 func (x *SamplingParams) Reset() {
 	*x = SamplingParams{}
-	mi := &file_inference_proto_msgTypes[4]
+	mi := &file_inference_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -461,7 +524,7 @@ func (x *SamplingParams) String() string {
 func (*SamplingParams) ProtoMessage() {}
 
 func (x *SamplingParams) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[4]
+	mi := &file_inference_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +537,7 @@ func (x *SamplingParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SamplingParams.ProtoReflect.Descriptor instead.
 func (*SamplingParams) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{4}
+	return file_inference_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SamplingParams) GetMaxTokens() int32 {
@@ -534,7 +597,7 @@ type GenerateResponse struct {
 
 func (x *GenerateResponse) Reset() {
 	*x = GenerateResponse{}
-	mi := &file_inference_proto_msgTypes[5]
+	mi := &file_inference_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -546,7 +609,7 @@ func (x *GenerateResponse) String() string {
 func (*GenerateResponse) ProtoMessage() {}
 
 func (x *GenerateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[5]
+	mi := &file_inference_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -559,7 +622,7 @@ func (x *GenerateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateResponse.ProtoReflect.Descriptor instead.
 func (*GenerateResponse) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{5}
+	return file_inference_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GenerateResponse) GetEventType() GenerateEventType {
@@ -623,7 +686,7 @@ type ToolUse struct {
 
 func (x *ToolUse) Reset() {
 	*x = ToolUse{}
-	mi := &file_inference_proto_msgTypes[6]
+	mi := &file_inference_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -635,7 +698,7 @@ func (x *ToolUse) String() string {
 func (*ToolUse) ProtoMessage() {}
 
 func (x *ToolUse) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[6]
+	mi := &file_inference_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -648,7 +711,7 @@ func (x *ToolUse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolUse.ProtoReflect.Descriptor instead.
 func (*ToolUse) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{6}
+	return file_inference_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ToolUse) GetId() string {
@@ -684,7 +747,7 @@ type Usage struct {
 
 func (x *Usage) Reset() {
 	*x = Usage{}
-	mi := &file_inference_proto_msgTypes[7]
+	mi := &file_inference_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -696,7 +759,7 @@ func (x *Usage) String() string {
 func (*Usage) ProtoMessage() {}
 
 func (x *Usage) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[7]
+	mi := &file_inference_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -709,7 +772,7 @@ func (x *Usage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Usage.ProtoReflect.Descriptor instead.
 func (*Usage) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{7}
+	return file_inference_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Usage) GetPromptTokens() int32 {
@@ -746,7 +809,7 @@ type BatchGenerateRequest struct {
 
 func (x *BatchGenerateRequest) Reset() {
 	*x = BatchGenerateRequest{}
-	mi := &file_inference_proto_msgTypes[8]
+	mi := &file_inference_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -758,7 +821,7 @@ func (x *BatchGenerateRequest) String() string {
 func (*BatchGenerateRequest) ProtoMessage() {}
 
 func (x *BatchGenerateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[8]
+	mi := &file_inference_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -771,7 +834,7 @@ func (x *BatchGenerateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchGenerateRequest.ProtoReflect.Descriptor instead.
 func (*BatchGenerateRequest) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{8}
+	return file_inference_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BatchGenerateRequest) GetBatchId() string {
@@ -813,7 +876,7 @@ type BatchGenerateResponse struct {
 
 func (x *BatchGenerateResponse) Reset() {
 	*x = BatchGenerateResponse{}
-	mi := &file_inference_proto_msgTypes[9]
+	mi := &file_inference_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +888,7 @@ func (x *BatchGenerateResponse) String() string {
 func (*BatchGenerateResponse) ProtoMessage() {}
 
 func (x *BatchGenerateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_inference_proto_msgTypes[9]
+	mi := &file_inference_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +901,7 @@ func (x *BatchGenerateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchGenerateResponse.ProtoReflect.Descriptor instead.
 func (*BatchGenerateResponse) Descriptor() ([]byte, []int) {
-	return file_inference_proto_rawDescGZIP(), []int{9}
+	return file_inference_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *BatchGenerateResponse) GetRequestId() string {
@@ -910,7 +973,7 @@ const file_inference_proto_rawDesc = "" +
 	"\bmessages\x18\x03 \x03(\v2\x12.inference.MessageR\bmessages\x12#\n" +
 	"\rsystem_prompt\x18\x04 \x01(\tR\fsystemPrompt\x12B\n" +
 	"\x0fsampling_params\x18\x05 \x01(\v2\x19.inference.SamplingParamsR\x0esamplingParams\x12/\n" +
-	"\x05tools\x18\x06 \x03(\v2\x19.inference.ToolDefinitionR\x05tools\"\xc9\x01\n" +
+	"\x05tools\x18\x06 \x03(\v2\x19.inference.ToolDefinitionR\x05tools\"\xf3\x01\n" +
 	"\aMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\x122\n" +
@@ -920,7 +983,11 @@ const file_inference_proto_rawDesc = "" +
 	"toolCallId\x12\x1f\n" +
 	"\vtool_result\x18\x05 \x01(\tR\n" +
 	"toolResult\x12\x19\n" +
-	"\bis_error\x18\x06 \x01(\bR\aisError\"L\n" +
+	"\bis_error\x18\x06 \x01(\bR\aisError\x12(\n" +
+	"\x06images\x18\a \x03(\v2\x10.inference.ImageR\x06images\"8\n" +
+	"\x05Image\x12\x1b\n" +
+	"\tmime_type\x18\x01 \x01(\tR\bmimeType\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"L\n" +
 	"\bToolCall\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1c\n" +
@@ -989,7 +1056,7 @@ const file_inference_proto_rawDesc = "" +
 	"\x10InferenceService\x12E\n" +
 	"\bGenerate\x12\x1a.inference.GenerateRequest\x1a\x1b.inference.GenerateResponse0\x012m\n" +
 	"\x15BatchInferenceService\x12T\n" +
-	"\rBatchGenerate\x12\x1f.inference.BatchGenerateRequest\x1a .inference.BatchGenerateResponse0\x01B!Z\x1fgo-server/internal/inference/pbb\x06proto3"
+	"\rBatchGenerate\x12\x1f.inference.BatchGenerateRequest\x1a .inference.BatchGenerateResponse0\x01B0Z.go-server/internal/infrastructure/inference/pbb\x06proto3"
 
 var (
 	file_inference_proto_rawDescOnce sync.Once
@@ -1004,44 +1071,46 @@ func file_inference_proto_rawDescGZIP() []byte {
 }
 
 var file_inference_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_inference_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_inference_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_inference_proto_goTypes = []any{
 	(GenerateEventType)(0),        // 0: inference.GenerateEventType
 	(StopReason)(0),               // 1: inference.StopReason
 	(*GenerateRequest)(nil),       // 2: inference.GenerateRequest
 	(*Message)(nil),               // 3: inference.Message
-	(*ToolCall)(nil),              // 4: inference.ToolCall
-	(*ToolDefinition)(nil),        // 5: inference.ToolDefinition
-	(*SamplingParams)(nil),        // 6: inference.SamplingParams
-	(*GenerateResponse)(nil),      // 7: inference.GenerateResponse
-	(*ToolUse)(nil),               // 8: inference.ToolUse
-	(*Usage)(nil),                 // 9: inference.Usage
-	(*BatchGenerateRequest)(nil),  // 10: inference.BatchGenerateRequest
-	(*BatchGenerateResponse)(nil), // 11: inference.BatchGenerateResponse
+	(*Image)(nil),                 // 4: inference.Image
+	(*ToolCall)(nil),              // 5: inference.ToolCall
+	(*ToolDefinition)(nil),        // 6: inference.ToolDefinition
+	(*SamplingParams)(nil),        // 7: inference.SamplingParams
+	(*GenerateResponse)(nil),      // 8: inference.GenerateResponse
+	(*ToolUse)(nil),               // 9: inference.ToolUse
+	(*Usage)(nil),                 // 10: inference.Usage
+	(*BatchGenerateRequest)(nil),  // 11: inference.BatchGenerateRequest
+	(*BatchGenerateResponse)(nil), // 12: inference.BatchGenerateResponse
 }
 var file_inference_proto_depIdxs = []int32{
 	3,  // 0: inference.GenerateRequest.messages:type_name -> inference.Message
-	6,  // 1: inference.GenerateRequest.sampling_params:type_name -> inference.SamplingParams
-	5,  // 2: inference.GenerateRequest.tools:type_name -> inference.ToolDefinition
-	4,  // 3: inference.Message.tool_calls:type_name -> inference.ToolCall
-	0,  // 4: inference.GenerateResponse.event_type:type_name -> inference.GenerateEventType
-	8,  // 5: inference.GenerateResponse.tool_use:type_name -> inference.ToolUse
-	1,  // 6: inference.GenerateResponse.stop_reason:type_name -> inference.StopReason
-	9,  // 7: inference.GenerateResponse.usage:type_name -> inference.Usage
-	2,  // 8: inference.BatchGenerateRequest.requests:type_name -> inference.GenerateRequest
-	0,  // 9: inference.BatchGenerateResponse.event_type:type_name -> inference.GenerateEventType
-	8,  // 10: inference.BatchGenerateResponse.tool_use:type_name -> inference.ToolUse
-	1,  // 11: inference.BatchGenerateResponse.stop_reason:type_name -> inference.StopReason
-	9,  // 12: inference.BatchGenerateResponse.usage:type_name -> inference.Usage
-	2,  // 13: inference.InferenceService.Generate:input_type -> inference.GenerateRequest
-	10, // 14: inference.BatchInferenceService.BatchGenerate:input_type -> inference.BatchGenerateRequest
-	7,  // 15: inference.InferenceService.Generate:output_type -> inference.GenerateResponse
-	11, // 16: inference.BatchInferenceService.BatchGenerate:output_type -> inference.BatchGenerateResponse
-	15, // [15:17] is the sub-list for method output_type
-	13, // [13:15] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	7,  // 1: inference.GenerateRequest.sampling_params:type_name -> inference.SamplingParams
+	6,  // 2: inference.GenerateRequest.tools:type_name -> inference.ToolDefinition
+	5,  // 3: inference.Message.tool_calls:type_name -> inference.ToolCall
+	4,  // 4: inference.Message.images:type_name -> inference.Image
+	0,  // 5: inference.GenerateResponse.event_type:type_name -> inference.GenerateEventType
+	9,  // 6: inference.GenerateResponse.tool_use:type_name -> inference.ToolUse
+	1,  // 7: inference.GenerateResponse.stop_reason:type_name -> inference.StopReason
+	10, // 8: inference.GenerateResponse.usage:type_name -> inference.Usage
+	2,  // 9: inference.BatchGenerateRequest.requests:type_name -> inference.GenerateRequest
+	0,  // 10: inference.BatchGenerateResponse.event_type:type_name -> inference.GenerateEventType
+	9,  // 11: inference.BatchGenerateResponse.tool_use:type_name -> inference.ToolUse
+	1,  // 12: inference.BatchGenerateResponse.stop_reason:type_name -> inference.StopReason
+	10, // 13: inference.BatchGenerateResponse.usage:type_name -> inference.Usage
+	2,  // 14: inference.InferenceService.Generate:input_type -> inference.GenerateRequest
+	11, // 15: inference.BatchInferenceService.BatchGenerate:input_type -> inference.BatchGenerateRequest
+	8,  // 16: inference.InferenceService.Generate:output_type -> inference.GenerateResponse
+	12, // 17: inference.BatchInferenceService.BatchGenerate:output_type -> inference.BatchGenerateResponse
+	16, // [16:18] is the sub-list for method output_type
+	14, // [14:16] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_inference_proto_init() }
@@ -1055,7 +1124,7 @@ func file_inference_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_inference_proto_rawDesc), len(file_inference_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

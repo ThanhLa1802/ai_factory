@@ -25,7 +25,8 @@ func NewClient(addr string) (*Client, error) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(100*1024*1024),
-			grpc.MaxCallSendMsgSize(10*1024*1024),
+			// Image turns can carry up to a few MB of inline bytes.
+			grpc.MaxCallSendMsgSize(50*1024*1024),
 		),
 	)
 	if err != nil {
@@ -138,6 +139,12 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 			ToolCallId: m.ToolCallID,
 			ToolResult: m.ToolResult,
 			IsError:    m.IsError,
+		}
+		if len(m.Images) > 0 {
+			pbMsg.Images = make([]*pb.Image, len(m.Images))
+			for j, img := range m.Images {
+				pbMsg.Images[j] = &pb.Image{MimeType: img.MimeType, Data: img.Data}
+			}
 		}
 		if len(m.ToolCalls) > 0 {
 			pbMsg.ToolCalls = make([]*pb.ToolCall, len(m.ToolCalls))

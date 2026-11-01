@@ -60,6 +60,16 @@ class InferenceServicer(inference_pb2_grpc.InferenceServiceServicer):
             engine_messages.append({"role": "system", "content": system_prompt})
         engine_messages.extend(messages)
 
+        # A text engine must not silently ignore attached images.
+        if _messages_have_images(engine_messages) and not getattr(self.backend, "supports_vision", False):
+            await context.write(inference_pb2.GenerateResponse(
+                event_type=inference_pb2.EVENT_FINAL,
+                stop_reason=inference_pb2.STOP_ERROR,
+                finish_reason="error",
+                token="image input requires --engine vl",
+            ))
+            return
+
         # Create cancel event that watches gRPC context
         cancel_event = asyncio.Event()
 
@@ -114,6 +124,9 @@ def _messages_from_proto(msgs) -> list[dict]:
     result = []
     for m in msgs:
         msg = {"role": m.role, "content": m.content}
+        if m.images:
+            msg["images"] = [img.data for img in m.images]
+            msg["image_mime_types"] = [img.mime_type for img in m.images]
         if m.tool_calls:
             msg["tool_calls"] = [
                 {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
@@ -127,6 +140,11 @@ def _messages_from_proto(msgs) -> list[dict]:
                 msg["is_error"] = True
         result.append(msg)
     return result
+
+
+def _messages_have_images(messages) -> bool:
+    """True when any message carries at least one image."""
+    return any(m.get("images") for m in messages)
 
 
 def _tools_from_proto(tools) -> list[dict]:
@@ -211,7 +229,9 @@ class BatchInferenceServicer(inference_pb2_grpc.BatchInferenceServiceServicer):
         items = list(request.requests)
         print(f"[batch_server] BatchGenerate: batch_id={batch_id}, requests={len(items)}")
 
-        # Convert proto → dicts
+        # Convert proto → dicts. A text engine rejects (per request) any item
+        # carrying images instead of silently dropping them.
+        supported = getattr(self.backend, "supports_vision", False)
         batch_requests = []
         for item in items:
             req_dict = {
@@ -227,7 +247,19 @@ class BatchInferenceServicer(inference_pb2_grpc.BatchInferenceServiceServicer):
                 },
                 "tools": _tools_from_proto(item.tools) if item.tools else None,
             }
+            if _messages_have_images(req_dict["messages"]) and not supported:
+                await context.write(inference_pb2.BatchGenerateResponse(
+                    request_id=item.request_id,
+                    event_type=inference_pb2.EVENT_FINAL,
+                    stop_reason=inference_pb2.STOP_ERROR,
+                    finish_reason="error",
+                    token="image input requires --engine vl",
+                ))
+                continue
             batch_requests.append(req_dict)
+
+        if not batch_requests:
+            return
 
         try:
             async for req_id, event in self.backend.generate_batch(batch_requests):
@@ -333,7 +365,9 @@ async def serve(port: int = DEFAULT_PORT, model_id: str | None = None,
         futures.ThreadPoolExecutor(max_workers=4),
         options=[
             ("grpc.max_send_message_length", 100 * 1024 * 1024),   # 100MB
-            ("grpc.max_receive_message_length", 10 * 1024 * 1024),  # 10MB
+            # A batch can carry up to 4 requests × 4 images × 2 MiB, so the
+            # inbound limit must match the Go client's send limit (50MB).
+            ("grpc.max_receive_message_length", 50 * 1024 * 1024),  # 50MB
             ("grpc.keepalive_time_ms", 30000),
             ("grpc.keepalive_timeout_ms", 10000),
         ],
@@ -374,9 +408,10 @@ def main():
     parser = argparse.ArgumentParser(description="AI Factory Inference Worker")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="gRPC port")
     parser.add_argument("--model", type=str, default=None,
-                        help="Transformers model ID (default: Qwen2.5-Coder-7B-Instruct; bỏ qua khi --engine llama)")
+                        help="Model ID (default: Qwen2.5-Coder-7B-Instruct for transformers, "
+                             "Qwen/Qwen2.5-VL-7B-Instruct for vl; bỏ qua khi --engine llama)")
     parser.add_argument("--engine", type=str, default="transformers",
-                        help="transformers | llama")
+                        help="transformers | llama | vl")
     parser.add_argument("--gguf", type=str, default=None,
                         help="Path or repo GGUF (only when --engine llama)")
     parser.add_argument("--llama-port", type=int, default=8081,

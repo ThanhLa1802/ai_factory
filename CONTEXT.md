@@ -61,8 +61,16 @@ Handler 3 ──┘                                     │
 - **Context Truncation**: Logic trong Go cắt bớt messages cũ nhất khi tổng số token vượt quá 8K, đảm bảo không cắt giữa cặp `tool_use`/`tool_result`.
 - **Cancel Propagation**: Chain từ client disconnect → Go `ctx.Done()` → gRPC stream cancel → Python dừng inference → giải phóng VRAM. Với batch mode, cancel từng request riêng không ảnh hưởng các request khác trong batch. ⚠️ Giới hạn hiện tại: phía Python là poll **100ms** (không phải event-driven), và trong batch mode model vẫn chạy hết forward pass của batch — chỉ bỏ gửi kết quả của request bị cancel.
 - **Engine Concurrency Guard**: Phần serialization bên trong `EngineBackend` (Python) đảm bảo `generate`/`generate_batch` an toàn khi bị gọi đồng thời — một `asyncio.Lock`/executor dùng chung quanh `model.generate()`, và `out_queue.get` đẩy sang `to_thread` để nhả event loop. Batch Slot (C1) lo throughput; Guard là lưới an toàn cho trường hợp nhiều đường (single `Generate` + `BatchGenerate`) cùng chạm một model.
-- **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Hai implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers) và `LlamaBackend` (Qwen3.5-9B, llama-server proxy). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface".
+- **Engine Backend**: Interface trong Python worker (`EngineBackend`) tách inference engine khỏi gRPC servicers. Ba implementation: `TransformersBackend` (Qwen2.5-Coder-7B, transformers), `LlamaBackend` (Qwen3.5-9B, llama-server proxy) và `VisionBackend` (Qwen2.5-VL-7B, image-text-to-text). Chọn bằng `--engine` lúc khởi động — mô hình "swap engine sau interface".
 - **LlamaProxyEngine**: `LlamaBackend` — spawn `llama-server` subprocess, proxy gRPC → OpenAI-compatible `/v1/chat/completions` (SSE). Tool calling native (structured output) → nhánh tool-use của agentic loop hoạt động thật trên engine này (vá §9.1).
+
+### Vision (image input)
+
+- **Vision Chat**: Chat hiểu ảnh đi qua chính `/v1/chat/completions` — `content` là **mảng content parts** (`{type:"text"}` + `{type:"image_url"}` với URL `data:image/png|jpeg;base64,...`). Chỉ nhận data URL inline; URL remote bị từ chối (server không fetch → không có SSRF). Request text-only vẫn gửi `content` dạng string như cũ.
+- **Vision Backend**: `VisionBackend` (`worker/engines/vision.py`), engine `--engine vl`, model Qwen2.5-VL-7B-Instruct 4-bit NF4 (vision tower giữ bf16), SDPA. Khác text engine: chạy thẳng HF `generate()` + `TextIteratorStreamer`, batch **tuần tự** (không continuous batching/prefix cache/PagedAttention) và **không tool calling**. GPU độc quyền — chỉ một engine chạy tại một thời điểm.
+- **Image Upload Store**: `services/inference/images.go` (`DiskImageStore`) ghi ảnh **content-addressed** `<sha256>.png|.jpg` dưới `workspace/images/uploads/`; id là hash nên upload trùng là idempotent và path traversal bất khả thi (id phải là 64 hex). DB `messages.images` (JSONB) chỉ lưu `[{id,mime_type,size}]`, không lưu base64.
+- **AuthImage**: UI không thể đặt Bearer token vào `<img src>`, nên fetch `GET /api/v1/uploads/:id` (RequireAuth) thành blob rồi tạo object URL — cùng cách với gallery ảnh SDXL.
+- **Image token estimate**: 1500 token/ảnh khi ước lượng context (truncation + billing reserve), vì Qwen2.5-VL cap ảnh ~1280×1280 px (~1.3K token).
 
 ### Billing (Prepaid)
 

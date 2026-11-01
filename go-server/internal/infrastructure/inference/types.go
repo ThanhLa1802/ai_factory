@@ -12,6 +12,14 @@ type Message struct {
 	ToolCallID string
 	ToolResult string
 	IsError    bool
+	Images     []MessageImage
+}
+
+// MessageImage is one encoded image (PNG/JPEG bytes) attached to a message.
+type MessageImage struct {
+	ID       string
+	MimeType string
+	Data     []byte
 }
 
 // ToolCall is a tool invocation requested by the model.

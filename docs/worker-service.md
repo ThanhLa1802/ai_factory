@@ -58,7 +58,15 @@ nssm restart AIFactoryWorker
 # Về llama (nhớ --gguf + --llama-bin đầy đủ):
 nssm set AIFactoryWorker AppParameters "-u -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf --llama-bin G:\models\llama.cpp\llama-server.exe"
 nssm restart AIFactoryWorker
+
+# Về vision (Qwen2.5-VL-7B — chat hiểu ảnh; tải model trước:
+#   huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct)
+# GPU độc quyền: chỉ một engine chạy tại một thời điểm, không bật song song với llama.
+nssm set AIFactoryWorker AppParameters "-u -m worker.server --engine vl --model Qwen/Qwen2.5-VL-7B-Instruct"
+nssm restart AIFactoryWorker
 ```
+
+Lưu ý cho engine `vl`: model 4-bit NF4 + vision tower bf16 chiếm ~7–8GB VRAM; batch xử lý tuần tự (không continuous batching) và **không tool calling**. Ảnh chat lưu ở `go-server/workspace/images/uploads/` (content-addressed).
 
 ## Cài lại từ đầu
 

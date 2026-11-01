@@ -39,7 +39,7 @@ func NewAppFromContainer(c *di.Container, cfg *config.Config, port int) (*App, e
 	if cfg.Services.API {
 		names = append(names,
 			"iam", "iam.auth", "iam.authenticator", "usage", "billing",
-			"inference.manager", "inference.loop",
+			"inference.manager", "inference.images", "inference.loop",
 			"outbox.store", "outbox.publisher", "usage.roller",
 			"http.handler", "http.iam", "http.serving", "http.usage",
 		)
@@ -159,6 +159,9 @@ func (a *App) seed(ctx context.Context) error {
 		if err := seedImage(ctx, iamSvc, servingSvc); err != nil {
 			a.log.Warn("seed image deployment", "err", err)
 		}
+	}
+	if err := seedVision(ctx, iamSvc, servingSvc); err != nil {
+		a.log.Warn("seed vision deployment", "err", err)
 	}
 	if a.cfg.Services.Billing {
 		billingSvc := a.container.MustResolve("billing").(*billing.Service)

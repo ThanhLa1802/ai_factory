@@ -16,14 +16,29 @@ const (
 	RoleTool      = "tool"
 )
 
+// imageTokenEstimate is the rough prompt-token cost of one image when budgeting
+// the context window. Qwen2.5-VL caps an image at ~1280×1280 px (~1.3K tokens);
+// 1500 leaves headroom for the image markers.
+const imageTokenEstimate = 1500
+
 // Message in internal canonical format — protocol-agnostic.
 type Message struct {
-	Role        string     `json:"role"`
-	Content     string     `json:"content,omitempty"`
-	ToolCalls   []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID  string     `json:"tool_call_id,omitempty"`
-	ToolResult  string     `json:"tool_result,omitempty"`
-	IsError     bool       `json:"is_error,omitempty"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content,omitempty"`
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolResult string         `json:"tool_result,omitempty"`
+	IsError    bool           `json:"is_error,omitempty"`
+	Images     []MessageImage `json:"images,omitempty"`
+}
+
+// MessageImage references an uploaded image on disk. Only the id + mime type
+// are persisted; Data is populated for the current request and never stored.
+type MessageImage struct {
+	ID       string `json:"id"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size,omitempty"`
+	Data     []byte `json:"-"`
 }
 
 // ToolCall represents a tool invocation from the assistant.
@@ -95,6 +110,9 @@ func (s *Session) AddMessage(ctx context.Context, msg Message) {
 	s.UpdatedAt = time.Now()
 	if s.Title == "" && msg.Role == RoleUser {
 		s.Title = truncateTitle(msg.Content)
+		if s.Title == "" && len(msg.Images) > 0 {
+			s.Title = "Image"
+		}
 	}
 
 	if s.store == nil {
@@ -150,6 +168,7 @@ func (s *Session) EstimatedTokens() int {
 	for _, m := range s.Messages {
 		total += len(m.Content) / 4 // rough: ~4 chars per token
 		total += len(m.ToolResult) / 4
+		total += imageTokenEstimate * len(m.Images)
 		for _, tc := range m.ToolCalls {
 			total += len(tc.Arguments) / 4
 			total += 10 // overhead per tool call

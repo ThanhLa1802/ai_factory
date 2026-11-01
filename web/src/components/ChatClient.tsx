@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import AuthImage from "@/components/AuthImage";
 import BrandMark from "@/components/BrandMark";
 import Markdown from "@/components/Markdown";
 import { useAuth } from "@/context/AuthContext";
@@ -8,12 +9,58 @@ import { useChatSessions } from "@/context/ChatSessionsContext";
 import { apiFetch } from "@/lib/api";
 import type { Model } from "@/lib/types";
 
+// One attached image. src is a local preview for the turn just sent; id is the
+// persisted upload reference replayed from session history (fetched via auth).
+interface ChatImage {
+  id?: string;
+  src?: string;
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "error";
   content: string;
+  images?: ChatImage[];
   reasoning?: string; // ephemeral reasoning/thinking text (not persisted)
   thinkingOpen?: boolean; // whether the thinking block is expanded
+}
+
+// An image picked in the composer but not sent yet. The data URL is what the
+// OpenAI content part carries; the server persists the decoded bytes.
+interface PendingImage {
+  id: string;
+  dataUrl: string;
+  mime: string;
+}
+
+// Caps mirror the server (vision.max_images_per_message / max_image_bytes):
+// four images, each resized client-side to ≤1024px JPEG (~2 MiB ceiling).
+const MAX_IMAGES = 4;
+const MAX_EDGE = 1024;
+const MAX_INPUT_BYTES = 20 * 1024 * 1024;
+
+// downscaleImage decodes a File, draws it into a ≤MAX_EDGE box and returns a
+// JPEG data URL. Resizing client-side keeps uploads small and bounds the
+// vision model's prompt-token cost.
+async function downscaleImage(file: File): Promise<{ dataUrl: string; mime: string }> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas is not supported");
+    // JPEG has no alpha; paint white first so transparent PNGs don't go black.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    return { dataUrl: canvas.toDataURL("image/jpeg", 0.85), mime: "image/jpeg" };
+  } finally {
+    bitmap.close();
+  }
 }
 
 // Shape of a Go server SSE chunk (OpenAI-compatible stream).
@@ -66,10 +113,12 @@ export default function ChatClient() {
   const [busy, setBusy] = useState(false);
   const [stats, setStats] = useState<{ tokens: number; ms: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const activeIdRef = useRef(activeId);
   const liveStreamRef = useRef<string | null>(null);
 
@@ -91,10 +140,20 @@ export default function ChatClient() {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset messages when switching sessions
     setMessages([]);
+    setPendingImages([]);
     if (!activeId) return;
-    apiFetch<{ title: string; model: string; messages: Array<{ role: string; content: string; tool_result?: string; tool_calls?: Array<{ name: string; arguments: string }>; is_error?: boolean }> }>(
-      `/api/v1/sessions/${activeId}`,
-    )
+    apiFetch<{
+      title: string;
+      model: string;
+      messages: Array<{
+        role: string;
+        content: string;
+        tool_result?: string;
+        tool_calls?: Array<{ name: string; arguments: string }>;
+        is_error?: boolean;
+        images?: Array<{ id: string; mime_type: string }>;
+      }>;
+    }>(`/api/v1/sessions/${activeId}`)
       .then((data) => {
         if (cancelled) return;
         const mapped: ChatMessage[] = (data.messages || []).map((m) => {
@@ -105,7 +164,12 @@ export default function ChatClient() {
               content: `Tool result: ${m.tool_result || "(empty)"}`,
             };
           }
-          return { id: newId(), role: m.role as ChatMessage["role"], content: m.content };
+          return {
+            id: newId(),
+            role: m.role as ChatMessage["role"],
+            content: m.content,
+            images: (m.images || []).map((img) => ({ id: img.id })),
+          };
         });
         if (mapped.length) setMessages(mapped);
       })
@@ -178,14 +242,68 @@ export default function ChatClient() {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
   }
 
+  // addFiles resizes and queues picked images. It also switches to a vision
+  // model when one is registered, so attaching an image to a text model does not
+  // fail at the worker with "image input requires --engine vl".
+  async function addFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setError(null);
+
+    const room = MAX_IMAGES - pendingImages.length;
+    if (room <= 0) {
+      setError(`You can attach at most ${MAX_IMAGES} images per message.`);
+      return;
+    }
+    const picked = Array.from(files).slice(0, room);
+    if (files.length > room) {
+      setError(`Only ${MAX_IMAGES} images per message — extra files were ignored.`);
+    }
+
+    const next: PendingImage[] = [];
+    for (const file of picked) {
+      if (file.type !== "image/png" && file.type !== "image/jpeg") {
+        setError("Only PNG and JPEG images are supported.");
+        continue;
+      }
+      if (file.size > MAX_INPUT_BYTES) {
+        setError(`${file.name} is too large (max ${MAX_INPUT_BYTES / (1024 * 1024)} MB).`);
+        continue;
+      }
+      try {
+        const { dataUrl, mime } = await downscaleImage(file);
+        next.push({ id: newId(), dataUrl, mime });
+      } catch {
+        setError(`Could not read ${file.name}.`);
+      }
+    }
+
+    if (!next.length) return;
+    setPendingImages((prev) => [...prev, ...next]);
+    if (!/-vl/i.test(model)) {
+      const visionModel = models.find((n) => /-vl/i.test(n));
+      if (visionModel) setModel(visionModel);
+    }
+  }
+
+  function removePendingImage(id: string) {
+    setPendingImages((prev) => prev.filter((img) => img.id !== id));
+  }
+
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || busy || !model) return;
+    const images = pendingImages;
+    if ((!text && images.length === 0) || busy || !model) return;
     setInput("");
     setError(null);
     setStats(null);
+    setPendingImages([]);
 
-    pushMsg({ id: newId(), role: "user", content: text });
+    pushMsg({
+      id: newId(),
+      role: "user",
+      content: text,
+      images: images.map((img) => ({ src: img.dataUrl })),
+    });
     pushMsg({ id: newId(), role: "assistant", content: "" });
 
     const ac = new AbortController();
@@ -213,7 +331,18 @@ export default function ChatClient() {
           max_tokens: 2048,
           messages: [
             ...(systemPrompt.trim() ? [{ role: "system", content: systemPrompt.trim() }] : []),
-            { role: "user", content: text },
+            {
+              role: "user",
+              // Text-only turns keep the plain-string shape; images use OpenAI
+              // content parts (inline base64 data URLs — no remote fetch).
+              content:
+                images.length > 0
+                  ? [
+                      ...(text ? [{ type: "text", text }] : []),
+                      ...images.map((img) => ({ type: "image_url", image_url: { url: img.dataUrl } })),
+                    ]
+                  : text,
+            },
           ],
         }),
       });
@@ -310,7 +439,7 @@ export default function ChatClient() {
       }
       refresh();
     }
-  }, [input, busy, model, systemPrompt, token, activeId, refresh]);
+  }, [input, busy, model, systemPrompt, token, activeId, refresh, pendingImages]);
 
   function stop() {
     abortRef.current?.abort();
@@ -354,7 +483,33 @@ export default function ChatClient() {
               if (m.role === "user") {
                 return (
                   <div key={m.id} className="flex items-start justify-end gap-3 py-4">
-                    <div className="max-w-[80%] whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</div>
+                    <div className="flex max-w-[80%] flex-col items-end gap-2">
+                      {m.images && m.images.length > 0 && (
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {m.images.map((img, i) =>
+                            img.src ? (
+                              // eslint-disable-next-line @next/next/no-img-element -- local data: URL preview
+                              <img
+                                key={i}
+                                src={img.src}
+                                alt="Attached image"
+                                className="max-h-48 rounded-xl border border-[var(--border)] object-cover"
+                              />
+                            ) : img.id ? (
+                              <AuthImage
+                                key={i}
+                                id={img.id}
+                                alt="Attached image"
+                                className="min-h-16 min-w-16 max-h-48 rounded-xl border border-[var(--border)] object-cover"
+                              />
+                            ) : null,
+                          )}
+                        </div>
+                      )}
+                      {m.content && (
+                        <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{m.content}</div>
+                      )}
+                    </div>
                     <UserAvatar />
                   </div>
                 );
@@ -463,6 +618,30 @@ export default function ChatClient() {
             </div>
           )}
 
+          {pendingImages.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {pendingImages.map((img) => (
+                <div key={img.id} className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- local data: URL preview */}
+                  <img
+                    src={img.dataUrl}
+                    alt="Attachment preview"
+                    className="h-16 w-16 rounded-lg border border-[var(--border)] object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removePendingImage(img.id)}
+                    aria-label="Remove attachment"
+                    title="Remove attachment"
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg2)] text-[11px] leading-none text-[var(--text2)] hover:text-[var(--text)]"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -470,6 +649,29 @@ export default function ChatClient() {
             }}
             className="flex items-end gap-2 rounded-2xl border border-[var(--border)] bg-[var(--bg2)] p-2 transition-colors focus-within:border-[var(--accent)]"
           >
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg"
+              multiple
+              hidden
+              onChange={(e) => {
+                addFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy || pendingImages.length >= MAX_IMAGES}
+              aria-label="Attach image"
+              title="Attach image"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
             <textarea
               ref={taRef}
               value={input}
@@ -496,7 +698,7 @@ export default function ChatClient() {
             ) : (
               <button
                 type="submit"
-                disabled={!input.trim() || !model}
+                disabled={(!input.trim() && pendingImages.length === 0) || !model}
                 aria-label="Send"
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-strong)] text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >

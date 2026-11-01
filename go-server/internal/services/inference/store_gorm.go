@@ -106,6 +106,7 @@ func (s *GormStore) LoadSession(ctx context.Context, id, tenantID, userID string
 			ToolCallID: m.ToolCallID,
 			ToolResult: m.ToolResult,
 			IsError:    m.IsError,
+			Images:     m.Images,
 		})
 	}
 	sess.seq = len(sess.Messages)
@@ -119,9 +120,14 @@ func (s *GormStore) AppendMessage(ctx context.Context, sessionID string, seq int
 	if toolCalls == nil {
 		toolCalls = []ToolCall{}
 	}
+	images := m.Images
+	if images == nil {
+		images = []MessageImage{}
+	}
 	row := messageRow{
 		SessionID: sessionID, Seq: seq, Role: m.Role, Content: m.Content,
 		ToolCalls: toolCalls, ToolCallID: m.ToolCallID, ToolResult: m.ToolResult, IsError: m.IsError,
+		Images: images,
 	}
 	return s.db.WithContext(ctx).Create(&row).Error
 }

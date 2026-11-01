@@ -24,40 +24,42 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\tinference\"\xd4\x01\n\x0fGenerateRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12$\n\x08messages\x18\x03 \x03(\x0b\x32\x12.inference.Message\x12\x15\n\rsystem_prompt\x18\x04 \x01(\t\x12\x32\n\x0fsampling_params\x18\x05 \x01(\x0b\x32\x19.inference.SamplingParams\x12(\n\x05tools\x18\x06 \x03(\x0b\x32\x19.inference.ToolDefinition\"\x8e\x01\n\x07Message\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\'\n\ntool_calls\x18\x03 \x03(\x0b\x32\x13.inference.ToolCall\x12\x14\n\x0ctool_call_id\x18\x04 \x01(\t\x12\x13\n\x0btool_result\x18\x05 \x01(\t\x12\x10\n\x08is_error\x18\x06 \x01(\x08\"7\n\x08ToolCall\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\targuments\x18\x03 \x01(\t\"G\n\x0eToolDefinition\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x12\n\nparameters\x18\x03 \x01(\t\"o\n\x0eSamplingParams\x12\x12\n\nmax_tokens\x18\x01 \x01(\x05\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\r\n\x05top_p\x18\x03 \x01(\x02\x12\r\n\x05top_k\x18\x04 \x01(\x05\x12\x16\n\x0estop_sequences\x18\x05 \x03(\t\"\xf6\x01\n\x10GenerateResponse\x12\x30\n\nevent_type\x18\x01 \x01(\x0e\x32\x1c.inference.GenerateEventType\x12\r\n\x05token\x18\x02 \x01(\t\x12$\n\x08tool_use\x18\x03 \x01(\x0b\x32\x12.inference.ToolUse\x12*\n\x0bstop_reason\x18\x04 \x01(\x0e\x32\x15.inference.StopReason\x12\x15\n\rfinish_reason\x18\x05 \x01(\t\x12\x1f\n\x05usage\x18\x06 \x01(\x0b\x32\x10.inference.Usage\x12\x17\n\x0freasoning_token\x18\x07 \x01(\t\"6\n\x07ToolUse\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\targuments\x18\x03 \x01(\t\"O\n\x05Usage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x05\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x05\"V\n\x14\x42\x61tchGenerateRequest\x12\x10\n\x08\x62\x61tch_id\x18\x01 \x01(\t\x12,\n\x08requests\x18\x02 \x03(\x0b\x32\x1a.inference.GenerateRequest\"\x8f\x02\n\x15\x42\x61tchGenerateResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x30\n\nevent_type\x18\x02 \x01(\x0e\x32\x1c.inference.GenerateEventType\x12\r\n\x05token\x18\x03 \x01(\t\x12$\n\x08tool_use\x18\x04 \x01(\x0b\x32\x12.inference.ToolUse\x12*\n\x0bstop_reason\x18\x05 \x01(\x0e\x32\x15.inference.StopReason\x12\x15\n\rfinish_reason\x18\x06 \x01(\t\x12\x1f\n\x05usage\x18\x07 \x01(\x0b\x32\x10.inference.Usage\x12\x17\n\x0freasoning_token\x18\x08 \x01(\t*u\n\x11GenerateEventType\x12\x15\n\x11\x45VENT_UNSPECIFIED\x10\x00\x12\x0f\n\x0b\x45VENT_TOKEN\x10\x01\x12\x12\n\x0e\x45VENT_TOOL_USE\x10\x02\x12\x0f\n\x0b\x45VENT_FINAL\x10\x03\x12\x13\n\x0f\x45VENT_REASONING\x10\x04*\x81\x01\n\nStopReason\x12\x14\n\x10STOP_UNSPECIFIED\x10\x00\x12\x11\n\rSTOP_END_TURN\x10\x01\x12\x13\n\x0fSTOP_MAX_TOKENS\x10\x02\x12\x11\n\rSTOP_TOOL_USE\x10\x03\x12\x12\n\x0eSTOP_CANCELLED\x10\x04\x12\x0e\n\nSTOP_ERROR\x10\x05\x32Y\n\x10InferenceService\x12\x45\n\x08Generate\x12\x1a.inference.GenerateRequest\x1a\x1b.inference.GenerateResponse0\x01\x32m\n\x15\x42\x61tchInferenceService\x12T\n\rBatchGenerate\x12\x1f.inference.BatchGenerateRequest\x1a .inference.BatchGenerateResponse0\x01\x42!Z\x1fgo-server/internal/inference/pbb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0finference.proto\x12\tinference\"\xd4\x01\n\x0fGenerateRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12$\n\x08messages\x18\x03 \x03(\x0b\x32\x12.inference.Message\x12\x15\n\rsystem_prompt\x18\x04 \x01(\t\x12\x32\n\x0fsampling_params\x18\x05 \x01(\x0b\x32\x19.inference.SamplingParams\x12(\n\x05tools\x18\x06 \x03(\x0b\x32\x19.inference.ToolDefinition\"\xb0\x01\n\x07Message\x12\x0c\n\x04role\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\'\n\ntool_calls\x18\x03 \x03(\x0b\x32\x13.inference.ToolCall\x12\x14\n\x0ctool_call_id\x18\x04 \x01(\t\x12\x13\n\x0btool_result\x18\x05 \x01(\t\x12\x10\n\x08is_error\x18\x06 \x01(\x08\x12 \n\x06images\x18\x07 \x03(\x0b\x32\x10.inference.Image\"(\n\x05Image\x12\x11\n\tmime_type\x18\x01 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x02 \x01(\x0c\"7\n\x08ToolCall\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\targuments\x18\x03 \x01(\t\"G\n\x0eToolDefinition\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x02 \x01(\t\x12\x12\n\nparameters\x18\x03 \x01(\t\"o\n\x0eSamplingParams\x12\x12\n\nmax_tokens\x18\x01 \x01(\x05\x12\x13\n\x0btemperature\x18\x02 \x01(\x02\x12\r\n\x05top_p\x18\x03 \x01(\x02\x12\r\n\x05top_k\x18\x04 \x01(\x05\x12\x16\n\x0estop_sequences\x18\x05 \x03(\t\"\xf6\x01\n\x10GenerateResponse\x12\x30\n\nevent_type\x18\x01 \x01(\x0e\x32\x1c.inference.GenerateEventType\x12\r\n\x05token\x18\x02 \x01(\t\x12$\n\x08tool_use\x18\x03 \x01(\x0b\x32\x12.inference.ToolUse\x12*\n\x0bstop_reason\x18\x04 \x01(\x0e\x32\x15.inference.StopReason\x12\x15\n\rfinish_reason\x18\x05 \x01(\t\x12\x1f\n\x05usage\x18\x06 \x01(\x0b\x32\x10.inference.Usage\x12\x17\n\x0freasoning_token\x18\x07 \x01(\t\"6\n\x07ToolUse\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\targuments\x18\x03 \x01(\t\"O\n\x05Usage\x12\x15\n\rprompt_tokens\x18\x01 \x01(\x05\x12\x19\n\x11\x63ompletion_tokens\x18\x02 \x01(\x05\x12\x14\n\x0ctotal_tokens\x18\x03 \x01(\x05\"V\n\x14\x42\x61tchGenerateRequest\x12\x10\n\x08\x62\x61tch_id\x18\x01 \x01(\t\x12,\n\x08requests\x18\x02 \x03(\x0b\x32\x1a.inference.GenerateRequest\"\x8f\x02\n\x15\x42\x61tchGenerateResponse\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x30\n\nevent_type\x18\x02 \x01(\x0e\x32\x1c.inference.GenerateEventType\x12\r\n\x05token\x18\x03 \x01(\t\x12$\n\x08tool_use\x18\x04 \x01(\x0b\x32\x12.inference.ToolUse\x12*\n\x0bstop_reason\x18\x05 \x01(\x0e\x32\x15.inference.StopReason\x12\x15\n\rfinish_reason\x18\x06 \x01(\t\x12\x1f\n\x05usage\x18\x07 \x01(\x0b\x32\x10.inference.Usage\x12\x17\n\x0freasoning_token\x18\x08 \x01(\t*u\n\x11GenerateEventType\x12\x15\n\x11\x45VENT_UNSPECIFIED\x10\x00\x12\x0f\n\x0b\x45VENT_TOKEN\x10\x01\x12\x12\n\x0e\x45VENT_TOOL_USE\x10\x02\x12\x0f\n\x0b\x45VENT_FINAL\x10\x03\x12\x13\n\x0f\x45VENT_REASONING\x10\x04*\x81\x01\n\nStopReason\x12\x14\n\x10STOP_UNSPECIFIED\x10\x00\x12\x11\n\rSTOP_END_TURN\x10\x01\x12\x13\n\x0fSTOP_MAX_TOKENS\x10\x02\x12\x11\n\rSTOP_TOOL_USE\x10\x03\x12\x12\n\x0eSTOP_CANCELLED\x10\x04\x12\x0e\n\nSTOP_ERROR\x10\x05\x32Y\n\x10InferenceService\x12\x45\n\x08Generate\x12\x1a.inference.GenerateRequest\x1a\x1b.inference.GenerateResponse0\x01\x32m\n\x15\x42\x61tchInferenceService\x12T\n\rBatchGenerate\x12\x1f.inference.BatchGenerateRequest\x1a .inference.BatchGenerateResponse0\x01\x42\x30Z.go-server/internal/infrastructure/inference/pbb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'inference_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'Z\037go-server/internal/inference/pb'
-  _globals['_GENERATEEVENTTYPE']._serialized_start=1381
-  _globals['_GENERATEEVENTTYPE']._serialized_end=1498
-  _globals['_STOPREASON']._serialized_start=1501
-  _globals['_STOPREASON']._serialized_end=1630
+  _globals['DESCRIPTOR']._serialized_options = b'Z.go-server/internal/infrastructure/inference/pb'
+  _globals['_GENERATEEVENTTYPE']._serialized_start=1457
+  _globals['_GENERATEEVENTTYPE']._serialized_end=1574
+  _globals['_STOPREASON']._serialized_start=1577
+  _globals['_STOPREASON']._serialized_end=1706
   _globals['_GENERATEREQUEST']._serialized_start=31
   _globals['_GENERATEREQUEST']._serialized_end=243
   _globals['_MESSAGE']._serialized_start=246
-  _globals['_MESSAGE']._serialized_end=388
-  _globals['_TOOLCALL']._serialized_start=390
-  _globals['_TOOLCALL']._serialized_end=445
-  _globals['_TOOLDEFINITION']._serialized_start=447
-  _globals['_TOOLDEFINITION']._serialized_end=518
-  _globals['_SAMPLINGPARAMS']._serialized_start=520
-  _globals['_SAMPLINGPARAMS']._serialized_end=631
-  _globals['_GENERATERESPONSE']._serialized_start=634
-  _globals['_GENERATERESPONSE']._serialized_end=880
-  _globals['_TOOLUSE']._serialized_start=882
-  _globals['_TOOLUSE']._serialized_end=936
-  _globals['_USAGE']._serialized_start=938
-  _globals['_USAGE']._serialized_end=1017
-  _globals['_BATCHGENERATEREQUEST']._serialized_start=1019
-  _globals['_BATCHGENERATEREQUEST']._serialized_end=1105
-  _globals['_BATCHGENERATERESPONSE']._serialized_start=1108
-  _globals['_BATCHGENERATERESPONSE']._serialized_end=1379
-  _globals['_INFERENCESERVICE']._serialized_start=1632
-  _globals['_INFERENCESERVICE']._serialized_end=1721
-  _globals['_BATCHINFERENCESERVICE']._serialized_start=1723
-  _globals['_BATCHINFERENCESERVICE']._serialized_end=1832
+  _globals['_MESSAGE']._serialized_end=422
+  _globals['_IMAGE']._serialized_start=424
+  _globals['_IMAGE']._serialized_end=464
+  _globals['_TOOLCALL']._serialized_start=466
+  _globals['_TOOLCALL']._serialized_end=521
+  _globals['_TOOLDEFINITION']._serialized_start=523
+  _globals['_TOOLDEFINITION']._serialized_end=594
+  _globals['_SAMPLINGPARAMS']._serialized_start=596
+  _globals['_SAMPLINGPARAMS']._serialized_end=707
+  _globals['_GENERATERESPONSE']._serialized_start=710
+  _globals['_GENERATERESPONSE']._serialized_end=956
+  _globals['_TOOLUSE']._serialized_start=958
+  _globals['_TOOLUSE']._serialized_end=1012
+  _globals['_USAGE']._serialized_start=1014
+  _globals['_USAGE']._serialized_end=1093
+  _globals['_BATCHGENERATEREQUEST']._serialized_start=1095
+  _globals['_BATCHGENERATEREQUEST']._serialized_end=1181
+  _globals['_BATCHGENERATERESPONSE']._serialized_start=1184
+  _globals['_BATCHGENERATERESPONSE']._serialized_end=1455
+  _globals['_INFERENCESERVICE']._serialized_start=1708
+  _globals['_INFERENCESERVICE']._serialized_end=1797
+  _globals['_BATCHINFERENCESERVICE']._serialized_start=1799
+  _globals['_BATCHINFERENCESERVICE']._serialized_end=1908
 # @@protoc_insertion_point(module_scope)

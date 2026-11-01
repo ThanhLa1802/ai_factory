@@ -24,11 +24,12 @@ type messageRow struct {
 	Seq        int       `gorm:"column:seq"`
 	Role       string    `gorm:"column:role"`
 	Content    string    `gorm:"column:content"`
-	ToolCalls  []ToolCall `gorm:"column:tool_calls;serializer:json"`
-	ToolCallID string    `gorm:"column:tool_call_id"`
-	ToolResult string    `gorm:"column:tool_result"`
-	IsError    bool      `gorm:"column:is_error"`
-	CreatedAt  time.Time `gorm:"column:created_at"`
+	ToolCalls  []ToolCall     `gorm:"column:tool_calls;serializer:json"`
+	ToolCallID string         `gorm:"column:tool_call_id"`
+	ToolResult string         `gorm:"column:tool_result"`
+	IsError    bool           `gorm:"column:is_error"`
+	Images     []MessageImage `gorm:"column:images;serializer:json"`
+	CreatedAt  time.Time      `gorm:"column:created_at"`
 }
 
 func (messageRow) TableName() string { return "messages" }

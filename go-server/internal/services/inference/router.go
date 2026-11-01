@@ -17,6 +17,9 @@ func (h *Handler) RegisterRoutes(e *gin.Engine) {
 	sessions.PATCH("/:id", h.handleRenameSession)
 	sessions.DELETE("/:id", h.handleDeleteSession)
 
+	// Chat image uploads (content-addressed; stored under workspace/images/uploads).
+	e.GET("/api/v1/uploads/:id", middleware.RequireAuth(h.auth), h.handleGetUpload)
+
 	// Static UI for testing
 	e.GET("/", h.handleUI)
 	e.GET("/chat", h.handleUI)

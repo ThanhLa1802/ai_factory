@@ -29,6 +29,7 @@ type Config struct {
 	Quota                       QuotaConfig
 	Tools                       ToolsConfig
 	Image                       ImageConfig
+	Vision                      VisionConfig
 
 	// Resource budgets (C4) — declared in one place so the process cannot
 	// silently run on database/sql defaults.
@@ -85,6 +86,15 @@ type ImageConfig struct {
 	MaxImages       int
 }
 
+// VisionConfig configures image input for vision-language chat (Qwen2.5-VL on
+// the `vl` engine). Uploads are content-addressed files on disk; the messages
+// table stores only their ids.
+type VisionConfig struct {
+	UploadsDir          string
+	MaxImageBytes       int64
+	MaxImagesPerMessage int
+}
+
 // Load reads configuration from an optional YAML file plus AI_FACTORY_* env
 // overrides. path == "" loads defaults + env only.
 func Load(path string) (*Config, error) {
@@ -115,6 +125,9 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("image.default_steps", 25)
 	v.SetDefault("image.default_guidance", 7.0)
 	v.SetDefault("image.max_images", 1)
+	v.SetDefault("vision.uploads_dir", "workspace/images/uploads")
+	v.SetDefault("vision.max_image_bytes", 2*1024*1024)
+	v.SetDefault("vision.max_images_per_message", 4)
 	v.SetDefault("database_max_open_conns", 25)
 	v.SetDefault("database_max_idle_conns", 25)
 	v.SetDefault("database_conn_max_lifetime", "30m")
@@ -196,6 +209,11 @@ func Load(path string) (*Config, error) {
 			DefaultSteps:    v.GetInt("image.default_steps"),
 			DefaultGuidance: v.GetFloat64("image.default_guidance"),
 			MaxImages:       v.GetInt("image.max_images"),
+		},
+		Vision: VisionConfig{
+			UploadsDir:          v.GetString("vision.uploads_dir"),
+			MaxImageBytes:       v.GetInt64("vision.max_image_bytes"),
+			MaxImagesPerMessage: v.GetInt("vision.max_images_per_message"),
 		},
 	}, nil
 }

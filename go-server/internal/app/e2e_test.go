@@ -494,9 +494,9 @@ func TestInferenceAuthRequiredE2E(t *testing.T) {
 	t.Cleanup(func() { ic.Close() })
 	bs := infrainf.NewBatchScheduler(ic)
 	te := inferencesvc.NewLocalToolExecutor(t.TempDir())
-	loop := inferencesvc.NewLoop(bs, te)
+	loop := inferencesvc.NewLoop(bs, te, nil)
 	sess := inferencesvc.NewManager()
-	h := inferencesvc.NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, nil, nil, 60, 4)
+	h := inferencesvc.NewHandler(sess, loop, t.TempDir(), ts.authn, testResolver{ts.serving}, ts.usage, nil, nil, nil, nil, 4, 60, 4)
 
 	mux := newTestEngine()
 	h.RegisterRoutes(mux)

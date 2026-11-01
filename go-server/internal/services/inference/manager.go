@@ -314,6 +314,7 @@ func estimateMessageTokens(msg Message) int {
 	tokens := 4 // overhead
 	tokens += len(msg.Content) / 4
 	tokens += len(msg.ToolResult) / 4
+	tokens += imageTokenEstimate * len(msg.Images)
 	for _, tc := range msg.ToolCalls {
 		tokens += len(tc.Name) / 4
 		tokens += len(tc.Arguments) / 4

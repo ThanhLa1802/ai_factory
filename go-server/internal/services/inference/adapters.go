@@ -1,8 +1,10 @@
 package inference
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	infra "github.com/ai-factory/go-server/internal/infrastructure/inference"
 )
@@ -26,10 +28,92 @@ type OpenAIRequest struct {
 
 // OpenAIMessage is a single message in OpenAI format.
 type OpenAIMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content,omitempty"`
+	Role       string           `json:"role"`
+	Content    OpenAIContent    `json:"content,omitempty"`
 	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+}
+
+// OpenAIContent accepts either a plain string (text-only requests) or an array
+// of content parts (vision requests): [{type:"text",text:...},
+// {type:"image_url",image_url:{url:"data:image/png;base64,..."}}].
+type OpenAIContent struct {
+	Text   string
+	Images []MessageImage
+}
+
+// OpenAIContentPart is one element of an OpenAI multimodal content array.
+type OpenAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *OpenAIImageURL `json:"image_url,omitempty"`
+}
+
+// OpenAIImageURL is the image_url content part payload.
+type OpenAIImageURL struct {
+	URL string `json:"url"`
+}
+
+// UnmarshalJSON decodes both content shapes. Image URLs must be inline base64
+// data URLs; remote URLs are rejected (no server-side fetch → no SSRF surface).
+func (c *OpenAIContent) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		c.Text = text
+		c.Images = nil
+		return nil
+	}
+
+	var parts []OpenAIContentPart
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return fmt.Errorf("content must be a string or an array of content parts")
+	}
+	c.Text = ""
+	c.Images = nil
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			c.Text += p.Text
+		case "image_url":
+			if p.ImageURL == nil || p.ImageURL.URL == "" {
+				return fmt.Errorf("image_url.url is required")
+			}
+			mime, raw, err := parseImageDataURL(p.ImageURL.URL)
+			if err != nil {
+				return err
+			}
+			c.Images = append(c.Images, MessageImage{MimeType: mime, Data: raw})
+		default:
+			return fmt.Errorf("unsupported content part type %q", p.Type)
+		}
+	}
+	return nil
+}
+
+// parseImageDataURL splits `data:<mime>;base64,<payload>` into its parts.
+func parseImageDataURL(url string) (string, []byte, error) {
+	if !strings.HasPrefix(url, "data:") {
+		return "", nil, fmt.Errorf("image_url must be an inline data: URL (base64); remote URLs are not fetched")
+	}
+	meta, payload, ok := strings.Cut(strings.TrimPrefix(url, "data:"), ",")
+	if !ok {
+		return "", nil, fmt.Errorf("malformed image data URL")
+	}
+	if !strings.HasSuffix(meta, ";base64") {
+		return "", nil, fmt.Errorf("image data URL must be base64-encoded")
+	}
+	mime := strings.TrimSuffix(meta, ";base64")
+	if mime != "image/png" && mime != "image/jpeg" {
+		return "", nil, fmt.Errorf("unsupported image type %q (use image/png or image/jpeg)", mime)
+	}
+	raw, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("decode image base64: %w", err)
+	}
+	if len(raw) == 0 {
+		return "", nil, fmt.Errorf("image is empty")
+	}
+	return mime, raw, nil
 }
 
 // OpenAIToolCall is a tool call from the assistant.
@@ -66,12 +150,13 @@ func OpenAIToInternal(req *OpenAIRequest) ([]Message, string, error) {
 	for _, om := range req.Messages {
 		msg := Message{
 			Role:    om.Role,
-			Content: om.Content,
+			Content: om.Content.Text,
+			Images:  om.Content.Images,
 		}
 
 		// Extract system prompt from system message
-		if om.Role == RoleSystem && om.Content != "" {
-			systemPrompt = om.Content
+		if om.Role == RoleSystem && om.Content.Text != "" {
+			systemPrompt = om.Content.Text
 			continue // system messages are not part of conversation history
 		}
 
@@ -87,7 +172,7 @@ func OpenAIToInternal(req *OpenAIRequest) ([]Message, string, error) {
 		// Tool result
 		if om.Role == RoleTool {
 			msg.ToolCallID = om.ToolCallID
-			msg.ToolResult = om.Content
+			msg.ToolResult = om.Content.Text
 		}
 
 		msgs = append(msgs, msg)

@@ -38,6 +38,15 @@ message Message {
   string tool_call_id = 4;
   string tool_result = 5;
   bool is_error = 6;
+  // Inline images attached to this message (vision models). A text-only engine
+  // rejects the request instead of silently ignoring them.
+  repeated Image images = 7;
+}
+
+// Image — one encoded image (PNG/JPEG bytes, not base64) attached to a message.
+message Image {
+  string mime_type = 1;
+  bytes data = 2;
 }
 
 // ToolCall — một tool call từ assistant.

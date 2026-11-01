@@ -122,7 +122,7 @@ ai_factory/
 │       │   ├── cache/           #   Redis rate limiter + cache-aside KV (usage rollup is Postgres-only)
 │       │   ├── inference/       #   gRPC client + batch scheduler + pb/ (codegen)
 │       │   └── middleware/      #   global Gin chain + neutral auth port (Authenticator)
-│       ├── migrations/          #   12 gormigrate Go migrations (was db/migrations/*.sql)
+│       ├── migrations/          #   16 gormigrate Go migrations (was db/migrations/*.sql)
 │       └── services/
 │           ├── iam/             #   tenants, users, API keys, JWT/API-key auth + Authenticator
 │           ├── serving/         #   catalog (models/templates), deployments, runtime adapter + worker
@@ -145,6 +145,7 @@ ai_factory/
 │       ├── engines/             #   EngineBackend interface + registry (selected via --engine)
 │       │   ├── base.py          #     EngineBackend (interface) + get_backend()
 │       │   ├── transformers.py  #     TransformersBackend (Qwen2.5-Coder-7B)
+│       │   ├── vision.py        #     VisionBackend (Qwen2.5-VL-7B, image-text-to-text)
 │       │   └── llama/           #     LlamaBackend (Qwen3.5-9B GGUF) — server.py, client.py
 │       ├── generate_proto.py    #   regenerate pb/ from proto
 │       ├── pb/                  #   generated gRPC stubs
@@ -191,18 +192,20 @@ ai_factory/
 - **Cache-aside + usage rollup (Phase 6b ✅):** API-key auth is cache-aside: `iam.AuthService` caches `apikey:<sha256>` for 5 min in `cache.KV` (inactive/expired never cached, Redis errors fall back to Postgres) and `DeleteAPIKey` returns the `key_hash` so the handler invalidates it. Usage is **Postgres source-of-truth + derived rollup**: `RecordUsage` appends to `usage_events` (migration `0006_usage_events`), and a background `usage.Roller` (5 s loop, registered only for `services.api`) folds new events into `usage_daily` (migration `0009_usage_daily`) in one transaction — it locks the single watermark row (`usage_rollup_state`, migration `0011_usage_rollup_state`) with `SELECT ... FOR UPDATE` so concurrent API replicas serialise, and only advances `last_event_id` after the upserts commit (crash-safe, idempotent, no double count). Reads come from `usage_daily` (lag ≤ one interval). Migration `0010_backfill_usage_daily` folds pre-rollup history in once. (This replaced an earlier Redis-counter + `Flusher` design, which silently lost usage — and hid history — when Redis was unreachable.)
 - **Quota enforcement (2026-09-18 ✅):** `usage.QuotaEnforcer` (`internal/services/usage/quota_enforcer.go`) reads `tenant_quotas` (which had CRUD but no enforcement) plus the `usage_daily` rollup and blocks `/v1/chat/completions` when current-period usage `used >= limit` → `429 QUOTA_EXCEEDED`. `quota_type` is matched by prefix (`tokens…`/`requests…`) and `period` (`daily`/`monthly`) defines the UTC window; unknown types (`concurrent_requests`, `gpu_hours`) and `limit_value <= 0` are ignored. Wired through the consumer-defined `inference.QuotaGate` port (adapter in `internal/app/adapters.go`); the handler checks it after deployment resolution, before billing/session. Infra errors fail open (like the rate limiter). Config `quota.mode` = `off|shadow|enforce` (env `AI_FACTORY_QUOTA_MODE`, default **`shadow`**); metric `quota_exceeded_total{tenant,quota_type,mode}`. Reads come from the rollup, so enforcement lags ≤ one Roller interval (5 s).
 - **Prepaid billing (2026-09-13 ✅):** `internal/services/billing` owns per-model pricing (`price_per_million_{input,output}_tokens`, integer micro-credits — 1 credit = 10^6 µcr, round-half-up) plus a tenant wallet with an append-only signed ledger (`balance_after`), idempotent top-up (`Idempotency-Key`, mock `PaymentProvider`), and crash-safe holds (reaper). `/v1/chat/completions` gates through the consumer-defined `inference.BillingGate` port (adapter in `internal/app/adapters.go`): **authorize → capture → release** — reserve an estimated hold before the loop, settle real per-turn usage at the end and release the remainder, `402 INSUFFICIENT_CREDITS` when short. Reserve/settle/release each run in one Postgres tx locking the wallet row; mode `off|shadow|enforce` (default `shadow`), missing price fails open. API `/api/v1/billing/{wallet,ledger,pricing,topup}`, RBAC `billing.read` (all roles), `billing.manage` (top-up: tenant/platform admin), `billing.pricing` (edit model prices: platform admin only); UI tab **Billing** on `/platform` (`web/src/components/BillingTab.tsx`) — balance cards, admin top-up (USD→µcr), ledger, per-model pricing (platform-admin edit). Spec: [`docs/superpowers/specs/2026-09-13-prepaid-billing-wallet-design.md`](docs/superpowers/specs/2026-09-13-prepaid-billing-wallet-design.md) · Plan: [`docs/superpowers/plans/2026-09-13-prepaid-billing-wallet.md`](docs/superpowers/plans/2026-09-13-prepaid-billing-wallet.md).
+- **Vision input (2026-11-01 ✅):** image chat rides the existing OpenAI endpoint — `content` may be an array of content parts (`{type:"text"}` + `{type:"image_url"}` with an **inline `data:` URL**; remote URLs are rejected → no SSRF). `proto.Message` gained `repeated Image images = 7`, and the Python worker gained a third engine, `--engine vl` (`VisionBackend`, Qwen2.5-VL-7B-Instruct 4-bit NF4, vision tower kept bf16, SDPA, sequential batches via HF `generate()` + `TextIteratorStreamer`; no continuous batching/prefix cache/tools). Text engines **reject** image input (`image input requires --engine vl`) instead of silently dropping it. Uploads are content-addressed on disk (`workspace/images/uploads/<sha256>.png|.jpg`, `services/inference/images.go`); `messages.images` (migration `0017_message_images`) stores only `[{id,mime_type,size}]` and is served back through auth at `GET /api/v1/uploads/:id`. Caps: 2 MiB/image, 4 images/message (`vision.*`); context budgeting counts 1500 tokens/image. UI: paperclip in `/chat`, client-side resize to ≤1024px JPEG, thumbnails + `AuthImage` for history. Seed: model `qwen2.5-vl-7b` + READY deployment (only usable while the worker runs `--engine vl` — the GPU is exclusive). Spec: [`docs/superpowers/specs/2026-11-01-vision-chat-design.md`](docs/superpowers/specs/2026-11-01-vision-chat-design.md).
 - **Load bounds (C1–C4 ✅):** the data plane is now bounded end to end. `BatchScheduler` holds a fixed number of **Batch Slots** (`DefaultMaxInFlightBatches = 1`): the collector blocks once the slot is taken, so `submitCh` (cap 100) fills and `TrySubmit` sheds load — the in-flight batch count is no longer unbounded. `dispatchBatch` derives its gRPC context from the requests (cancels once every request in the batch is gone or on shutdown) and closes **every** request channel on all exit paths (including a stream that ends without `final`), so a slow/aborted worker can't leak a goroutine. `--max-concurrent` now sets the batch size whenever `> 0` (default `0` = 4). The Python `EngineBackend` holds an **Engine Concurrency Guard** (shared `asyncio.Lock` wrapping `generate`/`generate_batch`) so the single and batch paths can never drive the same model at once, and `batch_engine` reads its token queue via `asyncio.to_thread` so it no longer blocks the event loop. `Manager` uses a **bounded in-process LRU** (default 10 000 sessions, eviction safe because Postgres is source-of-truth), coalesces concurrent loads per (session, owner) with `singleflight`, and does DB I/O outside its lock. Postgres runs on an explicit pool budget (`database.Open` with `PoolConfig`, defaults 25/25/30m/5m, `SkipDefaultTransaction: true`); the HTTP server sets `ReadHeaderTimeout`/`IdleTimeout` and leaves `WriteTimeout = 0` for SSE. Budgets live in `configs/config.yaml`.
 
 ## Engine selection
 
-The worker supports 2 engines, chosen at startup (one model at a time, 12GB VRAM):
+The worker supports 3 engines, chosen at startup (one model at a time, 12GB VRAM):
 
 | Flag | Engine | Model | Runtime |
 |---|---|---|---|
 | `--engine transformers` (default) | TransformersBackend | Qwen2.5-Coder-7B (4-bit NF4) | transformers + bitsandbytes + BPETokenizer |
 | `--engine llama` | LlamaBackend | Qwen3.5-9B (GGUF Q4_K_M) | llama-server (llama.cpp) + httpx proxy |
+| `--engine vl` | VisionBackend | Qwen2.5-VL-7B-Instruct (4-bit NF4) | transformers `generate()` + `TextIteratorStreamer` |
 
-Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`.
+Details: `docs/superpowers/specs/2026-08-10-qwen35-gguf-engine-design.md`, `docs/superpowers/specs/2026-11-01-vision-chat-design.md`.
 
 ## Learning Roadmap
 
@@ -233,6 +236,11 @@ cd python-worker && python -m worker.server
 #   ... or engine llama (Qwen3.5-9B GGUF): spawns llama-server on port 8081.
 #   (add --llama-bin G:\models\llama.cpp\llama-server.exe if llama-server is not on PATH)
 cd python-worker && python -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf
+
+#   ... or engine vl (Qwen2.5-VL-7B image chat; download it first with
+#   `huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct`). GPU is exclusive:
+#   stop the text engine before starting this one.
+cd python-worker && python -m worker.server --engine vl --model Qwen/Qwen2.5-VL-7B-Instruct
 
 # Terminal 2: Go server (default port 8080)
 # NOTE: the server requires Postgres (control plane) and fails at boot if the DB is

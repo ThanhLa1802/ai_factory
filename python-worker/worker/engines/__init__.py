@@ -15,7 +15,10 @@ def get_backend(name, model_id=None, gguf=None, llama_port=8081, llama_bin="llam
     if name == "llama":
         from .llama.backend import LlamaBackend
         return LlamaBackend(gguf=gguf, port=llama_port, bin=llama_bin, gpu_layers=gpu_layers)
-    raise ValueError(f"Unknown engine: {name!r} (expect 'transformers' | 'llama')")
+    if name == "vl":
+        from .vision import VisionBackend
+        return VisionBackend(model_id=model_id)
+    raise ValueError(f"Unknown engine: {name!r} (expect 'transformers' | 'llama' | 'vl')")
 
 
 def get_image_backend(name, model_id=None, variant="base", cpu_offload=False,

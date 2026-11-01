@@ -113,9 +113,18 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 		}); err != nil {
 			return err
 		}
+		// Chat image uploads (vision input). The store is always built so a
+		// deployment can switch to a vision model without a restart; the
+		// worker decides whether images are accepted (`--engine vl`).
+		if err := c.RegisterSingleton("inference.images", func(*di.Container) (any, error) {
+			return inferencesvc.NewDiskImageStore(cfg.Vision.UploadsDir, cfg.Vision.MaxImageBytes), nil
+		}); err != nil {
+			return err
+		}
 		if err := c.RegisterSingleton("inference.loop", func(cc *di.Container) (any, error) {
 			return inferencesvc.NewLoop(cc.MustResolve("batch.scheduler").(*infrainf.BatchScheduler),
-				cc.MustResolve("tool.executor").(inferencesvc.ToolExecutor)), nil
+				cc.MustResolve("tool.executor").(inferencesvc.ToolExecutor),
+				cc.MustResolve("inference.images").(inferencesvc.ImageStore)), nil
 		}); err != nil {
 			return err
 		}
@@ -274,6 +283,8 @@ func RegisterAll(c *di.Container, cfg *config.Config, opts Options) error {
 			billingGateArg(cc, cfg),
 			quotaGateArg(cc, cfg),
 			cc.MustResolve("limiter").(*cache.RedisLimiter),
+			cc.MustResolve("inference.images").(inferencesvc.ImageStore),
+			cfg.Vision.MaxImagesPerMessage,
 			cfg.RateLimitRPM, cfg.RateLimitConcurrency,
 		), nil
 	}); err != nil {

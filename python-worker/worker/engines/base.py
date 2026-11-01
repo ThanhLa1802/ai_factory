@@ -10,6 +10,10 @@ class EngineBackend(ABC):
       {"type": "final", "stop_reason": str, "finish_reason": str, "usage": dict, "token": str|None}
     """
 
+    # Text engines reject requests that carry images instead of silently
+    # dropping them. VisionBackend overrides this.
+    supports_vision = False
+
     def __init__(self):
         # Engine Concurrency Guard: serialize access to the shared model so the
         # single Generate and BatchGenerate paths can never drive it at once.

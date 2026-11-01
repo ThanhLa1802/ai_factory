@@ -78,15 +78,18 @@ type Handler struct {
 	billing    BillingGate
 	quota      QuotaGate
 	limiter    cache.Limiter
+	images     ImageStore
+	maxImages  int
 	rpmLimit   int
 	concLimit  int
 }
 
 // NewHandler creates a new HTTP handler.
-func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, billing BillingGate, quota QuotaGate, limiter cache.Limiter, rpmLimit, concLimit int) *Handler {
+func NewHandler(sessionMgr *Manager, loop *Loop, uiDir string, auth middleware.Authenticator, resolver DeploymentResolver, usage UsageRecorder, billing BillingGate, quota QuotaGate, limiter cache.Limiter, images ImageStore, maxImages, rpmLimit, concLimit int) *Handler {
 	return &Handler{
 		sessionMgr: sessionMgr, loop: loop, uiDir: uiDir, auth: auth,
-		resolver: resolver, usage: usage, billing: billing, quota: quota, limiter: limiter, rpmLimit: rpmLimit, concLimit: concLimit,
+		resolver: resolver, usage: usage, billing: billing, quota: quota, limiter: limiter,
+		images: images, maxImages: maxImages, rpmLimit: rpmLimit, concLimit: concLimit,
 	}
 }
 
@@ -250,6 +253,12 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 		return
 	}
 
+	// Persist inline uploads (content-addressed) before the session stores them.
+	if err := h.persistImages(c.Request.Context(), msgs); err != nil {
+		response.WriteOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
 	if systemPrompt != "" {
 		sess.SetSystemPrompt(systemPrompt)
 	}
@@ -294,6 +303,55 @@ func (h *Handler) handleOpenAIChatCompletions(c *gin.Context) {
 	} else {
 		h.handleOpenAINonStream(ctx, c, sess, turn, params, clientTools, req.Model, p.TenantID, reservationID)
 	}
+}
+
+// persistImages writes inline uploads to the image store and replaces the
+// in-memory bytes with the content-addressed reference the session persists.
+func (h *Handler) persistImages(ctx context.Context, msgs []Message) error {
+	for i := range msgs {
+		if len(msgs[i].Images) == 0 {
+			continue
+		}
+		if h.images == nil {
+			return fmt.Errorf("image input is not configured")
+		}
+		if h.maxImages > 0 && len(msgs[i].Images) > h.maxImages {
+			return fmt.Errorf("too many images in one message (max %d)", h.maxImages)
+		}
+		for j := range msgs[i].Images {
+			img := &msgs[i].Images[j]
+			if img.ID != "" {
+				continue // already persisted (e.g. replayed history)
+			}
+			ref, err := h.images.Save(ctx, img.Data, img.MimeType)
+			if err != nil {
+				return err
+			}
+			*img = ref
+		}
+	}
+	return nil
+}
+
+// handleGetUpload serves a stored chat image. Auth is required because the
+// uploads belong to conversations; the id is a content hash, so the response is
+// immutable and safe to cache privately.
+func (h *Handler) handleGetUpload(c *gin.Context) {
+	if h.images == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	data, mimeType, err := h.images.LoadByID(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, ErrImageNotFound) {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=31536000, immutable")
+	c.Data(http.StatusOK, mimeType, data)
 }
 
 // lastUserTurn splits a request's conversation into the history that precedes
