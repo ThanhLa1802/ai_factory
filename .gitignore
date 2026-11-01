@@ -38,6 +38,7 @@ llama-server-*.log
 
 # Tooling
 .superpowers/
+.playwright-mcp/
 
 *.log
 opencode.json

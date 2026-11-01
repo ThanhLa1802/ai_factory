@@ -20,7 +20,7 @@ import threading
 
 from .base import EngineBackend
 
-DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
 _FALSE_VALUES = {"0", "false", "off", "no"}
 
 

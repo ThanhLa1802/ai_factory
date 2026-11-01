@@ -1,4 +1,4 @@
-# Design — Image input cho chat (Qwen2.5-VL-7B, engine `vl`)
+# Design — Image input cho chat (Qwen2.5-VL-3B, engine `vl`)
 
 - **Ngày**: 2026-11-01
 - **Trạng thái**: ✅ Đã triển khai (proto + Python + Go + UI + tests)
@@ -18,7 +18,7 @@
 
 ### 1.2 Ràng buộc VRAM (quyết định số 1)
 
-RTX 3060 12GB: Qwen2.5-VL-7B 4-bit + vision tower bf16 chiếm ~7–8GB; Qwen3.5-9B GGUF ~5.7GB; SDXL ~9.6GB. **Chỉ một engine sở hữu GPU tại một thời điểm** — giống llama/SDXL, nên VL là **engine thứ ba của worker hiện có** (`--engine vl`), không phải process mới.
+RTX 3060 12GB: Qwen2.5-VL-3B 4-bit + vision tower bf16 chiếm **~4.8GB** (7B ~7–8GB); Qwen3.5-9B GGUF ~5.7GB; SDXL ~9.6GB. **Chỉ một engine sở hữu GPU tại một thời điểm** — giống llama/SDXL, nên VL là **engine thứ ba của worker hiện có** (`--engine vl`), không phải process mới.
 
 ### 1.3 Vì sao không dùng continuous batching cho VL
 
@@ -31,7 +31,7 @@ Mỗi request có số ảnh/kích thước khác nhau → `pixel_values` phải
 | # | Quyết định |
 |---|---|
 | **D1** | Chat với ảnh đi qua **`/v1/chat/completions`** với OpenAI content parts (`{type:"text"}` + `{type:"image_url",image_url:{url:"data:image/png;base64,..."}}`), không thêm endpoint vision riêng. |
-| **D2** | Model **Qwen2.5-VL-7B-Instruct**, 4-bit NF4 (`llm_int8_skip_modules=["visual"]` giữ vision tower bf16), `attn_implementation="sdpa"`. Engine mới `--engine vl` trong worker hiện có. |
+| **D2** | Model **Qwen2.5-VL-3B-Instruct**, 4-bit NF4 (`llm_int8_skip_modules=["visual"]` giữ vision tower bf16), `attn_implementation="sdpa"`. Engine mới `--engine vl` trong worker hiện có. |
 | **D3** | Proto: `Message` thêm `repeated Image images = 7`; `Image{string mime_type = 1; bytes data = 2;}`. `content` vẫn là string — ảnh là trường phụ. |
 | **D4** | Text engine **từ chối** message có ảnh (`STOP_ERROR` "image input requires --engine vl") thay vì âm thầm bỏ ảnh — cả đường single lẫn batch. |
 | **D5** | Ảnh lưu **content-addressed** trên đĩa (`workspace/images/uploads/<sha256>.png|.jpg`); DB `messages.images` (JSONB) chỉ lưu `[{id,mime_type,size}]`, **không** lưu base64. |
@@ -104,7 +104,7 @@ Stub regenerate: Go `protoc -I proto --go_out=... --go-grpc_out=...`; Python `py
 - `worker/engines/vision.py` (mới):
   - `decode_images` (base64 hoặc bytes → PIL RGB), `build_hf_messages` (map internal → Qwen template; ảnh đứng trước text; `tool` → user "Tool result: ..."), `sampling_kwargs` (greedy khi `temperature<=0`), `_CancelCriteria` (stopping criteria dừng `generate` khi request bị cancel).
   - `VisionBackend.generate/generate_batch`: batch tuần tự dưới `self._gen_lock`; generate trong thread riêng + streamer pump về `asyncio.Queue`; usage đếm prompt tokens từ `input_ids`, completion tokens bằng tokenizer.
-  - Env: `AI_FACTORY_VL_MODEL` (default `Qwen/Qwen2.5-VL-7B-Instruct`), `AI_FACTORY_VL_QUANT` (`4bit`|`none`), `AI_FACTORY_VL_MIN_PIXELS`, `AI_FACTORY_VL_MAX_PIXELS` (default 1280·28²).
+  - Env: `AI_FACTORY_VL_MODEL` (default `Qwen/Qwen2.5-VL-3B-Instruct`), `AI_FACTORY_VL_QUANT` (`4bit`|`none`), `AI_FACTORY_VL_MIN_PIXELS`, `AI_FACTORY_VL_MAX_PIXELS` (default 1280·28²).
 - `worker/engines/__init__.py`: đăng ký `"vl" → VisionBackend`.
 - `worker/server.py`: map `m.images` → `{"images":[data...], "image_mime_types":[...]}`; guard `_messages_have_images` cho cả single và batch; CLI help thêm `vl`.
 
@@ -122,9 +122,9 @@ Stub regenerate: Go `protoc -I proto --go_out=... --go-grpc_out=...`; Python `py
 | `services/inference/models.go` + `store_gorm.go` | `images` JSONB đọc/ghi |
 | `migrations/0017_message_images.go` | cột `messages.images` |
 | `config/config.go`, `configs/config.yaml` | `VisionConfig{UploadsDir, MaxImageBytes, MaxImagesPerMessage}` |
-| `app/registry.go`, `app.go`, `app/seeder.go` | DI `inference.images`; seed model `qwen2.5-vl-7b` + READY deployment; giá billing |
+| `app/registry.go`, `app.go`, `app/seeder.go` | DI `inference.images`; seed model `Qwen2.5-VL-3B` + READY deployment; giá billing |
 
-**Seed**: model `qwen2.5-vl-7b` / task `image-text-to-text` / framework `transformers`; template `transformers-vl`; deployment `qwen2.5-vl-7b-prod` (READY, không cần Kafka). Billing price mặc định như `qwen-3b` (150k/600k µcr per 1M input/output).
+**Seed**: model `Qwen2.5-VL-3B` / task `image-text-to-text` / framework `transformers`; template `transformers-vl`; deployment `Qwen2.5-VL-3B-prod` (READY, không cần Kafka). Billing price mặc định như `qwen-3b` (150k/600k µcr per 1M input/output).
 
 ### 4.4 Web UI (`web`)
 
@@ -167,13 +167,13 @@ Env override: `AI_FACTORY_VISION_UPLOADS_DIR`, `AI_FACTORY_VISION_MAX_IMAGE_BYTE
 
 ```bash
 # 1) Tải model (chưa có sẵn)
-huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct
+huggingface-cli download Qwen/Qwen2.5-VL-3B-Instruct
 
 # 2) Dừng worker text (GPU độc quyền), chạy worker VL
 cd python-worker
-python -m worker.server --engine vl --model Qwen/Qwen2.5-VL-7B-Instruct
+python -m worker.server --engine vl --model Qwen/Qwen2.5-VL-3B-Instruct
 
-# 3) Go server + web như cũ; model qwen2.5-vl-7b được seed READY
+# 3) Go server + web như cũ; model Qwen2.5-VL-3B được seed READY
 cd go-server && go run ./cmd/server/
 cd web && npm run dev
 ```

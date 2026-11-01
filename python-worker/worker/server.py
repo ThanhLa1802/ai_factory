@@ -409,7 +409,7 @@ def main():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="gRPC port")
     parser.add_argument("--model", type=str, default=None,
                         help="Model ID (default: Qwen2.5-Coder-7B-Instruct for transformers, "
-                             "Qwen/Qwen2.5-VL-7B-Instruct for vl; bỏ qua khi --engine llama)")
+                             "Qwen/Qwen2.5-VL-3B-Instruct for vl; bỏ qua khi --engine llama)")
     parser.add_argument("--engine", type=str, default="transformers",
                         help="transformers | llama | vl")
     parser.add_argument("--gguf", type=str, default=None,

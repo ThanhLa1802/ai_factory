@@ -109,7 +109,7 @@ func TestOpenAIContentPartsRejects(t *testing.T) {
 
 func TestOpenAIToInternalCarriesImages(t *testing.T) {
 	body := `{
-		"model":"qwen2.5-vl-7b",
+		"model":"qwen2.5-vl-3b",
 		"messages":[
 			{"role":"system","content":"be brief"},
 			{"role":"user","content":[

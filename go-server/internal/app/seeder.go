@@ -256,20 +256,20 @@ func seedVision(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) e
 	if tenantID == "" {
 		return nil // no demo tenant yet; nothing to seed
 	}
-	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen2.5-vl-7b"); err == nil {
+	if _, err := cp.ResolveDeployment(ctx, tenantID, "qwen2.5-vl-3b"); err == nil {
 		return nil // already seeded
 	} else if !errors.Is(err, serving.ErrNotFound) {
 		return fmt.Errorf("resolve for seed: %w", err)
 	}
 
 	model, err := findOrCreateModel(ctx, cp, serving.Model{
-		Name: "qwen2.5-vl-7b", Task: "image-text-to-text", Framework: "transformers",
+		Name: "qwen2.5-vl-3b", Task: "image-text-to-text", Framework: "transformers",
 	})
 	if err != nil {
 		return fmt.Errorf("seed vision model: %w", err)
 	}
 	mv, err := findOrCreateModelVersion(ctx, cp, model.ID, serving.ModelVersion{
-		Version: "v1", ArtifactURI: "Qwen/Qwen2.5-VL-7B-Instruct",
+		Version: "v1", ArtifactURI: "Qwen/Qwen2.5-VL-3B-Instruct",
 	})
 	if err != nil {
 		return fmt.Errorf("seed vision model version: %w", err)
@@ -288,7 +288,7 @@ func seedVision(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) e
 	}
 	d, err := cp.CreateDeployment(ctx, serving.Deployment{
 		TenantID: tenantID, ModelVersionID: mv.ID, TemplateVersionID: tv.ID,
-		Name: "qwen2.5-vl-7b-prod", Region: "local", DesiredReplicas: 1,
+		Name: "qwen2.5-vl-3b-prod", Region: "local", DesiredReplicas: 1,
 	})
 	if err != nil {
 		return fmt.Errorf("seed vision deployment: %w", err)
@@ -298,7 +298,7 @@ func seedVision(ctx context.Context, iamSvc *iam.Service, cp *serving.Service) e
 			return fmt.Errorf("seed vision transition to %s: %w", to, err)
 		}
 	}
-	slog.Info("seeded demo vision model + READY deployment", "model", "qwen2.5-vl-7b", "deployment", d.ID, "tenant", tenantID)
+	slog.Info("seeded demo vision model + READY deployment", "model", "qwen2.5-vl-3b", "deployment", d.ID, "tenant", tenantID)
 	return nil
 }
 
@@ -343,7 +343,7 @@ func seedBilling(ctx context.Context, iamSvc *iam.Service, billingSvc *billing.S
 	for _, p := range []billing.Price{
 		{Model: "qwen3.5-9b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
 		{Model: "qwen-3b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
-		{Model: "qwen2.5-vl-7b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
+		{Model: "qwen2.5-vl-3b", PricePerMillionInputTokens: 150_000, PricePerMillionOutputTokens: 600_000},
 	} {
 		if _, err := billingSvc.UpsertPrice(ctx, p); err != nil {
 			return fmt.Errorf("seed price %s: %w", p.Model, err)

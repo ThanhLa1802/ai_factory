@@ -59,10 +59,10 @@ nssm restart AIFactoryWorker
 nssm set AIFactoryWorker AppParameters "-u -m worker.server --engine llama --gguf G:\models\Qwen3.5-9B-Q4_K_M.gguf --llama-bin G:\models\llama.cpp\llama-server.exe"
 nssm restart AIFactoryWorker
 
-# Về vision (Qwen2.5-VL-7B — chat hiểu ảnh; tải model trước:
-#   huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct)
+# Về vision (Qwen2.5-VL-3B — chat hiểu ảnh; tải model trước:
+#   huggingface-cli download Qwen/Qwen2.5-VL-3B-Instruct)
 # GPU độc quyền: chỉ một engine chạy tại một thời điểm, không bật song song với llama.
-nssm set AIFactoryWorker AppParameters "-u -m worker.server --engine vl --model Qwen/Qwen2.5-VL-7B-Instruct"
+nssm set AIFactoryWorker AppParameters "-u -m worker.server --engine vl --model Qwen/Qwen2.5-VL-3B-Instruct"
 nssm restart AIFactoryWorker
 ```
 
