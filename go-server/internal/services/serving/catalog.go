@@ -21,6 +21,30 @@ func (s *Service) ListModels(ctx context.Context) ([]Model, error) {
 	return s.repos.Models.ListModels(ctx)
 }
 
+// ListModelsReady returns only models with a READY deployment in the tenant,
+// i.e. models that can actually answer a chat request right now.
+func (s *Service) ListModelsReady(ctx context.Context, tenantID string) ([]Model, error) {
+	names, err := s.repos.Deployments.ListReadyModelNames(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	ms, err := s.repos.Models.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ready := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		ready[n] = struct{}{}
+	}
+	out := make([]Model, 0, len(ms))
+	for _, m := range ms {
+		if _, ok := ready[m.Name]; ok {
+			out = append(out, m)
+		}
+	}
+	return out, nil
+}
+
 func (s *Service) GetModel(ctx context.Context, id string) (*Model, error) {
 	return s.repos.Models.GetModel(ctx, id)
 }

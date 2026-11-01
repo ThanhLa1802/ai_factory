@@ -35,6 +35,7 @@ type DeploymentRepository interface {
 	Get(ctx context.Context, id string) (*Deployment, error)
 	List(ctx context.Context, tenantID string) ([]Deployment, error)
 	Resolve(ctx context.Context, tenantID, modelName string) (*Deployment, error)
+	ListReadyModelNames(ctx context.Context, tenantID string) ([]string, error)
 	UpdateStatus(ctx context.Context, id, status string, updatedAt time.Time) error
 	CreateRevision(ctx context.Context, r *DeploymentRevision) error
 	ListRevisions(ctx context.Context, deploymentID string) ([]DeploymentRevision, error)

@@ -38,7 +38,16 @@ func (h *Handler) handleCreateModel(c *gin.Context) {
 }
 
 func (h *Handler) handleListModels(c *gin.Context) {
-	ms, err := h.svc.ListModels(c.Request.Context())
+	var (
+		ms  []Model
+		err error
+	)
+	if c.Query("ready") == "true" {
+		p, _ := middleware.PrincipalFromContext(c)
+		ms, err = h.svc.ListModelsReady(c.Request.Context(), p.TenantID)
+	} else {
+		ms, err = h.svc.ListModels(c.Request.Context())
+	}
 	if err != nil {
 		response.WriteAPIError(c, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return

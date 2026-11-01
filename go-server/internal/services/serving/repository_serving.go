@@ -259,6 +259,24 @@ func (r *deploymentRepo) Resolve(ctx context.Context, tenantID, modelName string
 	return &d, nil
 }
 
+// ListReadyModelNames returns the names of models that have at least one READY
+// deployment for the tenant — i.e. the models a chat request can actually serve.
+func (r *deploymentRepo) ListReadyModelNames(ctx context.Context, tenantID string) ([]string, error) {
+	var names []string
+	err := r.db.WithContext(ctx).
+		Table("deployments AS d").
+		Joins("JOIN model_versions mv ON mv.id = d.model_version_id").
+		Joins("JOIN models m ON m.id = mv.model_id").
+		Where("d.tenant_id = ? AND d.status = ?", tenantID, DeploymentReady).
+		Distinct().
+		Order("m.name").
+		Pluck("m.name", &names).Error
+	if err != nil {
+		return nil, fmt.Errorf("list ready model names: %w", err)
+	}
+	return names, nil
+}
+
 func (r *deploymentRepo) UpdateStatus(ctx context.Context, id, status string, updatedAt time.Time) error {
 	res := r.db.WithContext(ctx).
 		Model(&deploymentRow{}).

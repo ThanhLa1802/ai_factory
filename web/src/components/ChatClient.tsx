@@ -181,10 +181,11 @@ export default function ChatClient() {
     };
   }, [activeId]);
 
-  // Load model registry for the selector (prefer the seeded qwen-3b).
+  // Load the models that can actually serve (READY deployment) for the
+  // selector, so catalog leftovers with no deployment never show up here.
   useEffect(() => {
     let cancelled = false;
-    apiFetch<Model[]>("/api/v1/models")
+    apiFetch<Model[]>("/api/v1/models?ready=true")
       .then((ms) => {
         if (cancelled) return;
         const names = (ms ?? []).map((m) => m.name);
