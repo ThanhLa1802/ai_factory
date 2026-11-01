@@ -41,6 +41,36 @@ func NewClient(addr string) (*Client, error) {
 	}, nil
 }
 
+// messageToProto maps one internal wire message onto its proto form. Both the
+// single Generate and the batched BatchGenerate paths use it so an image (or
+// tool call) can never be dropped by one of them.
+func messageToProto(m Message) *pb.Message {
+	pbMsg := &pb.Message{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCallId: m.ToolCallID,
+		ToolResult: m.ToolResult,
+		IsError:    m.IsError,
+	}
+	if len(m.Images) > 0 {
+		pbMsg.Images = make([]*pb.Image, len(m.Images))
+		for j, img := range m.Images {
+			pbMsg.Images[j] = &pb.Image{MimeType: img.MimeType, Data: img.Data}
+		}
+	}
+	if len(m.ToolCalls) > 0 {
+		pbMsg.ToolCalls = make([]*pb.ToolCall, len(m.ToolCalls))
+		for j, tc := range m.ToolCalls {
+			pbMsg.ToolCalls[j] = &pb.ToolCall{
+				Id:        tc.ID,
+				Name:      tc.Name,
+				Arguments: tc.Arguments,
+			}
+		}
+	}
+	return pbMsg
+}
+
 // Close shuts down the gRPC connection.
 func (c *Client) Close() error {
 	return c.conn.Close()
@@ -133,30 +163,7 @@ func (c *Client) GenerateStream(ctx context.Context, req GenerateRequest) (<-cha
 	// Convert messages
 	pbReq.Messages = make([]*pb.Message, len(req.Messages))
 	for i, m := range req.Messages {
-		pbMsg := &pb.Message{
-			Role:       m.Role,
-			Content:    m.Content,
-			ToolCallId: m.ToolCallID,
-			ToolResult: m.ToolResult,
-			IsError:    m.IsError,
-		}
-		if len(m.Images) > 0 {
-			pbMsg.Images = make([]*pb.Image, len(m.Images))
-			for j, img := range m.Images {
-				pbMsg.Images[j] = &pb.Image{MimeType: img.MimeType, Data: img.Data}
-			}
-		}
-		if len(m.ToolCalls) > 0 {
-			pbMsg.ToolCalls = make([]*pb.ToolCall, len(m.ToolCalls))
-			for j, tc := range m.ToolCalls {
-				pbMsg.ToolCalls[j] = &pb.ToolCall{
-					Id:        tc.ID,
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-				}
-			}
-		}
-		pbReq.Messages[i] = pbMsg
+		pbReq.Messages[i] = messageToProto(m)
 	}
 
 	// Convert tools

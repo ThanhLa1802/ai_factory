@@ -409,24 +409,7 @@ func buildProtoRequest(req GenerateRequest) *pb.GenerateRequest {
 
 	pbReq.Messages = make([]*pb.Message, len(req.Messages))
 	for i, m := range req.Messages {
-		pbMsg := &pb.Message{
-			Role:       m.Role,
-			Content:    m.Content,
-			ToolCallId: m.ToolCallID,
-			ToolResult: m.ToolResult,
-			IsError:    m.IsError,
-		}
-		if len(m.ToolCalls) > 0 {
-			pbMsg.ToolCalls = make([]*pb.ToolCall, len(m.ToolCalls))
-			for j, tc := range m.ToolCalls {
-				pbMsg.ToolCalls[j] = &pb.ToolCall{
-					Id:        tc.ID,
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-				}
-			}
-		}
-		pbReq.Messages[i] = pbMsg
+		pbReq.Messages[i] = messageToProto(m)
 	}
 
 	if len(req.Tools) > 0 {
