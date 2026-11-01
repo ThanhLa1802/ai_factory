@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import BrandMark from "@/components/BrandMark";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useAuth } from "@/context/AuthContext";
@@ -81,6 +81,29 @@ function TrashIcon() {
   );
 }
 
+const HISTORY_KEY = "ai-factory.history-open";
+const HISTORY_EVENT = "ai-factory:history-toggle";
+
+// The collapsed/expanded state lives in localStorage so it survives reloads.
+// useSyncExternalStore keeps SSR (always expanded) and the client in sync
+// without a setState-inside-effect.
+function subscribeHistory(onChange: () => void) {
+  window.addEventListener("storage", onChange);
+  window.addEventListener(HISTORY_EVENT, onChange);
+  return () => {
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(HISTORY_EVENT, onChange);
+  };
+}
+
+function historyOpenSnapshot() {
+  return localStorage.getItem(HISTORY_KEY) !== "false";
+}
+
+function historyOpenServerSnapshot() {
+  return true;
+}
+
 export default function Sidebar({ open = false, onClose }: { open?: boolean; onClose?: () => void }) {
   const { claims, logout } = useAuth();
   const { sessions, activeId, select, newChat, refresh } = useChatSessions();
@@ -88,7 +111,13 @@ export default function Sidebar({ open = false, onClose }: { open?: boolean; onC
   const [draft, setDraft] = useState("");
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [tenantName, setTenantName] = useState<string | null>(null);
+  const historyOpen = useSyncExternalStore(subscribeHistory, historyOpenSnapshot, historyOpenServerSnapshot);
   const asideRef = useRef<HTMLElement | null>(null);
+
+  function toggleHistory() {
+    localStorage.setItem(HISTORY_KEY, String(!historyOpen));
+    window.dispatchEvent(new Event(HISTORY_EVENT));
+  }
 
   const isAdmin = !!claims && isPlatformAdmin(claims.role);
 
@@ -215,8 +244,33 @@ export default function Sidebar({ open = false, onClose }: { open?: boolean; onC
         ))}
       </nav>
 
-      <div className="flex min-h-0 flex-1 flex-col border-t border-[var(--border)] pt-2">
-        <div className="flex-1 overflow-y-auto px-3 py-1">
+      <div className={`flex min-h-0 flex-col border-t border-[var(--border)] pt-2 ${historyOpen ? "flex-1" : ""}`}>
+        <button
+          onClick={toggleHistory}
+          aria-expanded={historyOpen}
+          aria-controls="chat-history"
+          className="mx-3 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-[var(--text2)] hover:bg-[var(--surface2)] hover:text-[var(--text)]"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`h-3 w-3 transition-transform ${historyOpen ? "rotate-90" : ""}`}
+            aria-hidden="true"
+          >
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+          History
+          <span className="ml-auto text-[11px] font-normal normal-case tracking-normal">{sessions.length}</span>
+        </button>
+        <div
+          id="chat-history"
+          hidden={!historyOpen}
+          className="flex-1 overflow-y-auto px-3 py-1"
+        >
           {sessions.length === 0 && (
             <div className="px-2 py-6 text-center text-[12px] text-[var(--text2)]">No conversations yet.</div>
           )}
